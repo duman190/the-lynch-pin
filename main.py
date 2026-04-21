@@ -33,7 +33,7 @@ def get_lynch_projections(ticker_symbol):
         projections = {}
         for scenario, target_peg in targets.items():
             # Target Price = Current Price * (Where PEG should be / Where it is)
-            price_target = current_price * (target_peg / current_peg)
+            price_target = current_price * (target_peg / current_pe)
             
             # 5-Year Annualized ROI: ((Target / Current)^(1/5)) - 1
             # We check price_target > 0 to avoid complex number errors
@@ -58,15 +58,42 @@ def get_lynch_projections(ticker_symbol):
     except Exception as e:
         return f"Error processing {ticker_symbol}: {e}"
 
-if __name__ == "__main__":
-    # Your core list plus a few for variety
-    indices = ["AMZN", "GOOGL", "MELI", "PYPL", "ADBE", "UBER", "MSFT", "TSLA"]
+def fetch_nasdaq_holdings():
+    nasdaq_holdings = yf.Ticker("^IXIC").info.get('holdingsData', [])
+    return [holding['symbol'] for holding in nasdaq_holdings]
+
+def calculate_peg_stats(tickers):
+    peg_data = {}
+    
+    for ticker in tickers:
+        try:
+            ticker_info = yf.Ticker(ticker).info
+            current_pe = ticker_info.get('trailingPE')
+            fwd_eps_growth = ticker_info.get('earningsGrowth', 0) * 100
+            
+            if not current_pe or not fwd_eps_growth or fwd_eps_growth <= 0:
+                continue
+
+            current_peg = current_pe / fwd_eps_growth
+            peg_data[ticker] = current_peg
+        except Exception as e:
+            print(f"Error processing {ticker}: {e}")
+    
+    df = pd.DataFrame(list(peg_data.items()), columns=['Ticker', 'PEG'])
+    mean_peg = df['PEG'].mean()
+    std_dev_peg = df['PEG'].std()
+    
+    return mean_peg, std_dev_peg
+
+def main():
+    nasdaq_holdings = fetch_nasdaq_holdings()
+    mean_peg, std_dev_peg = calculate_peg_stats(nasdaq_holdings)
     
     print(f"\n{'📍 The Lynch Pin':<10} | Analysis Run")
     print(f"{'Ticker':<8} | {'PEG':<5} | {'Bull %':<8} | {'Base %':<8} | {'Bear %':<8}")
     print("-" * 58)
 
-    for t in indices:
+    for t in nasdaq_holdings:
         res = get_lynch_projections(t)
         if isinstance(res, dict):
             p = res['ROI']
@@ -74,3 +101,6 @@ if __name__ == "__main__":
         else:
             # Prints the error message if data was missing
             print(f"{t:<8} | {'--':<5} | {res}")
+
+if __name__ == "__main__":
+    main()
