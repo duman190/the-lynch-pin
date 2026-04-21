@@ -2,105 +2,89 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
+import os
+import argparse
 
-# Silence the urllib3/LibreSSL warning on macOS
 warnings.filterwarnings("ignore", category=UserWarning, module='urllib3')
 
-def get_lynch_projections(ticker_symbol):
+def get_ticker_stats(symbol):
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        info = ticker.info
+        t = yf.Ticker(symbol)
+        info = t.info
         
-        current_price = info.get('currentPrice')
-        # Use earningsGrowth (5yr fwd) if available, or default to 0
-        fwd_eps_growth = info.get('earningsGrowth', 0) * 100 
-        current_pe = info.get('trailingPE')
+        curr_price = info.get('currentPrice')
+        curr_pe = info.get('trailingPE')
+        fwd_pe = info.get('forwardPE')
+        fwd_eps = info.get('forwardEps')
+        eps = info.get('trailingEps', 1)
         
-        # Guard clause for missing or negative data that breaks PEG logic
-        if not fwd_eps_growth or not current_pe or fwd_eps_growth <= 0:
-            return f"Invalid Data for {ticker_symbol}"
+        # 1. DERIVE GROWTH (Implied from 2Y P/E Waterfall)
+        # Using 2Y Fwd PE to back-calculate the 2-year CAGR
+        eps_2y = fwd_eps * 1.15 # Placeholder logic if 2Y specific EPS isn't in info
+        # Standard approach: back-calculate growth from PE compression
+        # g = sqrt(PE_curr / PE_2y) - 1
+        
+        # Pulling explicit 2y forward estimates if possible, else using fwd_pe
+        pe_2y_fwd = info.get('forwardPE', curr_pe) * 0.85 # Conservative estimate
+        
+        # Better: Derive g from (Price/ForwardEPS_1 / Price/TrailingEPS)
+        # We calculate the growth analysts expect from Year 0 to Year 1
+        g_implied = (eps * (curr_pe / fwd_pe) / eps) - 1 if fwd_pe else 0
+        
+        # If we want the 5Y analyst consensus specifically:
+        growth_pct = info.get('earningsGrowth', 0) * 100
+        if growth_pct == 0 or growth_pct < 2: # Fallback to implied if data is missing/stale
+            growth_pct = g_implied * 100
 
-        current_peg = current_pe / fwd_eps_growth
-        avg_peg_5yr = 1.6  # Peter Lynch's benchmark (Adjusted for Tech)
-        std_dev_peg = 0.3
-        
-        targets = {
-            "Bull": avg_peg_5yr + (std_dev_peg * 0.5), # Mean + 0.5 SD
-            "Base": avg_peg_5yr,                       # Mean Reversion
-            "Bear": current_peg                        # Current valuation stays
-        }
-        
-        projections = {}
-        for scenario, target_peg in targets.items():
-            # Target Price = Current Price * (Where PEG should be / Where it is)
-            price_target = current_price * (target_peg / current_pe)
-            
-            # 5-Year Annualized ROI: ((Target / Current)^(1/5)) - 1
-            # We check price_target > 0 to avoid complex number errors
-            if price_target > 0:
-                roi_ratio = price_target / current_price
-                annualized_roi = (roi_ratio ** (1/5)) - 1
-                
-                # Double check we didn't end up with an imaginary number
-                if isinstance(annualized_roi, (int, float)):
-                    projections[scenario] = f"{round(annualized_roi * 100, 1)}%"
-                else:
-                    projections[scenario] = "N/A"
-            else:
-                projections[scenario] = "N/A"
-                
+        # 2. Risk Flag
+        curr_peg = curr_pe / growth_pct if growth_pct > 0 else 0
+        display_ticker = f"{symbol}*" if (growth_pct > 25 or curr_peg >= 2.0) else symbol
+
+        # 3. Valuation Sequence
+        pe_2y_fwd_calc = curr_price / (fwd_eps * (1 + (growth_pct/100))) if fwd_eps else curr_pe
+
+        # 4. PEG Mean & SD
+        hist = t.history(period="5y", interval="1mo")
+        mean_peg = (hist['Close'].mean() / eps) / growth_pct if not hist.empty else 1.0
+        std_peg = mean_peg * 0.25 
+        dev_sd = (curr_peg - mean_peg) / std_peg if std_peg > 0 else 0
+
+        # 5. ROI Scenarios
+        projected_5y_eps = eps * ((1 + (growth_pct/100)) ** 5)
+        def calc_5y_roi(target_peg):
+            pt = target_peg * growth_pct * projected_5y_eps
+            return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
+
         return {
-            "Ticker": ticker_symbol,
-            "Current_PEG": round(current_peg, 2),
-            "ROI": projections
+            "Ticker": display_ticker,
+            "PE": round(curr_pe, 1),
+            "FwdPE": round(fwd_pe, 1) if fwd_pe else 0,
+            "2YFwd": round(pe_2y_fwd_calc, 1),
+            "5YGrowth": f"{round(growth_pct, 1)}%",
+            "PEG": round(curr_peg, 2),
+            "Mean": round(mean_peg, 2),
+            "Dev_SD": round(dev_sd, 2),
+            "Bull": f"{round(calc_5y_roi(mean_peg + std_peg) * 100, 1)}%",
+            "Base": f"{round(calc_5y_roi(mean_peg) * 100, 1)}%",
+            "Bear": f"{round(calc_5y_roi(min(curr_peg, mean_peg)) * 100, 1)}%"
         }
-
-    except Exception as e:
-        return f"Error processing {ticker_symbol}: {e}"
-
-def fetch_nasdaq_holdings():
-    nasdaq_holdings = yf.Ticker("^IXIC").info.get('holdingsData', [])
-    return [holding['symbol'] for holding in nasdaq_holdings]
-
-def calculate_peg_stats(tickers):
-    peg_data = {}
-    
-    for ticker in tickers:
-        try:
-            ticker_info = yf.Ticker(ticker).info
-            current_pe = ticker_info.get('trailingPE')
-            fwd_eps_growth = ticker_info.get('earningsGrowth', 0) * 100
-            
-            if not current_pe or not fwd_eps_growth or fwd_eps_growth <= 0:
-                continue
-
-            current_peg = current_pe / fwd_eps_growth
-            peg_data[ticker] = current_peg
-        except Exception as e:
-            print(f"Error processing {ticker}: {e}")
-    
-    df = pd.DataFrame(list(peg_data.items()), columns=['Ticker', 'PEG'])
-    mean_peg = df['PEG'].mean()
-    std_dev_peg = df['PEG'].std()
-    
-    return mean_peg, std_dev_peg
+    except: return None
 
 def main():
-    nasdaq_holdings = fetch_nasdaq_holdings()
-    mean_peg, std_dev_peg = calculate_peg_stats(nasdaq_holdings)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--src", type=str, default="nasdaq_100.txt")
+    args = parser.parse_args()
     
-    print(f"\n{'📍 The Lynch Pin':<10} | Analysis Run")
-    print(f"{'Ticker':<8} | {'PEG':<5} | {'Bull %':<8} | {'Base %':<8} | {'Bear %':<8}")
-    print("-" * 58)
+    with open(args.src, 'r') as f:
+        tickers = [line.strip() for line in f if line.strip()]
 
-    for t in nasdaq_holdings:
-        res = get_lynch_projections(t)
-        if isinstance(res, dict):
-            p = res['ROI']
-            print(f"{res['Ticker']:<8} | {res['Current_PEG']:<5} | {p['Bull']:>7} | {p['Base']:>7} | {p['Bear']:>7}")
-        else:
-            # Prints the error message if data was missing
-            print(f"{t:<8} | {'--':<5} | {res}")
+    all_data = [get_ticker_stats(s) for s in tickers if get_ticker_stats(s)]
+    df = pd.DataFrame(all_data).sort_values(by='Dev_SD')
+
+    header = f"{'Ticker':<9} | {'PE':<6} | {'FwdPE':<7} | {'2YFwd':<7} | {'5YGrowth':<8} | {'PEG':<6} | {'Mean':<6} | {'Dev(SD)':<7} | {'Bull':>8} | {'Base':>8} | {'Bear':>8}"
+    print(header + "\n" + "-" * len(header))
+    for _, r in df.iterrows():
+        print(f"{r['Ticker']:<9} | {r['PE']:>6.1f} | {r['FwdPE']:>7.1f} | {r['2YFwd']:>7.1f} | {r['5YGrowth']:>8} | {r['PEG']:>6.2f} | {r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | {r['Base']:>8} | {r['Bear']:>8}")
 
 if __name__ == "__main__":
     main()
