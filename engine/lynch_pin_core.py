@@ -128,8 +128,8 @@ class LynchPinEngine:
                 "Mean": round(mean_peg, 2),
                 "Dev_SD": round(dev_sd, 2),
                 "Bull": f"{round(roi(min(3, mean_peg + std_peg)) * 100, 1)}%",
-                "Base": f"{round(roi(min(3 - std_peg, mean_peg)) * 100, 1)}%",
-                "Bear": f"{round(roi(min(3, min(curr_peg, mean_peg))) * 100, 1)}%",
+                "Base": f"{round(roi(min(2, mean_peg)) * 100, 1)}%",
+                "Bear": f"{round(roi(min(1, min(curr_peg, mean_peg))) * 100, 1)}%",
             }
         except Exception:
             return None
