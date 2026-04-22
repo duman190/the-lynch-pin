@@ -1,15 +1,16 @@
 import argparse
 import pandas as pd
 import os
+import re
 from engine.lynch_pin_core import LynchPinEngine
 from engine.ai_research import LynchPinResearcher
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
 
 def main():
-    parser = argparse.ArgumentParser(description="Lynch Pin v5.7 - GARP Analysis with AI")
-    parser.add_argument("--src", type=str, default="nasdaq_100.txt", help="Ticker file")
-    parser.add_argument("--top", type=int, default=None, help="Top N results")
+    parser = argparse.ArgumentParser(description="Lynch Pin v6.0 - GARP Analysis with AI")
+    parser.add_argument("--src", type=str, default="database/mag7.txt", help="Ticker file")
+    parser.add_argument("--top", type=int, default=None, help="Number of stocks to analyze")
     parser.add_argument("--excl-bad", action="store_true", help="Exclude * tickers")
     parser.add_argument("--research", action="store_true", help="Enable Gemini AI research")
     parser.add_argument("--plot", action="store_true", help="Generate N+1 charts in tmp/")
@@ -42,6 +43,7 @@ def main():
     if args.excl_bad:
         df = df[~df['Ticker'].str.endswith('*')]
     
+    # Primary sort: Best deals (lowest Dev_SD) first
     df = df.sort_values(by='Dev_SD', ascending=True)
     if args.top:
         df = df.head(args.top)
@@ -58,62 +60,68 @@ def main():
               f"{r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | "
               f"{r['Base']:>8} | {r['Bear']:>8}")
 
-    # 4. AI Narrative & Visuals
+    # 4. AI Narrative (Batch) & Visuals
     researcher = LynchPinResearcher() if args.research or args.post else None
-    
+    bulk_ai_text = ""
+
+    if researcher:
+        print("\n🧠 GENERATING BATCH AI NARRATIVE...")
+        bulk_ai_text = researcher.get_batch_narrative(df.to_dict('records'))
+        print("-" * 30 + "\n" + bulk_ai_text + "\n" + "-" * 30)
+
     if args.plot or args.post:
         print(f"\n📊 GENERATING DARK-MODE VISUALS IN tmp/...")
         viz = LynchPinVisualizer(output_dir="tmp")
-        comp_path = viz.plot_comparative_benchmark(df, args.src)
-        print(f"  [+] Comparison Chart: {comp_path}")
+        viz.plot_comparative_benchmark(df, args.src)
         
         for _, row in df.iterrows():
-            ticker_path = viz.plot_ticker_distribution(row)
-            print(f"  [+] Distribution: {ticker_path}")
+            viz.plot_ticker_distribution(row)
 
     # 5. X (Twitter) Posting Support
     if args.post:
         print("\n🐦 PREPARING X THREAD...")
         x_client = XPublisher()
         
-        # Determine Index Ticker
+        # Determine Index Name for Header
         src_lower = args.src.lower()
-        if "mag7" in src_lower:
-            idx_name = "MAGS"
-        elif "nasdaq" in src_lower:
-            idx_name = "QQQ"
-        else:
-            idx_name = "SPY"
+        idx_name = "MAGS" if "mag7" in src_lower else ("QQQ" if "nasdaq" in src_lower else "SPY")
 
-        # BUILD MAIN TWEET (Template: MARKET CLOSE: $SYMBOL...)
-        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} PEG Deal Detector is Live.\n"
-        main_tweet += f"We scanned all index holdings, and here are the top {len(df)} deals + ROI Projections:\n\n"
+        # Main Tweet Construction
+        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} PEG Deal Detector\n"
+        main_tweet += f"Top {len(df)} GARP deals + ROI Projections:\n\n"
         
+        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
         ticker_sub_tweets = []
         
-        for i, (_, r) in enumerate(df.iterrows(), 1):
+        for i, (_, r) in enumerate(df.iterrows()):
             clean_t = r['Ticker'].replace('*', '')
             
-            # NOTE: We do NOT use the '$' here to stay within X's 1-cashtag limit for the main post
-            main_tweet += (f"{i}) {clean_t} | PEG: {r['PEG']:.2f} ({r['Dev_SD']:.2f} SD)\n"
-                           f"PE: {r['PE']:.0f} | FwdPE: {r['FwdPE']:.0f} | 2YFwdPE: {r['2YFwd']:.0f}\n"
-                           f"ROI: Bull {r['Bull']} | Base {r['Base']} | Bear {r['Bear']}\n\n")
+            # --- MAIN TWEET (LIMIT TO TOP 5) ---
+            if i < 5:
+                main_tweet += f"{emojis[i]} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
+            elif i == 5:
+                main_tweet += "..\n"
             
-            print(f"  [AI] Analyzing {clean_t}...")
-            ticker_narrative = researcher.get_batch_narrative([r.to_dict()])
+            # --- REPLY TWEET (GREP & REFORMAT) ---
+            # Pattern: From 'Ticker:' until the first double newline (the gap)
+            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\n|\Z)"
+            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
             
+            raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
+            
+            # Reformat to requested: $TICKER \n\n 🤖: [Full Text]
+            formatted_reply = f"${clean_t}\n\n🤖: {raw_narrative}"
+
             ticker_sub_tweets.append({
                 "ticker": clean_t,
-                "text": ticker_narrative,
+                "text": formatted_reply,
                 "image": f"tmp/{clean_t}_valuation.png"
             })
 
-        disclaimer = ("⚠️ DISCLAIMER & RISK\nOur reports are quantitative scans, "
-                      "not financial advice or a recommendation to buy/sell: "
-                      "- Math can be mistaken. - Data sources vary. "
-                      "Investing involves risk. Always perform your own research.")
+        disclaimer = ("⚠️ DISCLAIMER: \n\n Quantitative scans, not financial advice. "
+                      "Math can be mistaken. Investing involves risk. Always DYOR 🫶")
 
-        # Fire the thread
+        # Post the thread to X via v1.1 API
         x_client.post_thread(
             main_tweet=main_tweet,
             sub_tweets=ticker_sub_tweets,

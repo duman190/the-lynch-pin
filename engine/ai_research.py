@@ -1,47 +1,50 @@
-# engine/ai_research.py
+import time
 from google import genai
 import os
 
 class LynchPinResearcher:
     def __init__(self):
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        # Using 3.1 for its superior context handling in batch requests
-        #self.model_id = "gemini-3.1-flash-lite-preview"
         self.model_id = "gemini-2.5-flash"
 
-    def get_batch_narrative(self, tickers_data):
-        """Analyzes all top picks at once for a cohesive market thread."""
-        # Build a robust context block with all the metrics
+    def get_batch_narrative(self, tickers_data, retries=3, delay=10):
+        """Analyzes pick metrics with built-in 503 retry logic."""
         context_lines = []
         for d in tickers_data:
+            # Expanded context including 2Y Fwd and ROI bands
             line = (
-                f"- {d['Ticker']}: PE {d['PE']}, FwdPE {d['FwdPE']}, "
-                f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}), "
-                f"Dev: {d['Dev_SD']} SD. Projected Base ROI: {d['Base']}"
+                f"- {d['Ticker']}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
+                f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
+                f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}"
             )
             context_lines.append(line)
         
-        context = "\n".join(context_lines)        
+        context = "\n".join(context_lines)
 
         prompt = f"""
         Act as Peter Lynch writing a high-signal Twitter thread for value investors.
-        I have a list of stocks currently trading significantly below their 5-year PEG means.
-        Try to keep it short and conscise, but explain mispricing. Add some classic Peter Lynch humor. 
-        
         DATASET:
         {context}
         
         TASK:
-        Describe in a thread (1 tweet per each ticker symbol per tweet why the market consensus for ticker explains mispricing of these stocks.
-        Constraints: Free Users: 280 characters per tweet. 
-        Tone: Wise, slightly witty, focus on conveying Wall Street narrative.
+        Provide a concise analysis for EACH ticker.
+        Make sure to mention ALL key numbers from the table for this ticker.
+        Start each with '$TICKER: ' and separate blocks with a double newline.
+        STRICT LIMIT: Analysis text under 220 characters.
         """
 
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            return f"AI Research Error: {str(e)}"
+        for attempt in range(retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_id,
+                    contents=prompt
+                )
+                return response.text
+            except Exception as e:
+                # Check for 503 (High Demand)
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    if attempt < retries - 1:
+                        print(f"⚠️  AI Busy (503). Retrying in {delay}s... (Attempt {attempt + 1}/{retries})")
+                        time.sleep(delay)
+                        continue
+                return f"AI Research Error: {str(e)}"
