@@ -31,7 +31,7 @@ class LynchPinResearcher:
         Provide an overview for EACH ticker, focus less on number and MORE on market sentiment.
         Tone: Wise, slightly witty, focus on justifying whether mispricing is justified!
         Start each with "$TICKER: " and separate blocks with a double newline.
-        STRICT LIMIT: Analysis text under 220 characters.
+        STRICT LIMIT: Analysis text under 250 characters.
         """
 
         for attempt in range(retries):

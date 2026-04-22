@@ -4,6 +4,18 @@ import scipy.stats as stats
 import os
 import yfinance as yf
 
+
+BENCHMARKS = {
+    "mag7":   ("MAGS", "Mag 7 (MAGS)"),
+    "mags":   ("MAGS", "Mag 7 (MAGS)"),
+    "nasdaq": ("QQQ",  "QQQ"),
+    "qqq":    ("QQQ",  "QQQ"),
+    "schd":   ("SCHD", "SCHD"),
+    "smh":    ("SMH",  "SMH"),
+    "igv":    ("IGV",  "IGV"),
+}
+
+
 class LynchPinVisualizer:
     def __init__(self, output_dir="tmp"):
         self.output_dir = output_dir
@@ -22,49 +34,72 @@ class LynchPinVisualizer:
             os.makedirs(self.output_dir)
 
     def _get_benchmark_data(self, source_name):
-        """Maps source files to tickers and fetches 5Y CAGR from yfinance."""
-        if "mag7" in source_name.lower():
-            ticker_sym, label = "MAGS", "Mag 7 (MAGS)"
-        elif "nasdaq" in source_name.lower():
-            ticker_sym, label = "^NDX", "Nasdaq 100"
-        else:
-            ticker_sym, label = "^GSPC", "S&P 500"
+        """Maps source files to tickers and fetches CAGR from available history.
+        Falls back to S&P 500 if the mapped ticker has no data."""
+        src = os.path.basename(source_name).lower().replace('.txt', '')
 
-        try:
-            data = yf.download(ticker_sym, period="5y", progress=False)
-            if data.empty: return label, 13.5 
-            
-            start_price = data['Adj Close'].iloc[0]
-            if isinstance(start_price, pd.Series): start_price = start_price[0]
-            end_price = data['Adj Close'].iloc[-1]
-            if isinstance(end_price, pd.Series): end_price = end_price[0]
-            
-            cagr = ((end_price / start_price) ** (1/5) - 1) * 100
-            return label, float(cagr)
-        except Exception as e:
-            print(f"⚠️ Benchmark fetch error: {e}")
-            return label, 13.5
+        ticker_sym, label = "^GSPC", "S&P 500"
+        for key, (sym, lbl) in BENCHMARKS.items():
+            if key in src:
+                ticker_sym, label = sym, lbl
+                break
+
+        # Try mapped ticker first, fall back to S&P 500
+        for sym, lbl in [(ticker_sym, label), ("^GSPC", "S&P 500")]:
+            try:
+                data = yf.download(sym, period="5y", progress=False)
+                if data.empty:
+                    continue
+
+                for col in ['Adj Close', 'Close']:
+                    if col in data.columns:
+                        prices = data[col]
+                        break
+                else:
+                    continue
+
+                if hasattr(prices, 'columns'):
+                    prices = prices.iloc[:, 0]
+
+                prices = prices.dropna()
+                if len(prices) < 2:
+                    continue
+
+                start_price = float(prices.iloc[0])
+                end_price = float(prices.iloc[-1])
+
+                days = (prices.index[-1] - prices.index[0]).days
+                years = days / 365.25
+                if years < 0.5:
+                    continue
+
+                cagr = ((end_price / start_price) ** (1 / years) - 1) * 100
+                return f"{lbl} ({years:.1f}Y)", float(cagr)
+            except Exception as e:
+                print(f"⚠️ Benchmark fetch error ({sym}): {e}")
+                continue
+
+        return "S&P 500", 10
 
     def plot_comparative_benchmark(self, df, source_name):
         """Styled Bar Chart with Index Benchmark line and PEG badges."""
         plt.figure(figsize=(10, 6))
         index_label, index_return = self._get_benchmark_data(source_name)
-        
+
         labels, returns, pegs = [index_label], [index_return], [None]
         for _, row in df.iterrows():
             labels.append(row['Ticker'].replace('*', ''))
             returns.append(float(row['Base'].replace('%', '')))
             pegs.append(row['PEG'])
 
-        colors = ['#444444'] + ['#00B4DB' for _ in range(len(labels)-1)]
+        colors = ['#444444'] + ['#00B4DB' for _ in range(len(labels) - 1)]
         bars = plt.bar(labels, returns, color=colors, alpha=0.9, edgecolor='#0083B0', linewidth=1.5)
-        
-        # 1. Index Floor Line
+
         plt.axhline(index_return, color='#FF4B2B', linestyle='--', lw=2, alpha=0.8, zorder=3)
-        plt.text(len(labels)-0.5, index_return + 0.5, 'INDEX FLOOR', color='#FF4B2B', 
+        plt.text(len(labels) - 0.5, index_return + 0.5, 'INDEX FLOOR', color='#FF4B2B',
                  fontweight='bold', fontsize=9, ha='right')
 
-        plt.title('5Y INDEX RETURN vs PROJECTED 5Y BASE CASE ROI', 
+        plt.title('5Y INDEX RETURN vs PROJECTED 5Y BASE CASE ROI',
                   loc='left', fontsize=13, fontweight='bold', pad=25, color='#00B4DB')
         plt.ylabel('% ANNUALIZED RETURN', fontweight='bold', fontsize=10, alpha=0.7)
         plt.gca().spines['top'].set_visible(False)
@@ -72,11 +107,11 @@ class LynchPinVisualizer:
 
         for i, bar in enumerate(bars):
             yval = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2, yval + 1, f'{yval:.1f}%', 
+            plt.text(bar.get_x() + bar.get_width() / 2, yval + 1, f'{yval:.1f}%',
                      ha='center', va='bottom', color='white', fontweight='bold')
-            
+
             if pegs[i] is not None:
-                plt.text(bar.get_x() + bar.get_width()/2, yval - 4, f'PEG {pegs[i]:.2f}', 
+                plt.text(bar.get_x() + bar.get_width() / 2, yval - 4, f'PEG {pegs[i]:.2f}',
                          ha='center', va='top', color='#B0B0B0', fontsize=8, fontweight='bold',
                          bbox=dict(facecolor='#252525', edgecolor='#444444', boxstyle='round,pad=0.3'))
 
@@ -90,25 +125,23 @@ class LynchPinVisualizer:
         """Styled Distribution plot with ALIGNED tabulated legend box."""
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
-        
+
         sd = abs((current_peg - mean_peg) / z_score) if z_score != 0 else 0.5
-        x = np.linspace(mean_peg - 4*sd, mean_peg + 4*sd, 300)
+        x = np.linspace(mean_peg - 4 * sd, mean_peg + 4 * sd, 300)
         y = stats.norm.pdf(x, mean_peg, sd)
-        
+
         plt.figure(figsize=(9, 5))
         plt.plot(x, y, color='#00B4DB', lw=3)
         plt.fill_between(x, y, color='#00B4DB', alpha=0.15)
-        
+
         plt.axvline(current_peg, color='#FF4B2B', linestyle='--', lw=2.5)
-        plt.scatter([current_peg], [stats.norm.pdf(current_peg, mean_peg, sd)], 
+        plt.scatter([current_peg], [stats.norm.pdf(current_peg, mean_peg, sd)],
                     color='#FF4B2B', s=100, zorder=5, edgecolor='white')
 
         plt.title(f'{ticker} VALUATION DEVIATION (PEG)', loc='left', fontsize=14, fontweight='bold', color='#00B4DB', pad=15)
-        plt.text(current_peg, max(y)*0.95, f' {z_score} SD ', color='white', fontweight='bold', 
+        plt.text(current_peg, max(y) * 0.95, f' {z_score} SD ', color='white', fontweight='bold',
                  bbox=dict(facecolor='#FF4B2B', edgecolor='none', boxstyle='round,pad=0.3'))
 
-        # ALIGNED STATS BOX
-        # Using monospace family and fixed-width formatting for perfect right-alignment
         stats_text = (
             f"  Ticker:     {ticker:>10}\n"
             f"------------------------\n"
@@ -128,13 +161,14 @@ class LynchPinVisualizer:
                        bbox=dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.8', alpha=0.8))
 
         plt.xlabel('PEG RATIO', fontweight='bold', alpha=0.7)
-        plt.yticks([]) 
+        plt.yticks([])
         plt.gca().spines['top'].set_visible(False)
         plt.gca().spines['right'].set_visible(False)
         plt.gca().spines['left'].set_visible(False)
-        
+
         plt.tight_layout()
         path = os.path.join(self.output_dir, f"{ticker}_valuation.png")
         plt.savefig(path, dpi=300, facecolor='#121212')
         plt.close()
         return path
+
