@@ -24,7 +24,7 @@ class XPublisher:
         print("\n--- 📝 PREVIEW OF POST ---")
         print(f"MAIN TWEET:\n{main_tweet}\n[Attach: {comparison_img}]")
         for sub in sub_tweets:
-            print(f"\nREPLY TWEET ({sub['ticker']}):\n{sub['text'][:100]}...\n[Attach: {sub['image']}]")
+            print(f"\nREPLY TWEET ({sub['ticker']}):\n{sub['text']}\n[Attach: {sub['image']}]")
         print(f"\nFOOTER:\n{disclaimer}\n--------------------------\n")
 
         print("🚀 Posting Market Analysis Thread to X...")
@@ -43,8 +43,8 @@ class XPublisher:
                 body = sub['text']
                 
                 # Length check
-                if len(body) > 270:
-                    body = body[:267] + "..."
+                if len(body) > 280:
+                    body = body[:277] + "..."
 
                 response = self.api.update_status(
                     status=body,

@@ -23,13 +23,14 @@ class LynchPinResearcher:
 
         prompt = f"""
         Act as Peter Lynch writing a high-signal Twitter thread for value investors.
+        
         DATASET:
         {context}
         
         TASK:
-        Provide a concise analysis for EACH ticker.
-        Make sure to mention ALL key numbers from the table for this ticker.
-        Start each with '$TICKER: ' and separate blocks with a double newline.
+        Provide an overview for EACH ticker, focus less on number and MORE on market sentiment.
+        Tone: Wise, slightly witty, focus on justifying whether mispricing is justified!
+        Start each with "$TICKER: " and separate blocks with a double newline.
         STRICT LIMIT: Analysis text under 220 characters.
         """
 
