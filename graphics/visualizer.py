@@ -23,27 +23,22 @@ class LynchPinVisualizer:
 
     def _get_benchmark_data(self, source_name):
         """Maps source files to tickers and fetches 5Y CAGR from yfinance."""
-        # Hardcoded mapping: mag7.txt -> MAGS ticker
         if "mag7" in source_name.lower():
-            ticker_sym = "MAGS"
-            label = "Mag 7 (MAGS)"
+            ticker_sym, label = "MAGS", "Mag 7 (MAGS)"
         elif "nasdaq" in source_name.lower():
-            ticker_sym = "^NDX"
-            label = "Nasdaq 100"
+            ticker_sym, label = "^NDX", "Nasdaq 100"
         else:
-            ticker_sym = "^GSPC"
-            label = "S&P 500"
+            ticker_sym, label = "^GSPC", "S&P 500"
 
         try:
-            # Fetch 5 years of data
             data = yf.download(ticker_sym, period="5y", progress=False)
-            if data.empty:
-                return label, 13.5 # Fallback if fetch fails
+            if data.empty: return label, 13.5 
             
             start_price = data['Adj Close'].iloc[0]
+            if isinstance(start_price, pd.Series): start_price = start_price[0]
             end_price = data['Adj Close'].iloc[-1]
+            if isinstance(end_price, pd.Series): end_price = end_price[0]
             
-            # Calculate CAGR: ((End/Start)^(1/5) - 1) * 100
             cagr = ((end_price / start_price) ** (1/5) - 1) * 100
             return label, float(cagr)
         except Exception as e:
@@ -51,35 +46,39 @@ class LynchPinVisualizer:
             return label, 13.5
 
     def plot_comparative_benchmark(self, df, source_name):
-        """Styled Bar Chart: MAGS/Index vs. Projected ROI."""
+        """Styled Bar Chart with Index Benchmark line and PEG badges."""
         plt.figure(figsize=(10, 6))
-        
         index_label, index_return = self._get_benchmark_data(source_name)
         
-        labels = [f"{index_label}\n(5Y Hist)"]
-        returns = [index_return]
-        
+        labels, returns, pegs = [index_label], [index_return], [None]
         for _, row in df.iterrows():
-            ticker = row['Ticker'].replace('*', '')
-            base_val = float(row['Base'].replace('%', ''))
-            labels.append(f"{ticker}\n(Base ROI)")
-            returns.append(base_val)
+            labels.append(row['Ticker'].replace('*', ''))
+            returns.append(float(row['Base'].replace('%', '')))
+            pegs.append(row['PEG'])
 
         colors = ['#444444'] + ['#00B4DB' for _ in range(len(labels)-1)]
         bars = plt.bar(labels, returns, color=colors, alpha=0.9, edgecolor='#0083B0', linewidth=1.5)
         
+        # 1. Index Floor Line
+        plt.axhline(index_return, color='#FF4B2B', linestyle='--', lw=2, alpha=0.8, zorder=3)
+        plt.text(len(labels)-0.5, index_return + 0.5, 'INDEX FLOOR', color='#FF4B2B', 
+                 fontweight='bold', fontsize=9, ha='right')
+
         plt.title('5Y INDEX RETURN vs PROJECTED 5Y BASE CASE ROI', 
                   loc='left', fontsize=13, fontweight='bold', pad=25, color='#00B4DB')
-        
         plt.ylabel('% ANNUALIZED RETURN', fontweight='bold', fontsize=10, alpha=0.7)
-        plt.grid(axis='y', linestyle='-', alpha=0.1)
         plt.gca().spines['top'].set_visible(False)
         plt.gca().spines['right'].set_visible(False)
 
-        for bar in bars:
+        for i, bar in enumerate(bars):
             yval = bar.get_height()
             plt.text(bar.get_x() + bar.get_width()/2, yval + 1, f'{yval:.1f}%', 
                      ha='center', va='bottom', color='white', fontweight='bold')
+            
+            if pegs[i] is not None:
+                plt.text(bar.get_x() + bar.get_width()/2, yval - 4, f'PEG {pegs[i]:.2f}', 
+                         ha='center', va='top', color='#B0B0B0', fontsize=8, fontweight='bold',
+                         bbox=dict(facecolor='#252525', edgecolor='#444444', boxstyle='round,pad=0.3'))
 
         plt.tight_layout()
         path = os.path.join(self.output_dir, "benchmark_comparison.png")
@@ -88,13 +87,11 @@ class LynchPinVisualizer:
         return path
 
     def plot_ticker_distribution(self, row):
-        """Styled Distribution plot for PEG analysis."""
+        """Styled Distribution plot with ALIGNED tabulated legend box."""
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
         
-        # Recover SD: SD = |(Current - Mean) / Z|
         sd = abs((current_peg - mean_peg) / z_score) if z_score != 0 else 0.5
-        
         x = np.linspace(mean_peg - 4*sd, mean_peg + 4*sd, 300)
         y = stats.norm.pdf(x, mean_peg, sd)
         
@@ -107,10 +104,28 @@ class LynchPinVisualizer:
                     color='#FF4B2B', s=100, zorder=5, edgecolor='white')
 
         plt.title(f'{ticker} VALUATION DEVIATION (PEG)', loc='left', fontsize=14, fontweight='bold', color='#00B4DB', pad=15)
-        
-        plt.text(current_peg, max(y)*0.95, f' {z_score} SD ', 
-                 color='white', fontweight='bold', fontsize=11,
+        plt.text(current_peg, max(y)*0.95, f' {z_score} SD ', color='white', fontweight='bold', 
                  bbox=dict(facecolor='#FF4B2B', edgecolor='none', boxstyle='round,pad=0.3'))
+
+        # ALIGNED STATS BOX
+        # Using monospace family and fixed-width formatting for perfect right-alignment
+        stats_text = (
+            f"  Ticker:     {ticker:>10}\n"
+            f"------------------------\n"
+            f"- PE:         {row['PE']:>10.1f}\n"
+            f"- Fwd PE:     {row['FwdPE']:>10.1f}\n"
+            f"- 2YFwd PE:   {row['2YFwd']:>10.1f}\n"
+            f"- PEG:        {current_peg:>10.2f}\n"
+            f"- 5Y Growth:  {str(row['5YGrowth']):>10}\n"
+            f"- Bull ROI:   {row['Bull']:>10}\n"
+            f"- Base ROI:   {row['Base']:>10}\n"
+            f"- Bear ROI:   {row['Bear']:>10}"
+        )
+
+        plt.gca().text(0.97, 0.92, stats_text, transform=plt.gca().transAxes,
+                       fontsize=9, color='#E0E0E0', family='monospace',
+                       verticalalignment='top', horizontalalignment='right',
+                       bbox=dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.8', alpha=0.8))
 
         plt.xlabel('PEG RATIO', fontweight='bold', alpha=0.7)
         plt.yticks([]) 
