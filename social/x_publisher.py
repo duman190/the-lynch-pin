@@ -1,6 +1,6 @@
 import tweepy
 import os
-
+import time
 
 class XPublisher:
     def __init__(self):
@@ -49,8 +49,13 @@ class XPublisher:
 
             # 2. Individual Tickers
             for sub in sub_tweets:
+                print("  [wait] 15s delay for algorithm...")
+                time.sleep(15)
+                
                 m_id = self._upload_media(sub['image'])
                 body = sub['text']
+                
+                # Hard cap to 280 characters to be safe
                 if len(body) > 280:
                     body = body[:277] + "..."
 
@@ -63,6 +68,9 @@ class XPublisher:
                 print(f"  [+] {sub['ticker']} analysis live.")
 
             # 3. Footnote
+            print("  [wait] Final 15s delay before footer...")
+            time.sleep(15)
+            
             self.client.create_tweet(
                 text=disclaimer,
                 in_reply_to_tweet_id=last_id,

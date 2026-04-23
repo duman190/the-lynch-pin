@@ -118,9 +118,12 @@ def main():
                 "text": formatted_reply,
                 "image": f"tmp/{clean_t}_valuation.png"
             })
-
-        disclaimer = ("⚠️ DISCLAIMER: \n\n Quantitative scans, not financial advice. "
-                      "Math can be mistaken. Investing involves risk. Always DYOR 🫶")
+        
+        # f-string to inject the index name correctly
+        disclaimer = (f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
+                      f" Which of these ${idx_name} anomalies are the hardest for your stomach? 👇\n\n"
+                      "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
+                      "Investing involves risk. Always DYOR. 🫶")
 
         x_client.post_thread(
             main_tweet=main_tweet,
