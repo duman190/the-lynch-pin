@@ -92,7 +92,7 @@ def main():
         src_stem = os.path.basename(args.src).lower().replace('.txt', '')
         idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
-        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} PEG Deal Detector\n"
+        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n"
         main_tweet += f"Top {len(df)} GARP deals + ROI Projections:\n\n"
 
         emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
@@ -104,7 +104,7 @@ def main():
             if i < 5:
                 main_tweet += f"{emojis[i]} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
             elif i == 5:
-                main_tweet += "..\n"
+                main_tweet += "...\n"
 
             # Extract AI narrative for this ticker
             pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\n|\Z)"

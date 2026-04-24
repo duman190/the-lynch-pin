@@ -1,10 +1,11 @@
 #!/bin/bash
 
-# Navigate to the correct project directory
+# --- CONFIGURATION ---
 PROJECT_DIR="$HOME/workplace/the-lynch-pin"
+PYTHON_EXEC="$PROJECT_DIR/venv/bin/python"
 cd "$PROJECT_DIR" || exit
 
-# Create a logs directory if it doesn't exist
+# Create logs directory
 mkdir -p logs
 LOG_FILE="logs/run_$(date +%Y%m%d).log"
 
@@ -18,16 +19,16 @@ else
     exit 1
 fi
 
-# 2. OPTIONAL: Load .env file if you use one
+# 2. Robust .env Loading (Handles special chars/spaces)
 if [ -f ".env" ]; then
     echo "📝 Loading .env file..." | tee -a "$LOG_FILE"
-    export $(grep -v '^#' .env | xargs)
+    set -a
+    source .env
+    set +a
 fi
 
-# 3. TOKEN VALIDATION
+# 3. TOKEN VALIDATION (Masked for logs)
 echo "🔍 Checking API Tokens..." | tee -a "$LOG_FILE"
-
-# Masking the keys for log safety (shows first 4 and last 4 chars)
 check_token() {
     local name=$1
     local val=${!name}
@@ -44,7 +45,7 @@ check_token "X_API_SECRET"
 check_token "X_ACCESS_TOKEN"
 check_token "X_ACCESS_SECRET"
 
-# 4. Network Check (Wait up to 15 mins)
+# 4. Network Check with Stabilization Delay
 MAX_RETRIES=90 
 COUNT=0
 echo "🌐 Checking network..." | tee -a "$LOG_FILE"
@@ -56,21 +57,26 @@ while ! ping -c 1 -t 1 8.8.8.8 &> /dev/null; do
     sleep 10
     ((COUNT++))
 done
-echo "  [✓] Network Online" | tee -a "$LOG_FILE"
 
-# 5. Determine command based on Day
+echo "  [✓] Network Online" | tee -a "$LOG_FILE"
+echo "  ⌛ Waiting 20s for Wi-Fi card to fully stabilize..." | tee -a "$LOG_FILE"
+sleep 20
+
+# 5. Determine command based on Day (1=Mon, 5=Fri)
 DAY=$(date +%u) 
 case $DAY in
-    1) CMD="python main.py --src database/mags.txt --top 4 --excl-bad --post" ;;
-    2) CMD="python main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post" ;;
-    3) CMD="python main.py --src database/schd.txt --top 10 --excl-bad --post" ;;
-    4) CMD="python main.py --src database/smh.txt --top 6 --excl-bad --post" ;;
-    5) CMD="python main.py --src database/igv.txt --top 10 --excl-bad --post" ;;
-    *) echo "Weekend. No scan." ; exit 0 ;;
+    1) ARGS="main.py --src database/mags.txt --top 4 --excl-bad --post" ;;
+    2) ARGS="main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post" ;;
+    3) ARGS="main.py --src database/schd.txt --top 10 --excl-bad --post" ;;
+    4) ARGS="main.py --src database/smh.txt --top 6 --excl-bad --post" ;;
+    5) ARGS="main.py --src database/igv.txt --top 10 --excl-bad --post" ;;
+    *) echo "Weekend. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
 
-# 6. Execute (Commented out for your test)
-echo "🚀 Executing: $CMD" | tee -a "$LOG_FILE"
-$CMD >> "$LOG_FILE" 2>&1
+# 6. Execute with Caffeinate
+# -i prevents idle sleep, -s prevents system sleep when plugged in.
+echo "🚀 Executing: $PYTHON_EXEC $ARGS" | tee -a "$LOG_FILE"
+
+caffeinate -is $PYTHON_EXEC $ARGS >> "$LOG_FILE" 2>&1
 
 echo "--- Finished Check: $(date) ---" | tee -a "$LOG_FILE"
