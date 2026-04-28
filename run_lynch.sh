@@ -65,7 +65,7 @@ sleep 20
 # 5. Determine command based on Day (1=Mon, 5=Fri)
 DAY=$(date +%u) 
 case $DAY in
-    1) ARGS="main.py --src database/mags.txt --top 4 --excl-bad --post" ;;
+    1) ARGS="main.py --src database/mag7.txt --top 4 --excl-bad --post" ;;
     2) ARGS="main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post" ;;
     3) ARGS="main.py --src database/schd.txt --top 10 --excl-bad --post" ;;
     4) ARGS="main.py --src database/smh.txt --top 6 --excl-bad --post" ;;
