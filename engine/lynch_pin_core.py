@@ -63,9 +63,11 @@ class LynchPinEngine:
                 g0 = ee.loc['0y', 'growth']
                 g1 = ee.loc['+1y', 'growth']
                 if pd.notna(g0) and pd.notna(g1):
-                    cagr = ((1 + g0) * (1 + g1)) ** 0.5 - 1
-                    if 0.03 < cagr < 0.8:
-                        return cagr * 100
+                    compound = (1 + g0) * (1 + g1)
+                    if compound > 0:
+                        cagr = compound ** 0.5 - 1
+                        if 0.03 < cagr < 0.8:
+                            return cagr * 100
         except Exception:
             pass
         
@@ -288,8 +290,8 @@ class LynchPinEngine:
                 pt = target_peg * growth_pct * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
-            # High-growth, high-PEG, or insufficient historical data
-            risk = growth_pct > 40 or curr_peg >= 2.5 or dev_sd == 0.0
+            # High-growth, high-PEG, insufficient data, or not yet profitable
+            risk = growth_pct > 40 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0
 
             return {
                 "Ticker": f"{self.symbol}*" if risk else self.symbol,
