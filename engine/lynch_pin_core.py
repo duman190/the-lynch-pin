@@ -290,8 +290,9 @@ class LynchPinEngine:
                 pt = target_peg * growth_pct * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
-            # High-growth, high-PEG, insufficient data, or not yet profitable
-            risk = growth_pct > 40 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0
+            # High-growth, high-PEG, insufficient data, not yet profitable, or low base ROI
+            base_roi = roi(min(2.5, mean_peg)) * 100
+            risk = growth_pct > 40 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
                 "Ticker": f"{self.symbol}*" if risk else self.symbol,
@@ -303,7 +304,7 @@ class LynchPinEngine:
                 "Mean": round(mean_peg, 2),
                 "Dev_SD": round(dev_sd, 2),
                 "Bull": f"{round(roi(min(3, mean_peg + std_peg)) * 100, 1)}%",
-                "Base": f"{round(roi(min(2.5, mean_peg)) * 100, 1)}%",
+                "Base": f"{round(base_roi, 1)}%",
                 "Bear": f"{round(roi(min(2, min(curr_peg, mean_peg))) * 100, 1)}%",
             }
         except Exception:
