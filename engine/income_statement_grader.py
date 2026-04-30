@@ -1,19 +1,17 @@
 import yfinance as yf
 import pandas as pd
 
-# Waterfall chain: (label, yfinance field, parent_label, is_cost)
-# is_cost=True means growth BELOW parent is good (efficiency)
-# is_cost=False means growth ABOVE parent is good (leverage)
+# Waterfall items in order: (display label, yfinance field)
 WATERFALL = [
-    ('Revenue',    'Total Revenue',                       None,        False),
-    ('COGS',       'Cost Of Revenue',                     'Revenue',   True),
-    ('Gross',      'Gross Profit',                        'Revenue',   False),
-    ('R&D',        'Research And Development',             'Gross',     True),
-    ('S&M',        'Selling And Marketing Expense',        'Gross',     True),
-    ('G&A',        'General And Administrative Expense',   'Gross',     True),
-    ('OpIncome',   'Operating Income',                     'Gross',     False),
-    ('NetIncome',  'Net Income',                           'OpIncome',  False),
-    ('EPS',        'Diluted EPS',                          'NetIncome', False),
+    ('Revenue',    'Total Revenue'),
+    ('COGS',       'Cost Of Revenue'),
+    ('Gross',      'Gross Profit'),
+    ('R&D',        'Research And Development'),
+    ('S&M',        'Selling And Marketing Expense'),
+    ('G&A',        'General And Administrative Expense'),
+    ('OpIncome',   'Operating Income'),
+    ('NetIncome',  'Net Income'),
+    ('EPS',        'Diluted EPS'),
 ]
 
 
@@ -23,63 +21,132 @@ def _yoy_growth(curr, prev):
     return None
 
 
-def _grade_item(is_cost, item_g, parent_g):
-    """Grade relative to parent in the waterfall chain."""
-    if item_g is None or parent_g is None:
+def _grade_item(label, item_g, rev_g):
+    """Grade each line item relative to revenue growth.
+
+    Rules from the framework:
+    - Revenue: GREEN if growing, RED if flat/declining. Never blue.
+    - Costs (COGS, S&M, G&A): GREEN if growing slower than revenue,
+      BLUE if growing but not a problem, RED if running ahead of revenue.
+    - R&D: Lenient — GREEN if below revenue growth, BLUE if above but
+      reasonable (investment), RED only if egregiously ahead.
+    - Profit items (Gross, OpIncome, NetIncome, EPS): GREEN if growing
+      faster than revenue (leverage), BLUE if growing but slower,
+      RED if declining or negative growth while revenue grows.
+    """
+    if item_g is None:
         return '⚪'
-    if is_cost:
-        # Costs: growing slower than parent = efficient
-        if item_g <= 0 and parent_g > 0:
-            return '🟢'  # costs shrinking while parent grows
-        if item_g < parent_g * 0.5:
+
+    if label == 'Revenue':
+        return '🟢' if item_g > 0.02 else '🔴'
+
+    if label in ('COGS', 'S&M', 'G&A'):
+        if item_g <= 0 and rev_g > 0:
             return '🟢'
-        elif item_g <= parent_g:
-            return '🔵'
-        return '🔴'
-    else:
-        # Profit: growing faster than parent = leveraging
-        if item_g > parent_g and item_g > 0:
+        if item_g < rev_g:
             return '🟢'
-        elif item_g > 0:
+        if item_g < rev_g * 1.3:
             return '🔵'
         return '🔴'
 
+    if label == 'R&D':
+        # Lenient on R&D — investment in future
+        if item_g <= 0 and rev_g > 0:
+            return '🟢'
+        if item_g < rev_g:
+            return '🟢'
+        if item_g < rev_g * 2.0:
+            return '🔵'
+        return '🔴'
 
-def _assign_grade(signals):
-    """Assigns letter grade based on waterfall signal pattern."""
+    # Profit items: Gross, OpIncome, NetIncome, EPS
+    if item_g > rev_g and item_g > 0:
+        return '🟢'
+    if item_g > 0:
+        return '🔵'
+    return '🔴'
+
+
+def _assign_grade(signals, growths):
+    """Assigns letter grade based on the waterfall pattern.
+
+    Grading rules:
+    - A++: Everything accelerating, zero reds, EPS >> Revenue
+    - A+:  OpIncome & EPS beat revenue, at most 1 blue cost line
+    - A:   Waterfall accelerating, minor imperfections
+    - B+:  Mostly green/blue, 1-2 reds in cost lines
+    - B:   Decent but some leakage
+    - B-:  Mixed signals, bottom half saving top half or vice versa
+    - C:   Sluggish, multiple reds, waterfall decelerating
+    - D:   Broken — flat/declining revenue with red cost lines
+    """
     scored = [s for s in signals if s != '⚪']
     if len(scored) == 0:
         return 'N/A'
 
     greens = scored.count('🟢')
+    blues = scored.count('🔵')
     reds = scored.count('🔴')
     total = len(scored)
-    ratio = greens / total
 
-    # Check if full waterfall accelerates: OpIncome > Gross AND EPS > NetIncome
-    op_i = next((i for i, (l, *_) in enumerate(WATERFALL) if l == 'OpIncome'), None)
-    eps_i = next((i for i, (l, *_) in enumerate(WATERFALL) if l == 'EPS'), None)
-    op_sig = signals[op_i] if op_i is not None and op_i < len(signals) else '⚪'
-    eps_sig = signals[eps_i] if eps_i is not None and eps_i < len(signals) else '⚪'
-    accelerating = op_sig == '🟢' and eps_sig == '🟢'
+    rev_g = growths.get('Revenue')
+    op_g = growths.get('OpIncome')
+    eps_g = growths.get('EPS')
+    ni_g = growths.get('NetIncome')
 
-    if accelerating and reds == 0:
+    rev_sig = signals[0]  # Revenue signal
+    op_sig = signals[6] if len(signals) > 6 else '⚪'
+    ni_sig = signals[7] if len(signals) > 7 else '⚪'
+    eps_sig = signals[8] if len(signals) > 8 else '⚪'
+
+    # Revenue declining = ceiling of C
+    if rev_sig == '🔴':
+        if reds >= total * 0.5:
+            return 'D'
+        return 'C'
+
+    # Check if waterfall accelerates: OpIncome & EPS beat revenue
+    waterfall_accelerates = op_sig == '🟢' and eps_sig == '🟢'
+
+    # A++ : near-perfect, zero reds, waterfall accelerating strongly
+    if waterfall_accelerates and reds == 0 and blues <= 1:
+        if eps_g and rev_g and eps_g > rev_g * 1.5:
+            return 'A++'
         return 'A+'
-    elif accelerating:
+
+    # A+ : waterfall accelerating, at most 1 red (in a cost line)
+    if waterfall_accelerates and reds <= 1:
+        return 'A+'
+
+    # A : waterfall accelerating but some imperfections
+    if waterfall_accelerates:
         return 'A'
-    elif ratio >= 0.7 and reds <= 1:
-        return 'B+'
-    elif ratio >= 0.5:
+
+    # B+ : mostly green, OpIncome or EPS growing, limited reds
+    if greens >= total * 0.5 and reds <= 2:
+        if op_sig in ('🟢', '🔵') and eps_sig in ('🟢', '🔵'):
+            return 'B+'
+
+    # B : decent, some leakage
+    if greens >= total * 0.4 and reds <= 3:
         return 'B'
-    elif ratio >= 0.3:
+
+    # B- : mixed, bottom saving top or vice versa
+    if greens >= total * 0.3:
         return 'B-'
-    elif reds >= total * 0.6:
-        return 'D'
-    return 'C'
+
+    # C : sluggish
+    if reds < total * 0.5:
+        return 'C'
+
+    return 'D'
 
 
 def grade_ticker(ticker_obj):
     """Grades a single ticker's income statement efficiency.
+
+    Compares latest quarter vs same quarter last year (YoY).
+    Every line item is graded relative to revenue growth.
 
     Args:
         ticker_obj: yfinance Ticker object (with session)
@@ -95,9 +162,9 @@ def grade_ticker(ticker_obj):
         latest = qinc.columns[0]
         yoy_col = qinc.columns[4]
 
-        # First pass: compute all YoY growths
+        # Compute all YoY growths
         growths = {}
-        for label, field, _, _ in WATERFALL:
+        for label, field in WATERFALL:
             if field not in qinc.index:
                 growths[label] = None
                 continue
@@ -108,23 +175,22 @@ def grade_ticker(ticker_obj):
             else:
                 growths[label] = _yoy_growth(float(curr), float(prev))
 
-        # Second pass: grade each item against its parent
+        rev_g = growths.get('Revenue')
+
+        # Grade each item relative to revenue
         items = []
         signals = []
-        for label, field, parent_label, is_cost in WATERFALL:
+        for label, field in WATERFALL:
             g = growths.get(label)
-            parent_g = growths.get(parent_label) if parent_label else None
-
-            if label == 'Revenue':
-                # Revenue is the base — always blue (reference point)
-                sig = '🔵' if g is not None else '⚪'
+            if g is None or (label != 'Revenue' and rev_g is None):
+                items.append((label, g, '⚪'))
+                signals.append('⚪')
             else:
-                sig = _grade_item(is_cost, g, parent_g)
+                sig = _grade_item(label, g, rev_g)
+                items.append((label, g, sig))
+                signals.append(sig)
 
-            items.append((label, g, sig))
-            signals.append(sig)
-
-        grade = _assign_grade(signals)
+        grade = _assign_grade(signals, growths)
         return {'grade': grade, 'items': items}
 
     except Exception:
@@ -165,7 +231,7 @@ def print_grader_table(tickers_data, engine_map):
     print()
 
     # Each waterfall item
-    for i, (label, _, _, _) in enumerate(WATERFALL):
+    for i, (label, _) in enumerate(WATERFALL):
         print(f"{label:>{lbl_w}}", end='')
         for sym, g in results.items():
             _, growth, sig = g['items'][i]
