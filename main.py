@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 from engine.lynch_pin_core import LynchPinEngine
+from engine.income_statement_grader import print_grader_table, grade_ticker
 from engine.ai_research import LynchPinResearcher
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
@@ -35,6 +36,7 @@ def main():
 
     # 2. Analyze
     all_data = []
+    engines = {}
     print(f"📡 Processing Source: {args.src}")
 
     for s in tickers:
@@ -42,6 +44,7 @@ def main():
         res = engine.get_ticker_stats()
         if res:
             all_data.append(res)
+            engines[s] = engine
 
     if not all_data:
         print("⚠️ No data processed.")
@@ -67,13 +70,24 @@ def main():
               f"{r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | "
               f"{r['Base']:>8} | {r['Bear']:>8}")
 
+    # 3b. Income Statement Grading (for top picks)
+    grader_data = {}
+    if args.top:
+        for _, row in df.iterrows():
+            sym = row['Ticker'].replace('*', '')
+            if sym in engines:
+                g = grade_ticker(engines[sym].ticker)
+                if g:
+                    grader_data[sym] = g
+        print_grader_table(df.to_dict('records'), engines)
+
     # 4. AI Narrative (Batch) & Visuals
     researcher = LynchPinResearcher() if args.research or args.post else None
     bulk_ai_text = ""
 
     if researcher:
         print("\n🧠 GENERATING BATCH AI NARRATIVE...")
-        bulk_ai_text = researcher.get_batch_narrative(df.to_dict('records'))
+        bulk_ai_text = researcher.get_batch_narrative(df.to_dict('records'), grader_data)
         print("-" * 30 + "\n" + bulk_ai_text + "\n" + "-" * 30)
 
     if args.plot or args.post:
@@ -82,7 +96,8 @@ def main():
         viz.plot_comparative_benchmark(df, args.src)
 
         for _, row in df.iterrows():
-            viz.plot_ticker_distribution(row)
+            sym = row['Ticker'].replace('*', '')
+            viz.plot_ticker_distribution(row, grader_data.get(sym))
 
     # 5. X (Twitter) Posting Support
     if args.post:
