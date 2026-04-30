@@ -55,7 +55,7 @@ STRICT LIMIT: Analysis text under 250 characters."""
 
         return prompt
 
-    def get_batch_narrative(self, tickers_data, grader_data=None, retries=3, delay=10):
+    def get_batch_narrative(self, tickers_data, grader_data=None, retries=5, delay=30):
         """Analyzes pick metrics with built-in 503 retry logic."""
         prompt = self.build_prompt(tickers_data, grader_data)
 
