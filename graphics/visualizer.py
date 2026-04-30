@@ -121,8 +121,8 @@ class LynchPinVisualizer:
         plt.close()
         return path
 
-    def plot_ticker_distribution(self, row):
-        """Styled Distribution plot with ALIGNED tabulated legend box."""
+    def plot_ticker_distribution(self, row, grade_result=None):
+        """Styled Distribution plot with valuation stats and income statement grade."""
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
 
@@ -139,26 +139,43 @@ class LynchPinVisualizer:
                     color='#FF4B2B', s=100, zorder=5, edgecolor='white')
 
         plt.title(f'{ticker} VALUATION DEVIATION (PEG)', loc='left', fontsize=14, fontweight='bold', color='#00B4DB', pad=15)
-        plt.text(current_peg, max(y) * 0.95, f' {z_score} SD ', color='white', fontweight='bold',
+        plt.text(current_peg, stats.norm.pdf(current_peg, mean_peg, sd) * 1.1, f' {z_score} SD ',
+                 color='white', fontweight='bold',
                  bbox=dict(facecolor='#FF4B2B', edgecolor='none', boxstyle='round,pad=0.3'))
 
         stats_text = (
-            f"  Ticker:     {ticker:>10}\n"
-            f"------------------------\n"
-            f"- PE:         {row['PE']:>10.1f}\n"
-            f"- Fwd PE:     {row['FwdPE']:>10.1f}\n"
-            f"- 2YFwd PE:   {row['2YFwd']:>10.1f}\n"
-            f"- PEG:        {current_peg:>10.2f}\n"
-            f"- 5Y Growth:  {str(row['5YGrowth']):>10}\n"
-            f"- Bull ROI:   {row['Bull']:>10}\n"
-            f"- Base ROI:   {row['Base']:>10}\n"
-            f"- Bear ROI:   {row['Bear']:>10}"
+            f"Ticker:     {ticker:>8}\n"
+            f"--------------------\n"
+            f"- PE:       {row['PE']:>8.1f}\n"
+            f"- Fwd PE:   {row['FwdPE']:>8.1f}\n"
+            f"- 2YFwd PE: {row['2YFwd']:>8.1f}\n"
+            f"- PEG:      {current_peg:>8.2f}\n"
+            f"- 5Y Growth:{str(row['5YGrowth']):>8}\n"
+            f"- Bull ROI: {row['Bull']:>8}\n"
+            f"- Base ROI: {row['Base']:>8}\n"
+            f"- Bear ROI: {row['Bear']:>8}"
         )
 
-        plt.gca().text(0.97, 0.92, stats_text, transform=plt.gca().transAxes,
-                       fontsize=9, color='#E0E0E0', family='monospace',
-                       verticalalignment='top', horizontalalignment='right',
+        plt.gca().text(0.03, 0.92, stats_text, transform=plt.gca().transAxes,
+                       fontsize=12, color='#E0E0E0', family='monospace',
+                       verticalalignment='top', horizontalalignment='left',
                        bbox=dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.8', alpha=0.8))
+
+        # Income Statement Waterfall (left side)
+        if grade_result:
+            sig_map = {'\U0001f7e2': '\u2713', '\U0001f535': '~', '\U0001f534': '\u2717', '\u26aa': ' '}
+            grade_lines = [f"Income Grade:{grade_result['grade']:>8}"]
+            grade_lines.append("---------------------")
+            for label, growth, sig in grade_result['items']:
+                if growth is not None:
+                    marker = sig_map.get(sig, ' ')
+                    grade_lines.append(f"{marker} {label:<12} {growth*100:>+5.0f}%")
+            grade_text = "\n".join(grade_lines)
+
+            plt.gca().text(0.97, 0.92, grade_text, transform=plt.gca().transAxes,
+                           fontsize=12, color='#E0E0E0', family='monospace',
+                           verticalalignment='top', horizontalalignment='right',
+                           bbox=dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.8', alpha=0.8))
 
         plt.xlabel('PEG RATIO', fontweight='bold', alpha=0.7)
         plt.yticks([])
