@@ -49,9 +49,9 @@ class XPublisher:
 
             # 2. Individual Tickers
             for sub in sub_tweets:
-                print("  [wait] 15s delay for algorithm...")
-                time.sleep(15)
-                
+                print("  [wait] 15-30s delay for algorithm...")
+                time.sleep(random.randint(15, 30))
+
                 m_id = self._upload_media(sub['image'])
                 body = sub['text']
                 
@@ -68,8 +68,8 @@ class XPublisher:
                 print(f"  [+] {sub['ticker']} analysis live.")
 
             # 3. Footnote
-            print("  [wait] Final 15s delay before footer...")
-            time.sleep(15)
+            print("  [wait] Final 15-30s delay before footer...")
+            time.sleep(random.randint(15, 30))
             
             self.client.create_tweet(
                 text=disclaimer,
