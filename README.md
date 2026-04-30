@@ -1,6 +1,6 @@
 # The Lynch Pin
 
-A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener that calculates PEG ratios, historical valuation statistics, and 5-year ROI projections — with optional AI narratives (Gemini), dark-mode charts, and automated X (Twitter) thread publishing.
+A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener that calculates PEG ratios, historical valuation statistics, 5-year ROI projections and income statement grading — with optional AI narratives (Gemini), dark-mode charts, and automated X (Twitter) thread publishing.
 
 ## Project Structure
 
@@ -13,8 +13,9 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── schd.txt           # Schwab US Dividend Equity ETF
 │   └── smh.txt            # VanEck Semiconductor ETF
 ├── engine/
-│   ├── lynch_pin_core.py  # Core GARP engine (PEG, SD, ROI projections)
-│   └── ai_research.py     # Gemini AI batch narrative generation
+│   ├── lynch_pin_core.py           # Core GARP engine (PEG, SD, ROI projections)
+│   ├── income_statement_grader.py  # Quant income statement waterfall grader
+│   └── ai_research.py              # Gemini AI batch narrative generation
 ├── graphics/
 │   └── visualizer.py      # Dark-mode benchmark & distribution charts
 ├── social/
@@ -34,7 +35,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | Flag | Description |
 |---|---|
 | `--src` | Path to ticker file (default: `database/mag7.txt`) |
-| `--top N` | Limit output to top N stocks by valuation deviation |
+| `--top N` | Limit output to top N stocks by valuation deviation; also runs income statement grading |
 | `--excl-bad` | Exclude risk-flagged (`*`) tickers |
 | `--research` | Generate Gemini AI narratives per ticker |
 | `--plot` | Output dark-mode charts to `tmp/` |
