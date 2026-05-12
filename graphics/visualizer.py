@@ -218,7 +218,7 @@ class LynchPinVisualizer:
             f"- Fwd PE:   {row.get('FwdPE', 0):>8.1f}\n"
             f"- 2YFwd PE: {row.get('2YFwd', 0):>8.1f}\n" 
             f"- PEG:      {current_peg:>8.2f}\n"
-            f"- 5Y Growth:{row.get('Growth', '0%'):>8}\n"   
+            f"- 5Y Growth:{row.get('5YGrowth', '0%'):>8}\n"   
             f"- Bull ROI: {row.get('Bull', '0%'):>8}\n"
             f"- Base ROI: {row.get('Base', '0%'):>8}\n"
             f"- Bear ROI: {row.get('Bear', '0%'):>8}"
