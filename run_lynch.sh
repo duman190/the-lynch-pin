@@ -59,8 +59,10 @@ while ! ping -c 1 -t 1 8.8.8.8 &> /dev/null; do
 done
 
 echo "  [✓] Network Online" | tee -a "$LOG_FILE"
-echo "  ⌛ Waiting 20s for Wi-Fi card to fully stabilize..." | tee -a "$LOG_FILE"
-sleep 20
+# Generates a random sleep between 60 and 180 seconds
+RAND_SLEEP=$((60 + RANDOM % 121))
+echo "  ⌛ Shifting start time by ${RAND_SLEEP}s to avoid the 1:00 PM API rush..." | tee -a "$LOG_FILE"
+sleep $RAND_SLEEP
 
 # 5. Determine command based on Day (1=Mon, 5=Fri)
 DAY=$(date +%u) 
