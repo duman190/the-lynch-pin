@@ -6,24 +6,33 @@ import os
 class LynchPinResearcher:
     def __init__(self):
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.model_id = "gemini-2.5-flash"
+        self.best_model = "gemini-3.5-flash"
+        self.backup_model = "gemini-2.5-flash"
 
     def _call_gemini(self, prompt, retries=5, delay=30):
-        """Calls Gemini with retry logic for 503s."""
+        """Calls Gemini with retry logic for 503s/429s, cascading through models."""
         for attempt in range(retries):
+            if attempt < 2:
+                current_model = self.best_model
+                tier_label = "BEST"
+            else:
+                current_model = self.backup_model
+                tier_label = "BACKUP"
+
             try:
                 response = self.client.models.generate_content(
-                    model=self.model_id,
+                    model=current_model,
                     contents=prompt
                 )
                 return response.text
             except Exception as e:
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                error_msg = str(e)
+                if "503" in error_msg or "UNAVAILABLE" in error_msg or "429" in error_msg:
                     if attempt < retries - 1:
-                        print(f"⚠️  AI Busy (503). Retrying in {delay}s... (Attempt {attempt + 1}/{retries})")
+                        print(f"⚠️  {tier_label} AI Busy ({current_model}). Retrying in {delay}s... (Attempt {attempt + 1}/{retries})")
                         time.sleep(delay)
                         continue
-                return f"AI Research Error: {str(e)}"
+                return f"AI Research Error: {error_msg}"
 
     @staticmethod
     def _format_grader(grade_result):
