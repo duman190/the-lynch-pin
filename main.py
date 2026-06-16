@@ -84,10 +84,25 @@ def main():
     # 4. AI Narrative (Batch) & Visuals
     researcher = LynchPinResearcher() if args.research or args.post else None
     bulk_ai_text = ""
+    sentiment_text = ""
 
     if researcher:
-        print("\n🧠 GENERATING BATCH AI NARRATIVE...")
-        bulk_ai_text = researcher.get_batch_narrative(df.to_dict('records'), grader_data)
+        print("\n🧠 GENERATING AI NARRATIVE...")
+        src_stem = os.path.basename(args.src).lower().replace('.txt', '')
+        idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
+
+        raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name)
+
+        # Parse sentiment from response
+        sent_match = re.search(r'SENTIMENT:\s*(.+)', raw_ai)
+        if sent_match:
+            sentiment_text = sent_match.group(1).strip()
+            # Remove sentiment line from bulk text
+            bulk_ai_text = raw_ai[sent_match.end():].strip()
+        else:
+            bulk_ai_text = raw_ai
+
+        print(f"📰 Sentiment: {sentiment_text}")
         print("-" * 30 + "\n" + bulk_ai_text + "\n" + "-" * 30)
 
     if args.plot or args.post:
@@ -107,36 +122,41 @@ def main():
         src_stem = os.path.basename(args.src).lower().replace('.txt', '')
         idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
-        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n"
+        # Main tweet with sentiment + all tickers
+        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
+        if sentiment_text:
+            main_tweet += f"🤖: {sentiment_text}\n\n"
         main_tweet += f"Top {len(df)} GARP deals + ROI Projections:\n\n"
 
-        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
         ticker_sub_tweets = []
 
         for i, (_, r) in enumerate(df.iterrows()):
             clean_t = r['Ticker'].replace('*', '')
+            emoji = num_emojis[i] if i < 10 else f"{i+1}."
+            main_tweet += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            if i < 5:
-                main_tweet += f"{emojis[i]} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
-            elif i == 5:
-                main_tweet += "...\n"
-
-            # Extract AI narrative for this ticker
-            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\n|\Z)"
+            # Extract full AI narrative for this ticker
+            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\$|\Z)"
             match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
+            # Update section labels for tweet
+            raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '📊 Reverse 5Y DCF:')
+            raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '🐻 "Stomach Test" (why it can underperform in the next 5 years):')
 
-            formatted_reply = f"${clean_t}\n\n🤖: {raw_narrative}"
+            formatted_reply = f"${clean_t}\n\n{raw_narrative}"
 
             ticker_sub_tweets.append({
                 "ticker": clean_t,
                 "text": formatted_reply,
                 "image": f"tmp/{clean_t}_valuation.png"
             })
-        
-        # f-string to inject the index name correctly
+
+        # Footer with @grok callout
+        tickers_mentioned = ", ".join([f"${r['Ticker'].replace('*', '')}" for _, r in df.iterrows()])
         disclaimer = (f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
                       f" Which of these ${idx_name} anomalies are the hardest for your stomach? 👇\n\n"
+                      f"@grok What's the best and worst deal among {tickers_mentioned} and why?\n\n"
                       "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
                       "Investing involves risk. Always DYOR. 🫶")
 
