@@ -74,9 +74,9 @@ class XPublisher:
                 m_id = self._upload_media(sub['image'])
                 body = sub['text']
                 
-                # Safety trim to 280 chars (standard tweet limit)
-                if len(body) > 280:
-                    body = body[:277] + "..."
+                # Blue checkmark: 4000 char limit
+                if len(body) > 4000:
+                    body = body[:3997] + "..."
 
                 response = self._safe_create_tweet(
                     text=body,
