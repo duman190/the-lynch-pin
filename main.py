@@ -14,6 +14,15 @@ IDX_MAP = {
     "schd": "SCHD", "smh": "SMH", "igv": "IGV",
 }
 
+IDX_DISPLAY = {
+    "MAGS": "Magnificent 7",
+    "QQQ": "Nasdaq 100",
+    "SCHD": "Dow Jones Dividend 100",
+    "SMH": "Semiconductor sector",
+    "IGV": "Software sector",
+    "SPY": "S&P 500",
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Lynch Pin v6.0 - GARP Analysis with AI")
@@ -123,9 +132,12 @@ def main():
         idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
         # Main tweet with sentiment + all tickers
+        idx_display = IDX_DISPLAY.get(idx_name, idx_name)
         main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
         if sentiment_text:
-            main_tweet += f"🤖: {sentiment_text}\n\n"
+            # Strip cashtags from AI sentiment to avoid X's one-cashtag limit
+            sent_clean = sentiment_text.replace(f'${idx_name}', idx_display).replace('$', '')
+            main_tweet += f"🤖: {sent_clean}\n\n"
         main_tweet += f"Top {len(df)} GARP deals + ROI Projections:\n\n"
 
         num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -153,10 +165,9 @@ def main():
             })
 
         # Footer with @grok callout
-        tickers_mentioned = ", ".join([f"${r['Ticker'].replace('*', '')}" for _, r in df.iterrows()])
         disclaimer = (f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
-                      f" Which of these ${idx_name} anomalies are the hardest for your stomach? 👇\n\n"
-                      f"@grok What's the best and worst deal among {tickers_mentioned} and why?\n\n"
+                      f" Which of these {idx_display} anomalies are the hardest for your stomach? 👇\n\n"
+                      f"@grok What's the best and worst among above ${idx_name} deals and why?\n\n"
                       "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
                       "Investing involves risk. Always DYOR. 🫶")
 
