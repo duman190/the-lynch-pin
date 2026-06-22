@@ -52,18 +52,19 @@ class LynchPinResearcher:
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
-            # Implied target PE = Mean PEG × growth
+            # Implied target PE = min(2.5, Mean PEG) × growth (capped at 2.5 PEG)
             try:
                 growth_val = float(d['5YGrowth'].replace('%', ''))
-                implied_pe = float(d['Mean']) * growth_val
+                target_peg = min(2.5, float(d['Mean']))
+                implied_pe = target_peg * growth_val
             except (ValueError, TypeError):
-                growth_val, implied_pe = 0, 0
+                growth_val, target_peg, implied_pe = 0, 0, 0
             line = (
                 f"- {d['Ticker']}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
                 f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
                 f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}. "
                 f"Base ROI math: EPS must compound at {d['5YGrowth']}/yr for 5 years, "
-                f"then stock re-rates to {implied_pe:.0f}x PE (Mean PEG {d['Mean']} × {d['5YGrowth']} growth). "
+                f"then stock re-rates to {implied_pe:.0f}x PE (target PEG {target_peg:.2f} × {d['5YGrowth']} growth). "
                 f"Current PE is {d['FwdPE']}x → needs to expand to {implied_pe:.0f}x while earnings grow."
             )
             if grader_data and ticker in grader_data:
