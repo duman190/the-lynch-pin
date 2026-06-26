@@ -67,10 +67,10 @@ sleep $RAND_SLEEP
 # 5. Determine command based on Day (1=Mon, 5=Fri)
 DAY=$(date +%u) 
 case $DAY in
-    1) ARGS="main.py --src database/mag7.txt --top 4 --excl-bad --post" ;;
+    1) ARGS="main.py --src database/mag7.txt --top 5 --excl-bad --post" ;;
     2) ARGS="main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post" ;;
     3) ARGS="main.py --src database/schd.txt --top 10 --excl-bad --post" ;;
-    4) ARGS="main.py --src database/smh.txt --top 6 --excl-bad --post" ;;
+    4) ARGS="main.py --src database/smh.txt --top 10 --excl-bad --post" ;;
     5) ARGS="main.py --src database/igv.txt --top 10 --excl-bad --post" ;;
     *) echo "Weekend. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
