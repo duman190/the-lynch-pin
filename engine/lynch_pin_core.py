@@ -54,7 +54,7 @@ class LynchPinEngine:
         peg = self.info.get('pegRatio')
         if peg and peg > 0 and fwd_pe and fwd_pe > 0:
             g = fwd_pe / peg
-            if 3 < g < 80: return g
+            if 3 < g < 150: return g
 
         # 2. Analyst consensus 2Y EPS CAGR (proxy for sustained growth)
         try:
@@ -66,7 +66,7 @@ class LynchPinEngine:
                     compound = (1 + g0) * (1 + g1)
                     if compound > 0:
                         cagr = compound ** 0.5 - 1
-                        if 0.03 < cagr < 0.8:
+                        if 0.03 < cagr < 1.5:
                             return cagr * 100
         except Exception:
             pass
@@ -81,7 +81,7 @@ class LynchPinEngine:
         # 4. EPS delta
         if fwd_eps and eps and eps > 0.5:
             g = ((fwd_eps / eps) - 1) * 100
-            if 3 < g < 80: return g
+            if 3 < g < 150: return g
         return 0
 
     @staticmethod
@@ -292,7 +292,7 @@ class LynchPinEngine:
 
             # High-growth, high-PEG, insufficient data, not yet profitable, or low base ROI
             base_roi = roi(min(2.5, mean_peg)) * 100
-            risk = growth_pct > 40 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
+            risk = growth_pct > 80 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
                 "Ticker": f"{self.symbol}*" if risk else self.symbol,
