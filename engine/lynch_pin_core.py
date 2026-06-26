@@ -197,15 +197,36 @@ class LynchPinEngine:
         ttm = ttm[~ttm.index.duplicated(keep='first')]
         return ttm
 
+    def _pe_volatility_fallback(self, curr_peg, growth_pct):
+        """Fallback: uses trailing 12M PE volatility as proxy for PEG std."""
+        try:
+            hist = self.ticker.history(period="1y", interval="1d")
+            if hist.empty or len(hist) < 60:
+                return (curr_peg, curr_peg * 0.2, 0.0)
+            eps = self.info.get('trailingEps')
+            if not eps or eps <= 0:
+                return (curr_peg, curr_peg * 0.2, 0.0)
+            close = hist['Close'].dropna()
+            pe_series = close / eps
+            pe_series = pe_series[(pe_series > 3) & (pe_series < 300)].dropna()
+            if len(pe_series) < 60:
+                return (curr_peg, curr_peg * 0.2, 0.0)
+            peg_series = pe_series / growth_pct
+            mean_peg = float(peg_series.mean())
+            std_peg = max(float(peg_series.std()), 0.01)
+            dev_sd = (curr_peg - mean_peg) / std_peg
+            return mean_peg, std_peg, dev_sd
+        except Exception:
+            return (curr_peg, curr_peg * 0.2, 0.0)
+
     def calculate_peg_statistics(self, curr_peg, growth_pct):
         """Calculates Mean PEG and SD based on 5Y history.
         Uses SEC EDGAR for dense quarterly EPS, falls back to yfinance."""
-        fallback = (curr_peg, curr_peg * 0.2, 0.0)
 
         try:
             hist = self.ticker.history(period="5y", interval="1mo")
             if hist.empty or len(hist) < 12:
-                return fallback
+                return self._pe_volatility_fallback(curr_peg, growth_pct)
 
             # Build TTM EPS from SEC EDGAR + yfinance combined
             ttm_sec = None
@@ -228,9 +249,9 @@ class LynchPinEngine:
             elif ttm_yf is not None:
                 ttm_eps = ttm_yf
             else:
-                return fallback
+                return self._pe_volatility_fallback(curr_peg, growth_pct)
 
-            if len(ttm_eps) < 2: return fallback
+            if len(ttm_eps) < 2: return self._pe_volatility_fallback(curr_peg, growth_pct)
 
             close = hist['Close'].copy()
             close.index = close.index.tz_localize(None).to_period('M')
@@ -242,12 +263,12 @@ class LynchPinEngine:
             ttm_m = ttm_eps.reindex(close.index, method='ffill').dropna()
             common = ttm_m.index.intersection(close.index)
 
-            if len(common) < 12: return fallback
+            if len(common) < 12: return self._pe_volatility_fallback(curr_peg, growth_pct)
 
             pe = close[common] / ttm_m[common]
             pe = pe[(pe > 3) & (pe < 300)].dropna()
 
-            if len(pe) < 12: return fallback
+            if len(pe) < 12: return self._pe_volatility_fallback(curr_peg, growth_pct)
 
             peg_series = pe / growth_pct
             mean_peg = float(peg_series.mean())
@@ -256,7 +277,7 @@ class LynchPinEngine:
             return mean_peg, std_peg, dev_sd
 
         except Exception:
-            return fallback
+            return self._pe_volatility_fallback(curr_peg, growth_pct)
 
     def get_ticker_stats(self):
         """Main orchestration method for a single symbol."""
