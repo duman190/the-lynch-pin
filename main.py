@@ -32,21 +32,31 @@ def main():
     parser.add_argument("--research", action="store_true", help="Enable Gemini AI research")
     parser.add_argument("--plot", action="store_true", help="Generate N+1 charts in tmp/")
     parser.add_argument("--post", action="store_true", help="Publish full thread to X")
+    parser.add_argument("--weekly", action="store_true", help="Weekly scan: AI-sourced FinTwit trending tickers")
 
     args = parser.parse_args()
 
     # 1. Load Source
-    if not os.path.exists(args.src):
-        print(f"❌ Error: {args.src} not found.")
-        return
-
-    with open(args.src, 'r') as f:
-        tickers = [line.strip() for line in f if line.strip()]
+    if args.weekly:
+        print("🔥 WEEKLY SCAN: Fetching top 100 FinTwit trending tickers...")
+        researcher_init = LynchPinResearcher()
+        tickers = researcher_init.get_fintwit_trending()
+        if not tickers:
+            print("⚠️ AI returned no tickers, falling back to database/fintwit_100.txt")
+            with open("database/fintwit_100.txt", 'r') as f:
+                tickers = [line.strip() for line in f if line.strip()]
+        print(f"   Got {len(tickers)} tickers")
+    else:
+        if not os.path.exists(args.src):
+            print(f"❌ Error: {args.src} not found.")
+            return
+        with open(args.src, 'r') as f:
+            tickers = [line.strip() for line in f if line.strip()]
 
     # 2. Analyze
     all_data = []
     engines = {}
-    print(f"📡 Processing Source: {args.src}")
+    print(f"📡 Processing Source: {'FinTwit AI (weekly)' if args.weekly else args.src}")
 
     for s in tickers:
         engine = LynchPinEngine(s)
@@ -97,8 +107,11 @@ def main():
 
     if researcher:
         print("\n🧠 GENERATING AI NARRATIVE...")
-        src_stem = os.path.basename(args.src).lower().replace('.txt', '')
-        idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
+        if args.weekly:
+            idx_name = "SPY"
+        else:
+            src_stem = os.path.basename(args.src).lower().replace('.txt', '')
+            idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
         raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name)
 
@@ -128,12 +141,18 @@ def main():
         print("\n🐦 PREPARING X THREAD...")
         x_client = XPublisher()
 
-        src_stem = os.path.basename(args.src).lower().replace('.txt', '')
-        idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
+        if args.weekly:
+            idx_name = "SPY"
+        else:
+            src_stem = os.path.basename(args.src).lower().replace('.txt', '')
+            idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
         # Main tweet with sentiment + all tickers
         idx_display = IDX_DISPLAY.get(idx_name, idx_name)
-        main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
+        if args.weekly:
+            main_tweet = f"🔥 WEEKLY SPECIAL: Top {len(df)} deals among 100 most discussed stocks on X.com this week\n\n#LynchPin Detector\n\n"
+        else:
+            main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
         if sentiment_text:
             # Strip cashtags from AI sentiment to avoid X's one-cashtag limit
             sent_clean = sentiment_text.replace(f'${idx_name}', idx_display).replace('$', '')
@@ -165,9 +184,15 @@ def main():
             })
 
         # Footer with @grok callout
+        if args.weekly:
+            universe_label = "100 most discussed stocks on X.com"
+            grok_ref = "FinTwit"
+        else:
+            universe_label = idx_display
+            grok_ref = f"${idx_name}"
         disclaimer = (f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
-                      f" Which of these {idx_display} anomalies are the hardest for your stomach? 👇\n\n"
-                      f"@grok What's the best and worst among above ${idx_name} deals and why?\n\n"
+                      f" Which of these {universe_label} anomalies are the hardest for your stomach? 👇\n\n"
+                      f"@grok What's the best and worst among above {grok_ref} deals and why?\n\n"
                       "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
                       "Investing involves risk. Always DYOR. 🫶")
 
