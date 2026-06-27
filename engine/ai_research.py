@@ -120,3 +120,25 @@ Do NOT use markdown formatting. Plain text only."""
         """Single API call: returns sentiment + all per-ticker narratives."""
         prompt = self.build_prompt(tickers_data, grader_data, idx_name)
         return self._call_gemini(prompt)
+
+    def get_fintwit_trending(self):
+        """Fetches top 100 most discussed stocks on FinTwit this week via Gemini."""
+        prompt = (
+            'Print EXACTLY a single column (no line numbers, no repetitive tickers) of 100 of the '
+            'most frequently discussed, trending, and highly active stocks of companies commonly '
+            'discussed on "FinTwit" (Financial X.com) THIS WEEK (no ETF / index funds or other assets)'
+        )
+        raw = self._call_gemini(prompt)
+        if not raw or "Error" in raw:
+            return []
+        # Parse tickers: handle comma/space/tab separated or one-per-line, strip numbering
+        import re
+        tokens = re.split(r'[,\s]+', raw.strip())
+        seen = set()
+        tickers = []
+        for t in tokens:
+            t = re.sub(r'^\d+[.)\-:]?', '', t).strip().upper()
+            if t.isalpha() and 1 <= len(t) <= 5 and t not in seen:
+                seen.add(t)
+                tickers.append(t)
+        return tickers[:100]
