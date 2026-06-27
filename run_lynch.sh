@@ -72,7 +72,8 @@ case $DAY in
     3) ARGS="main.py --src database/schd.txt --top 10 --excl-bad --post" ;;
     4) ARGS="main.py --src database/smh.txt --top 10 --excl-bad --post" ;;
     5) ARGS="main.py --src database/igv.txt --top 10 --excl-bad --post" ;;
-    *) echo "Weekend. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
+    6) ARGS="main.py --weekly --top 10 --excl-bad --post" ;;
+    *) echo "Sunday. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
 
 # 6. Execute with Caffeinate
