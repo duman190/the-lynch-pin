@@ -12,7 +12,7 @@ BENCHMARKS = {
     "schd":   ("SCHD", "SCHD"),
     "smh":    ("SMH",  "SMH"),
     "igv":    ("IGV",  "IGV"),
-    "spy":    ("SPY",  "S&P 500 (SPY)"),
+    "spy":    ("SPY",  "S&P 500"),
 }
 
 class LynchPinVisualizer:
