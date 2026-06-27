@@ -130,7 +130,7 @@ def main():
     if args.plot or args.post:
         print(f"\n📊 GENERATING DARK-MODE VISUALS IN tmp/...")
         viz = LynchPinVisualizer(output_dir="tmp")
-        viz.plot_comparative_benchmark(df, args.src)
+        viz.plot_comparative_benchmark(df, "spy" if args.weekly else args.src)
 
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
@@ -150,7 +150,7 @@ def main():
         # Main tweet with sentiment + all tickers
         idx_display = IDX_DISPLAY.get(idx_name, idx_name)
         if args.weekly:
-            main_tweet = f"🔥 WEEKLY SPECIAL: Top {len(df)} deals among 100 most discussed stocks on X.com this week\n\n#LynchPin Detector\n\n"
+            main_tweet = f"🔥 WEEKLY SPECIAL: Top deals among 100 most discussed stocks on #FinTwit this week\n\n#LynchPin Detector\n\n"
         else:
             main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
         if sentiment_text:
@@ -185,8 +185,8 @@ def main():
 
         # Footer with @grok callout
         if args.weekly:
-            universe_label = "100 most discussed stocks on X.com"
-            grok_ref = "FinTwit"
+            universe_label = "100 most discussed stocks on FinTwit this week"
+            grok_ref = "#FinTwit"
         else:
             universe_label = idx_display
             grok_ref = f"${idx_name}"
