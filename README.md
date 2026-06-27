@@ -11,7 +11,8 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── mag7.txt           # Magnificent 7
 │   ├── nasdaq_100.txt     # Nasdaq 100
 │   ├── schd.txt           # Schwab US Dividend Equity ETF
-│   └── smh.txt            # VanEck Semiconductor ETF
+│   ├── smh.txt            # VanEck Semiconductor ETF
+│   └── fintwit_100.txt    # Fallback: 100 most popular FinTwit tickers
 ├── engine/
 │   ├── lynch_pin_core.py           # Core GARP engine (PEG, SD, ROI projections)
 │   ├── income_statement_grader.py  # Quant income statement waterfall grader
@@ -30,6 +31,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 
 ```bash
 python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --post
+python main.py --weekly --top 10 --excl-bad --post
 ```
 
 | Flag | Description |
@@ -40,6 +42,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `--research` | Generate Gemini AI narratives per ticker |
 | `--plot` | Output dark-mode charts to `tmp/` |
 | `--post` | Publish full analysis thread to X |
+| `--weekly` | Weekly scan: AI-sourced top 100 FinTwit trending tickers, benchmarked against SPY |
 
 ## Environment Variables
 
