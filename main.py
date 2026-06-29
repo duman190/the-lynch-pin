@@ -38,7 +38,7 @@ def main():
 
     # 1. Load Source
     if args.weekly:
-        print("🔥 WEEKLY SCAN: Fetching top 100 FinTwit trending tickers...")
+        print("🔥 WEEKLY SCAN: Fetching top 💯 FinTwit trending tickers...")
         researcher_init = LynchPinResearcher()
         tickers = researcher_init.get_fintwit_trending()
         if not tickers:
@@ -150,7 +150,7 @@ def main():
         # Main tweet with sentiment + all tickers
         idx_display = IDX_DISPLAY.get(idx_name, idx_name)
         if args.weekly:
-            main_tweet = f"🔥 WEEKLY SPECIAL: Top deals among 100 most discussed stocks on #FinTwit this week\n\n#LynchPin Detector\n\n"
+            main_tweet = f"🔥 WEEKLY SPECIAL: Top deals among 💯 most discussed stocks on #FinTwit this week..👀\n\n#LynchPin Detector\n\n"
         else:
             main_tweet = f"🚨 MARKET CLOSE: ${idx_name} #LynchPin Detector\n\n"
         if sentiment_text:
@@ -185,7 +185,7 @@ def main():
 
         # Footer with @grok callout
         if args.weekly:
-            universe_label = "100 most discussed stocks on FinTwit this week"
+            universe_label = "💯 most discussed stocks on FinTwit this week"
             grok_ref = "#FinTwit"
         else:
             universe_label = idx_display
