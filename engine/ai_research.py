@@ -47,7 +47,18 @@ class LynchPinResearcher:
         return "\n".join(lines)
 
     @staticmethod
-    def build_prompt(tickers_data, grader_data=None, idx_name="SPY"):
+    def _format_balance_sheet(bs_result):
+        """Formats balance sheet credit rating into a compact string for the prompt."""
+        if not bs_result:
+            return "Balance Sheet: N/A"
+        lines = [f"Credit Rating: {bs_result['rating']} (Synthetic — Damodaran methodology)"]
+        for label, val in bs_result['metrics']:
+            if val is not None:
+                lines.append(f"  {label}: {val:.1f}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None):
         """Builds single combined prompt for sentiment + per-ticker narratives."""
         context_lines = []
         for d in tickers_data:
@@ -69,6 +80,8 @@ class LynchPinResearcher:
             )
             if grader_data and ticker in grader_data:
                 line += "\n" + LynchPinResearcher._format_grader(grader_data[ticker])
+            if bs_data and ticker in bs_data:
+                line += "\n" + LynchPinResearcher._format_balance_sheet(bs_data[ticker])
             context_lines.append(line)
 
         context = "\n\n".join(context_lines)
@@ -108,7 +121,10 @@ or a stretch given current trajectory? Use numbers freely, don't be vague.]
 
 🧪 Stomach Test: [The specific bear thesis. Be concise but thorough.
 Why could this company underperform the market for 5 years? What keeps you up at night?
-Be specific — real risks, not generic disclaimers. Include numbers where relevant.]
+Be specific — real risks, not generic disclaimers. Include numbers where relevant.
+Factor in balance sheet health: if credit rating is high (AA+/AAA), note the fortress balance sheet
+as a mitigating factor. If rating is low (BBB or below), flag debt burden as a key risk.
+Reference specific metrics like interest coverage, net debt/EBITDA, or debt service/FCF when relevant.]
 
 Separate each ticker block with a double newline.
 Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
@@ -116,9 +132,9 @@ Do NOT use markdown formatting. Plain text only."""
 
         return prompt
 
-    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY"):
+    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None):
         """Single API call: returns sentiment + all per-ticker narratives."""
-        prompt = self.build_prompt(tickers_data, grader_data, idx_name)
+        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data)
         return self._call_gemini(prompt)
 
     def get_fintwit_trending(self):
