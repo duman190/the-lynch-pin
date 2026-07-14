@@ -157,7 +157,7 @@ class LynchPinVisualizer:
         plt.close()
         return path
 
-    def plot_ticker_distribution(self, row, grade_result=None):
+    def plot_ticker_distribution(self, row, grade_result=None, bs_result=None):
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
         
@@ -211,7 +211,7 @@ class LynchPinVisualizer:
         
         box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=1.2', alpha=0.9)
         
-        # Stats and Grade Boxes (Bolded as per previous requirements)
+        # Stats box (left)
         stats_text = (
             f"Ticker:     {ticker:>8}\n"
             f"--------------------\n"
@@ -224,19 +224,35 @@ class LynchPinVisualizer:
             f"- Base ROI: {row.get('Base', '0%'):>8}\n"
             f"- Bear ROI: {row.get('Bear', '0%'):>8}"
         )
-        ax.text(0.03, 0.94, stats_text, transform=ax.transAxes, fontsize=16, 
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=16, 
                 color='#E0E0E0', family='monospace', verticalalignment='top',
                 bbox=box_style, zorder=9, fontweight='bold')
 
+        # Income grade + Credit rating (single box, right side)
+        right_lines = []
         if grade_result:
-            sig_map = {'🟢': '✓', '🔵': '~', '🔴': '✗', '⚪': ' '}
-            grade_lines = [f"Income Grade:{grade_result['grade']:>8}", "---------------------"]
+            sig_map = {'\U0001f7e2': '\u2713', '\U0001f535': '~', '\U0001f534': '\u2717', '\u26aa': ' '}
+            right_lines.append(f"Income Grade:{grade_result['grade']:>8}")
+            right_lines.append("---------------------")
             for label, growth, sig in grade_result['items']:
                 if growth is not None:
                     marker = sig_map.get(sig, ' ')
-                    grade_lines.append(f"{marker} {label:<12} {growth*100:>+5.0f}%")
-            
-            ax.text(0.97, 0.94, "\n".join(grade_lines), transform=ax.transAxes, 
+                    right_lines.append(f"{marker} {label:<12} {growth*100:>+5.0f}%")
+
+        if bs_result:
+            if right_lines:
+                right_lines.append("")
+            right_lines.append(f"Credit Rating:{bs_result['rating']:>7}")
+            right_lines.append("---------------------")
+            for label, val in bs_result['metrics']:
+                if val is not None:
+                    fmt = f"{val:.1f}" if abs(val) < 100 else f"{val:.0f}"
+                    right_lines.append(f"  {label:<10} {fmt:>8}")
+                else:
+                    right_lines.append(f"  {label:<10} {'N/A':>8}")
+
+        if right_lines:
+            ax.text(0.98, 1.08, "\n".join(right_lines), transform=ax.transAxes, 
                     fontsize=16, color='#E0E0E0', family='monospace', ha='right',
                     verticalalignment='top', bbox=box_style, zorder=9, fontweight='bold')
 
