@@ -256,6 +256,7 @@ def main():
             threads_sub.append({
                 "ticker": clean_t,
                 "text": formatted_reply,
+                "topic_tag": clean_t,
                 "image_url": None,  # Threads requires public CDN URLs, not local files
             })
 
