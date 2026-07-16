@@ -20,7 +20,8 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 ├── graphics/
 │   └── visualizer.py      # Dark-mode benchmark & distribution charts
 ├── social/
-│   └── x_publisher.py     # Threaded X (Twitter) publisher
+│   ├── x_publisher.py     # Threaded X (Twitter) publisher
+│   └── threads_publisher.py # Threaded Threads (Meta) publisher
 ├── main.py                # CLI entry point
 ├── run_lynch.sh           # Automated daily scheduler (cron/launchd)
 ├── LICENSE                # MIT
@@ -41,6 +42,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `--research` | Generate Gemini AI narratives per ticker |
 | `--plot` | Output dark-mode charts to `tmp/` |
 | `--post` | Publish full analysis thread to X |
+| `--post_threads` | Publish full analysis thread to Threads |
 
 ## Environment Variables
 
@@ -51,6 +53,8 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `X_API_SECRET` | `--post` |
 | `X_ACCESS_TOKEN` | `--post` |
 | `X_ACCESS_SECRET` | `--post` |
+| `THREADS_ACCESS_TOKEN` | `--post_threads` |
+| `THREADS_USER_ID` | `--post_threads` |
 
 ## Balance Sheet Credit Rating
 
@@ -72,6 +76,7 @@ The primary rating is derived from the interest coverage ratio (Damodaran's publ
 - `matplotlib` — charting
 - `google-genai` — Gemini AI
 - `tweepy` — X API
+- `requests` — Threads API (Meta Graph API)
 
 ## License
 
