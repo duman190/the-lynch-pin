@@ -44,8 +44,32 @@ check_token "X_API_KEY"
 check_token "X_API_SECRET"
 check_token "X_ACCESS_TOKEN"
 check_token "X_ACCESS_SECRET"
+check_token "THREADS_ACCESS_TOKEN"
+check_token "THREADS_USER_ID"
 
-# 4. Network Check with Stabilization Delay
+DAY=$(date +%u)
+
+# 4. Weekly Threads Token Refresh (Saturdays)
+if [ "$DAY" = "6" ]; then
+    echo "🔄 Refreshing Threads long-lived token..." | tee -a "$LOG_FILE"
+    if [ -n "$THREADS_ACCESS_TOKEN" ]; then
+        REFRESH_RESPONSE=$(curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=$THREADS_ACCESS_TOKEN")
+        NEW_TOKEN=$(echo "$REFRESH_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null)
+        if [ -n "$NEW_TOKEN" ]; then
+            # Update token in venv/bin/activate
+            sed -i '' "s|export THREADS_ACCESS_TOKEN=.*|export THREADS_ACCESS_TOKEN=\"$NEW_TOKEN\"|" venv/bin/activate
+            export THREADS_ACCESS_TOKEN="$NEW_TOKEN"
+            EXPIRES=$(echo "$REFRESH_RESPONSE" | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('expires_in',0))//86400)" 2>/dev/null)
+            echo "  [✓] Token refreshed. Valid for ${EXPIRES} days." | tee -a "$LOG_FILE"
+        else
+            echo "  [!] Refresh failed: $REFRESH_RESPONSE" | tee -a "$LOG_FILE"
+        fi
+    else
+        echo "  [!] THREADS_ACCESS_TOKEN not set, skipping refresh." | tee -a "$LOG_FILE"
+    fi
+fi
+
+# 5. Network Check with Stabilization Delay
 MAX_RETRIES=90 
 COUNT=0
 echo "🌐 Checking network..." | tee -a "$LOG_FILE"
@@ -64,8 +88,7 @@ RAND_SLEEP=$((60 + RANDOM % 121))
 echo "  ⌛ Shifting start time by ${RAND_SLEEP}s to avoid the 1:00 PM API rush..." | tee -a "$LOG_FILE"
 sleep $RAND_SLEEP
 
-# 5. Determine command based on Day (1=Mon, 5=Fri)
-DAY=$(date +%u) 
+# 6. Determine command based on Day (1=Mon, 5=Fri)
 case $DAY in
     1) ARGS="main.py --src database/mag7.txt --top 5 --excl-bad --post" ;;
     2) ARGS="main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post" ;;
@@ -76,7 +99,7 @@ case $DAY in
     *) echo "Sunday. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
 
-# 6. Execute with Caffeinate
+# 7. Execute with Caffeinate
 # -i prevents idle sleep, -s prevents system sleep when plugged in.
 echo "🚀 Executing: $PYTHON_EXEC $ARGS" | tee -a "$LOG_FILE"
 
