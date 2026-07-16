@@ -8,6 +8,7 @@ from engine.balance_sheet_grader import print_grader_table as print_bs_table, gr
 from engine.ai_research import LynchPinResearcher
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
+from social.threads_publisher import ThreadsPublisher
 
 IDX_MAP = {
     "mag7": "MAGS", "mags": "MAGS",
@@ -33,6 +34,7 @@ def main():
     parser.add_argument("--research", action="store_true", help="Enable Gemini AI research")
     parser.add_argument("--plot", action="store_true", help="Generate N+1 charts in tmp/")
     parser.add_argument("--post", action="store_true", help="Publish full thread to X")
+    parser.add_argument("--post_threads", action="store_true", help="Publish full thread to Threads")
     parser.add_argument("--weekly", action="store_true", help="Weekly scan: AI-sourced FinTwit trending tickers")
 
     args = parser.parse_args()
@@ -107,7 +109,7 @@ def main():
         print_bs_table(df.to_dict('records'), engines)
 
     # 4. AI Narrative (Batch) & Visuals
-    researcher = LynchPinResearcher() if args.research or args.post else None
+    researcher = LynchPinResearcher() if args.research or args.post or args.post_threads else None
     bulk_ai_text = ""
     sentiment_text = ""
 
@@ -133,7 +135,7 @@ def main():
         print(f"📰 Sentiment: {sentiment_text}")
         print("-" * 30 + "\n" + bulk_ai_text + "\n" + "-" * 30)
 
-    if args.plot or args.post:
+    if args.plot or args.post or args.post_threads:
         print(f"\n📊 GENERATING DARK-MODE VISUALS IN tmp/...")
         viz = LynchPinVisualizer(output_dir="tmp")
         viz.plot_comparative_benchmark(df, "spy" if args.weekly else args.src)
@@ -207,6 +209,74 @@ def main():
             sub_tweets=ticker_sub_tweets,
             comparison_img="tmp/benchmark_comparison.png",
             disclaimer=disclaimer
+        )
+
+    # 6. Threads Posting Support
+    if args.post_threads:
+        print("\n🧵 PREPARING THREADS POST...")
+        threads_client = ThreadsPublisher()
+
+        if args.weekly:
+            idx_name = "SPY"
+        else:
+            src_stem = os.path.basename(args.src).lower().replace('.txt', '')
+            idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
+
+        idx_display = IDX_DISPLAY.get(idx_name, idx_name)
+
+        # Topic tag: ticker for daily, FinTwit for weekly
+        topic_tag = "FinTwit" if args.weekly else idx_name
+
+        # Main post (no cashtags)
+        if args.weekly:
+            threads_main = f"🔥 WEEKLY SPECIAL: Top deals among 💯 most discussed stocks on FinTwit this week..👀\n\nLynchPin Detector\n\n"
+        else:
+            threads_main = f"🚨 MARKET CLOSE: {idx_name} LynchPin Detector\n\n"
+        if sentiment_text:
+            sent_clean = sentiment_text.replace(f'${idx_name}', idx_display).replace('$', '')
+            threads_main += f"🤖: {sent_clean}\n\n"
+        threads_main += f"Top {len(df)} GARP deals + ROI Projections:\n\n"
+
+        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        threads_sub = []
+
+        for i, (_, r) in enumerate(df.iterrows()):
+            clean_t = r['Ticker'].replace('*', '')
+            emoji = num_emojis[i] if i < 10 else f"{i+1}."
+            threads_main += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
+
+            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\$|\Z)"
+            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
+            raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
+            raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '\n📊:')
+            raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '\n🐻 "Stomach Test" (why it can underperform in the next 5 years):')
+            # Remove cashtags
+            formatted_reply = re.sub(r'\$([A-Z]+)', r'\1', raw_narrative)
+
+            threads_sub.append({
+                "ticker": clean_t,
+                "text": formatted_reply,
+                "image_url": None,  # Threads requires public CDN URLs, not local files
+            })
+
+        # Footer (no @grok sentence)
+        if args.weekly:
+            universe_label = "💯 most discussed stocks on FinTwit this week"
+        else:
+            universe_label = idx_display
+        threads_disclaimer = (
+            f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
+            f" Which of these {universe_label} anomalies are the hardest for your stomach? 👇\n\n"
+            "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
+            "Investing involves risk. Always DYOR. 🫶"
+        )
+
+        threads_client.post_thread(
+            main_tweet=threads_main,
+            sub_tweets=threads_sub,
+            comparison_img_url=None,  # Would need public CDN URL
+            disclaimer=threads_disclaimer,
+            topic_tag=topic_tag,
         )
 
     print(f"\n✨ Done. Assets available in tmp/")
