@@ -127,10 +127,15 @@ def main():
         sent_match = re.search(r'SENTIMENT:\s*(.+)', raw_ai)
         if sent_match:
             sentiment_text = sent_match.group(1).strip()
+            # Strip leading "SENTIMENT:" if AI doubled it, and remove cashtags
+            sentiment_text = re.sub(r'^SENTIMENT:\s*', '', sentiment_text)
+            sentiment_text = re.sub(r'\$([A-Z]+)', r'\1', sentiment_text)
             # Remove sentiment line from bulk text
             bulk_ai_text = raw_ai[sent_match.end():].strip()
         else:
             bulk_ai_text = raw_ai
+        # Strip section headers AI sometimes includes
+        bulk_ai_text = re.sub(r'SECTION \d+[^\n]*\n*', '', bulk_ai_text)
 
         print(f"📰 Sentiment: {sentiment_text}")
         print("-" * 30 + "\n" + bulk_ai_text + "\n" + "-" * 30)
@@ -176,7 +181,7 @@ def main():
             main_tweet += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
             # Extract full AI narrative for this ticker
-            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\$|\Z)"
+            pattern = rf"\$?\b{clean_t}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
             match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
             # Update section labels for tweet
@@ -245,7 +250,7 @@ def main():
             emoji = num_emojis[i] if i < 10 else f"{i+1}."
             threads_main += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            pattern = rf"\$?\b{clean_t}\b:\s*(.*?)(?=\n\$|\Z)"
+            pattern = rf"\$?\b{clean_t}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
             match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '\n📊:')
