@@ -389,7 +389,7 @@ class TestVisualizer(unittest.TestCase):
     def test_get_benchmark_data_smh(self, mock_download):
         from graphics.visualizer import LynchPinVisualizer
         # Mock 5Y price data
-        dates = pd.date_range('2021-01-01', '2026-01-01', freq='M')
+        dates = pd.date_range('2021-01-01', '2026-01-01', freq='ME')
         prices = pd.Series(np.linspace(100, 200, len(dates)), index=dates)
         mock_download.return_value = pd.DataFrame({'Close': prices})
 
