@@ -70,6 +70,25 @@ Assigns a synthetic S&P-style credit rating (AAA → D) using [Damodaran's inter
 
 The primary rating is derived from the interest coverage ratio (Damodaran's published lookup table), then adjusted ±1-2 notches based on the secondary metrics. The AI narrative incorporates the credit rating when assessing risk.
 
+## Testing
+
+```bash
+python -m pytest test_unit.py -v
+```
+
+Unit tests covering all modules:
+
+| Module | Coverage |
+|---|---|
+| `engine/lynch_pin_core.py` | Growth derivation, PEG statistics, PE volatility fallback |
+| `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
+| `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
+| `engine/ai_research.py` | Prompt building, format helpers, ticker parsing |
+| `graphics/visualizer.py` | Benchmark resolution, output directory creation |
+| `social/x_publisher.py` | Media upload, retry logic, tweet creation |
+| `social/threads_publisher.py` | Truncation, container creation, threading, topic tags |
+| `main.py` | Sentiment parsing, ticker regex, cashtag removal, IDX mapping |
+
 ## Dependencies
 
 - `yfinance`, `curl_cffi` — market data
