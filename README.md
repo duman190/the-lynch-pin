@@ -97,6 +97,7 @@ Unit tests covering all modules:
 - `google-genai` — Gemini AI
 - `tweepy` — X API
 - `requests` — Threads API (Meta Graph API)
+- `pytest` — testing
 
 ## License
 
