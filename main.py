@@ -2,6 +2,8 @@ import argparse
 import pandas as pd
 import os
 import re
+import shutil
+from datetime import date
 from engine.lynch_pin_core import LynchPinEngine
 from engine.income_statement_grader import print_grader_table, grade_ticker
 from engine.balance_sheet_grader import print_grader_table as print_bs_table, grade_ticker as grade_bs_ticker
@@ -232,6 +234,30 @@ def main():
         # Topic tag: ticker for daily, FinTwit for weekly
         topic_tag = "FinTwit" if args.weekly else idx_name
 
+        # Copy images to images/ and push to GitHub for public URLs
+        img_dir = "images"
+        os.makedirs(img_dir, exist_ok=True)
+
+        bench_src = "tmp/benchmark_comparison.png"
+        bench_dest = f"{img_dir}/{idx_name.lower()}_benchmark.png"
+        if os.path.exists(bench_src):
+            shutil.copy2(bench_src, bench_dest)
+
+        for _, r in df.iterrows():
+            sym = r['Ticker'].replace('*', '')
+            src_img = f"tmp/{sym}_valuation.png"
+            if os.path.exists(src_img):
+                shutil.copy2(src_img, f"{img_dir}/{sym}_valuation.png")
+
+        # Git commit and push images
+        print("  [git] Pushing images to GitHub...")
+        commit_msg = f"{idx_name}: update chart images on {date.today()} scan"
+        os.system(f'cd {os.getcwd()} && git add {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
+        import time as _time
+        _time.sleep(5)  # Give GitHub CDN a moment to propagate
+
+        GITHUB_RAW = os.environ.get("GITHUB_IMAGE_PATH", "https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images")
+
         # Main post (no cashtags)
         if args.weekly:
             threads_main = f"🔥 WEEKLY SPECIAL: Top deals among 💯 most discussed stocks on FinTwit this week..👀\n\nLynchPin Detector\n\n"
@@ -262,7 +288,7 @@ def main():
                 "ticker": clean_t,
                 "text": formatted_reply,
                 "topic_tag": clean_t,
-                "image_url": None,  # Threads requires public CDN URLs, not local files
+                "image_url": f"{GITHUB_RAW}/{clean_t}_valuation.png",
             })
 
         # Footer (no @grok sentence)
@@ -280,7 +306,7 @@ def main():
         threads_client.post_thread(
             main_tweet=threads_main,
             sub_tweets=threads_sub,
-            comparison_img_url=None,  # Would need public CDN URL
+            comparison_img_url=f"{GITHUB_RAW}/{idx_name.lower()}_benchmark.png",
             disclaimer=threads_disclaimer,
             topic_tag=topic_tag,
         )
