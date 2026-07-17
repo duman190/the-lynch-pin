@@ -55,6 +55,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `X_ACCESS_SECRET` | `--post` |
 | `THREADS_ACCESS_TOKEN` | `--post_threads` |
 | `THREADS_USER_ID` | `--post_threads` |
+| `GITHUB_IMAGE_PATH` | `--post_threads` (default: `https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images`) |
 
 ## Balance Sheet Credit Rating
 
