@@ -66,8 +66,8 @@ class XPublisher:
 
             # 2. Post Individual Ticker Replies
             for sub in sub_tweets:
-                # Use a slightly longer delay (2-7s) to stay under X's rate-limit radar
-                delay = random.randint(2, 7)
+                # Use a slightly longer delay (1-3m) to stay under X's rate-limit radar
+                delay = random.randint(60, 180)
                 print(f"  [wait] {delay}s delay for algorithm...")
                 time.sleep(delay)
 
@@ -88,7 +88,7 @@ class XPublisher:
 
             # 3. Post the Disclaimer Footnote
             print("  [wait] Final delay before footer...")
-            time.sleep(random.randint(2, 7))
+            time.sleep(random.randint(60, 180))
             
             self._safe_create_tweet(
                 text=disclaimer,
