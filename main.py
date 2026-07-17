@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 import shutil
+import time
 from datetime import date
 from engine.lynch_pin_core import LynchPinEngine
 from engine.income_statement_grader import print_grader_table, grade_ticker
@@ -253,8 +254,7 @@ def main():
         print("  [git] Pushing images to GitHub...")
         commit_msg = f"{idx_name}: update chart images on {date.today()} scan"
         os.system(f'cd {os.getcwd()} && git add {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
-        import time as _time
-        _time.sleep(5)  # Give GitHub CDN a moment to propagate
+        time.sleep(5)  # Give GitHub CDN a moment to propagate
 
         GITHUB_RAW = os.environ.get("GITHUB_IMAGE_PATH", "https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images")
 
