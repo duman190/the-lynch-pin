@@ -157,7 +157,7 @@ class LynchPinVisualizer:
         plt.close()
         return path
 
-    def plot_ticker_distribution(self, row, grade_result=None, bs_result=None):
+    def plot_ticker_distribution(self, row, grade_result=None, bs_result=None, tech_result=None):
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
         
@@ -211,7 +211,7 @@ class LynchPinVisualizer:
         
         box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=1.2', alpha=0.9)
         
-        # Stats box (left)
+        # Stats box (left) — valuation + technicals
         stats_text = (
             f"Ticker:     {ticker:>8}\n"
             f"--------------------\n"
@@ -224,9 +224,21 @@ class LynchPinVisualizer:
             f"- Base ROI: {row.get('Base', '0%'):>8}\n"
             f"- Bear ROI: {row.get('Bear', '0%'):>8}"
         )
-        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=16, 
+        if tech_result:
+            stats_text += (
+                f"\n\n"
+                f"Technicals: {tech_result['signal']:>8}\n"
+                f"--------------------\n"
+                f"- RSI:{int(tech_result['rsi'])}|SMA200:{tech_result['price_vs_sma200']:>+3.0f}%"
+            )
+            zone = tech_result.get('accumulation_zone')
+            if zone:
+                lo, hi = int(zone[0]), int(zone[1])
+                accum_val = "$" + str(lo) + "-$" + str(hi)
+                stats_text += f"\n- ACCUM: {accum_val:>11}"
+        ax.text(0.02, 1, stats_text, transform=ax.transAxes, fontsize=16, 
                 color='#E0E0E0', family='monospace', verticalalignment='top',
-                bbox=box_style, zorder=9, fontweight='bold')
+                bbox=box_style, zorder=9, fontweight='bold', parse_math=False)
 
         # Income grade + Credit rating (single box, right side)
         right_lines = []
