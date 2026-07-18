@@ -17,6 +17,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── growth_estimator.py         # Multi-source 5Y EPS growth (Yahoo + FMP + fundamental cap)
 │   ├── income_statement_grader.py  # Quant income statement waterfall grader
 │   ├── balance_sheet_grader.py     # Synthetic credit rating (Damodaran methodology)
+│   ├── technical_timing.py         # Technical trend, momentum & accumulation signals
 │   └── ai_research.py              # Gemini AI batch narrative generation
 ├── graphics/
 │   └── visualizer.py      # Dark-mode benchmark & distribution charts
@@ -93,6 +94,26 @@ Assigns a synthetic S&P-style credit rating (AAA → D) using [Damodaran's inter
 
 The primary rating is derived from the interest coverage ratio (Damodaran's published lookup table), then adjusted ±1-2 notches based on the secondary metrics. The AI narrative incorporates the credit rating when assessing risk.
 
+## Technical Timing
+
+Computes trend, momentum, and accumulation signals from 1-year daily price history to identify favorable entry points for top picks.
+
+| Signal | Condition | Interpretation |
+|---|---|---|
+| **BULLISH** | Price > EMA50 > SMA200 | Strong uptrend, momentum confirmed. |
+| **NEUTRAL** | Price > SMA200 but EMA50 < SMA200 | Above long-term support but trend not fully confirmed. |
+| **BEARISH** | Price < SMA200 | Below long-term support, caution warranted. |
+| **ACCUMULATION** | Non-bearish + (RSI < 45 or near SMA200) + ATR compression | Low-volatility consolidation near support — ideal entry window. |
+
+| Metric | Formula | Interpretation |
+|---|---|---|
+| **RSI** | 14-period Relative Strength Index | Momentum oscillator (30=oversold, 70=overbought). |
+| **SMA200** | Price vs 200-day Simple Moving Average (%) | Distance from long-term trend. Positive = above support. |
+| **ATR Compression** | Current ATR / 3-month average ATR | <1 = volatility contracting (coiling for a move). |
+| **Accumulation Zone** | SMA200 ± 1 ATR | Price band around long-term support — natural entry range. |
+
+The accumulation zone and signal are displayed on per-ticker charts and fed to the AI narrative for entry timing context.
+
 ## Testing
 
 ```bash
@@ -107,6 +128,7 @@ Unit tests covering all modules:
 | `engine/growth_estimator.py` | Yahoo/FMP blend, fundamental cap, fallback logic, rate limiting |
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
+| `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels |
 | `engine/ai_research.py` | Prompt building, format helpers, ticker parsing |
 | `graphics/visualizer.py` | Benchmark resolution, output directory creation |
 | `social/x_publisher.py` | Media upload, retry logic, tweet creation |
