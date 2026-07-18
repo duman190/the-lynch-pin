@@ -14,6 +14,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   └── smh.txt            # VanEck Semiconductor ETF
 ├── engine/
 │   ├── lynch_pin_core.py           # Core GARP engine (PEG, SD, ROI projections)
+│   ├── growth_estimator.py         # Multi-source 5Y EPS growth (Yahoo + FMP + fundamental cap)
 │   ├── income_statement_grader.py  # Quant income statement waterfall grader
 │   ├── balance_sheet_grader.py     # Synthetic credit rating (Damodaran methodology)
 │   └── ai_research.py              # Gemini AI batch narrative generation
@@ -48,6 +49,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 
 | Variable | Required For |
 |---|---|
+| `FMP_API_KEY` | Multi-source growth enrichment (free: [financialmodelingprep.com](https://site.financialmodelingprep.com/register)) |
 | `GEMINI_API_KEY` | `--research` / `--post` |
 | `X_API_KEY` | `--post` |
 | `X_API_SECRET` | `--post` |
@@ -56,6 +58,27 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `THREADS_ACCESS_TOKEN` | `--post_threads` |
 | `THREADS_USER_ID` | `--post_threads` |
 | `GITHUB_IMAGE_PATH` | `--post_threads` (default: `https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images`) |
+
+## 5Y EPS Growth Estimation
+
+The growth estimate is the keystone of the entire PEG valuation framework. A single-source projection can be stale or driven by outlier analysts. The engine uses a multi-source consensus approach:
+
+**Fast mode** (all tickers): Yahoo PEG-derived 5Y analyst consensus + fundamental cap validation.
+
+**Enriched mode** (`--top N` with `FMP_API_KEY` set): adds Financial Modeling Prep 5Y forward EPS CAGR, then simple-averages all sources.
+
+| Source | What it provides | When used |
+|---|---|---|
+| **Yahoo PEG** | `Forward PE / PEG Ratio` = implied 5Y EPS growth | Always |
+| **FMP Analyst Estimates** | 5Y forward EPS CAGR from analyst consensus | Enrichment only |
+| **Fundamental Cap** | Revenue CAGR + Margin Expansion + Buyback Rate (3Y trailing) | Ceiling validation |
+
+**Blend logic:**
+1. Simple average across all available 5Y sources
+2. If the average exceeds 1.5× the fundamental cap → haircut: `avg × 0.6 + cap × 0.4`
+3. Fallbacks (2Y analyst CAGR, trailing earnings growth) only used when no 5Y source is available
+
+This prevents fantasy projections (e.g., TSLA 40% growth with 1% fundamental support) from making expensive stocks appear cheap, while trusting analyst consensus when it aligns with demonstrated performance.
 
 ## Balance Sheet Credit Rating
 
@@ -81,6 +104,7 @@ Unit tests covering all modules:
 | Module | Coverage |
 |---|---|
 | `engine/lynch_pin_core.py` | Growth derivation, PEG statistics, PE volatility fallback |
+| `engine/growth_estimator.py` | Yahoo/FMP blend, fundamental cap, fallback logic, rate limiting |
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
 | `engine/ai_research.py` | Prompt building, format helpers, ticker parsing |
