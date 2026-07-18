@@ -40,6 +40,7 @@ check_token() {
 }
 
 check_token "GEMINI_API_KEY"
+check_token "FMP_API_KEY"
 check_token "X_API_KEY"
 check_token "X_API_SECRET"
 check_token "X_ACCESS_TOKEN"
@@ -91,11 +92,11 @@ sleep $RAND_SLEEP
 # 6. Determine command based on Day (1=Mon, 5=Fri)
 case $DAY in
     1) ARGS="main.py --src database/mag7.txt --top 5 --excl-bad --post --post_threads" ;;
-    2) ARGS="main.py --src database/nasdaq_100.txt --top 8 --excl-bad --post --post_threads" ;;
-    3) ARGS="main.py --src database/schd.txt --top 8 --excl-bad --post --post_threads" ;;
-    4) ARGS="main.py --src database/smh.txt --top 8 --excl-bad --post --post_threads" ;;
-    5) ARGS="main.py --src database/igv.txt --top 8 --excl-bad --post --post_threads" ;;
-    6) ARGS="main.py --weekly --top 8 --excl-bad --post --post_threads" ;;
+    2) ARGS="main.py --src database/nasdaq_100.txt --top 10 --excl-bad --post --post_threads" ;;
+    3) ARGS="main.py --src database/schd.txt --top 10 --excl-bad --post --post_threads" ;;
+    4) ARGS="main.py --src database/smh.txt --top 10 --excl-bad --post --post_threads" ;;
+    5) ARGS="main.py --src database/igv.txt --top 10 --excl-bad --post --post_threads" ;;
+    6) ARGS="main.py --weekly --top 10 --excl-bad --post --post_threads" ;;
     *) echo "Sunday. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
 
