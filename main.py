@@ -9,6 +9,7 @@ from engine.lynch_pin_core import LynchPinEngine
 from engine.income_statement_grader import print_grader_table, grade_ticker
 from engine.balance_sheet_grader import print_grader_table as print_bs_table, grade_ticker as grade_bs_ticker
 from engine.ai_research import LynchPinResearcher
+from engine.technical_timing import analyze as analyze_technicals
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
 from social.threads_publisher import ThreadsPublisher
@@ -120,9 +121,10 @@ def main():
                   f"{r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | "
                   f"{r['Base']:>8} | {r['Bear']:>8}")
 
-    # 3c. Income Statement & Balance Sheet Grading (for top picks)
+    # 3c. Income Statement & Balance Sheet Grading + Technicals (for top picks)
     grader_data = {}
     bs_data = {}
+    tech_data = {}
     if args.top:
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
@@ -133,6 +135,9 @@ def main():
                 b = grade_bs_ticker(engines[sym].ticker)
                 if b:
                     bs_data[sym] = b
+                t = analyze_technicals(engines[sym].ticker)
+                if t:
+                    tech_data[sym] = t
         print_grader_table(df.to_dict('records'), engines)
         print_bs_table(df.to_dict('records'), engines)
 
@@ -149,7 +154,7 @@ def main():
             src_stem = os.path.basename(args.src).lower().replace('.txt', '')
             idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
-        raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name, bs_data)
+        raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name, bs_data, tech_data)
 
         # Parse sentiment from response
         sent_match = re.search(r'SENTIMENT:\s*(.+)', raw_ai)
@@ -175,7 +180,7 @@ def main():
 
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
-            viz.plot_ticker_distribution(row, grader_data.get(sym), bs_data.get(sym))
+            viz.plot_ticker_distribution(row, grader_data.get(sym), bs_data.get(sym), tech_data.get(sym))
 
     # 5. X (Twitter) Posting Support
     if args.post:
