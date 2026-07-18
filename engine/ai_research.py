@@ -58,7 +58,23 @@ class LynchPinResearcher:
         return "\n".join(lines)
 
     @staticmethod
-    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None):
+    def _format_technicals(tech_result):
+        """Formats technical timing data into a compact string for the prompt."""
+        if not tech_result:
+            return "Technicals: N/A"
+        line = (
+            f"Technicals: {tech_result['signal']} | "
+            f"Trend: {tech_result['trend']} (Price {tech_result['price_vs_sma200']:+.1f}% from SMA200) | "
+            f"RSI: {tech_result['rsi']:.0f} | "
+            f"ATR Compression: {tech_result['atr_compression']:.2f}"
+        )
+        zone = tech_result.get('accumulation_zone')
+        if zone:
+            line += f" | Accumulation Zone: ${int(zone[0])}-${int(zone[1])}"
+        return line
+
+    @staticmethod
+    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None):
         """Builds single combined prompt for sentiment + per-ticker narratives."""
         context_lines = []
         for d in tickers_data:
@@ -82,6 +98,8 @@ class LynchPinResearcher:
                 line += "\n" + LynchPinResearcher._format_grader(grader_data[ticker])
             if bs_data and ticker in bs_data:
                 line += "\n" + LynchPinResearcher._format_balance_sheet(bs_data[ticker])
+            if tech_data and ticker in tech_data:
+                line += "\n" + LynchPinResearcher._format_technicals(tech_data[ticker])
             context_lines.append(line)
 
         context = "\n\n".join(context_lines)
@@ -124,7 +142,9 @@ Why could this company underperform the market for 5 years? What keeps you up at
 Be specific — real risks, not generic disclaimers. Include numbers where relevant.
 Factor in balance sheet health: if credit rating is high (AA+/AAA), note the fortress balance sheet
 as a mitigating factor. If rating is low (BBB or below), flag debt burden as a key risk.
-Reference specific metrics like interest coverage, net debt/EBITDA, or debt service/FCF when relevant.]
+Reference specific metrics like interest coverage, net debt/EBITDA, or debt service/FCF when relevant.
+If Technicals show BEARISH or price is below SMA200, warn about catching a falling knife.
+If ACCUMULATION signal is present, note the favorable entry timing.]
 
 Separate each ticker block with a double newline.
 Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
@@ -132,9 +152,9 @@ Do NOT use markdown formatting. Plain text only."""
 
         return prompt
 
-    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None):
+    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None):
         """Single API call: returns sentiment + all per-ticker narratives."""
-        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data)
+        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data)
         return self._call_gemini(prompt)
 
     def get_fintwit_trending(self):
