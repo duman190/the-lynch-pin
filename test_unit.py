@@ -155,6 +155,31 @@ class TestAIResearch(unittest.TestCase):
         self.assertIn('$QQQ', prompt)
         self.assertIn('Peter Lynch', prompt)
 
+    def test_build_prompt_target_peg_capped(self):
+        from engine.ai_research import LynchPinResearcher
+        # Mean PEG 3.0 should be capped to 1.5 in prompt
+        data = [{
+            'Ticker': 'TEST', 'PE': 30.0, 'FwdPE': 25.0, '2YFwd': 20.0,
+            '5YGrowth': '20.0%', 'PEG': 1.5, 'Mean': 3.0, 'Dev_SD': -1.0,
+            'Bull': '25.0%', 'Base': '18.0%', 'Bear': '10.0%'
+        }]
+        prompt = LynchPinResearcher.build_prompt(data)
+        # target PEG = min(1.5, 3.0) = 1.5, implied PE = 1.5 * 20 = 30
+        self.assertIn('target PEG 1.50', prompt)
+        self.assertIn('30x PE', prompt)
+
+    def test_build_prompt_target_peg_uses_mean_when_lower(self):
+        from engine.ai_research import LynchPinResearcher
+        # Mean PEG 1.0 < 1.5, so target PEG = 1.0
+        data = [{
+            'Ticker': 'TEST', 'PE': 20.0, 'FwdPE': 15.0, '2YFwd': 12.0,
+            '5YGrowth': '20.0%', 'PEG': 0.8, 'Mean': 1.0, 'Dev_SD': -0.5,
+            'Bull': '30.0%', 'Base': '20.0%', 'Bear': '12.0%'
+        }]
+        prompt = LynchPinResearcher.build_prompt(data)
+        # target PEG = min(1.5, 1.0) = 1.0, implied PE = 1.0 * 20 = 20
+        self.assertIn('target PEG 1.00', prompt)
+
     @patch('engine.ai_research.genai')
     def test_get_fintwit_trending_parses_tickers(self, mock_genai):
         from engine.ai_research import LynchPinResearcher
@@ -330,6 +355,227 @@ class TestXPublisher(unittest.TestCase):
         self.assertEqual(result.data['id'], '123456')
 
 
+# ─── engine/growth_estimator.py ───
+
+class TestGrowthEstimator(unittest.TestCase):
+
+    def test_yahoo_5y_growth_from_peg(self):
+        from engine.growth_estimator import _yahoo_5y_growth
+        info = {'pegRatio': 1.5, 'forwardPE': 30.0}
+        self.assertAlmostEqual(_yahoo_5y_growth(info, 30.0), 20.0)
+
+    def test_yahoo_5y_growth_peg_zero(self):
+        from engine.growth_estimator import _yahoo_5y_growth
+        info = {'pegRatio': 0, 'forwardPE': 30.0}
+        self.assertIsNone(_yahoo_5y_growth(info, 30.0))
+
+    def test_yahoo_5y_growth_peg_none(self):
+        from engine.growth_estimator import _yahoo_5y_growth
+        info = {'pegRatio': None, 'forwardPE': 30.0}
+        self.assertIsNone(_yahoo_5y_growth(info, 30.0))
+
+    def test_yahoo_5y_growth_out_of_range(self):
+        from engine.growth_estimator import _yahoo_5y_growth
+        # g = 30 / 0.1 = 300 -> out of range (>150)
+        info = {'pegRatio': 0.1, 'forwardPE': 30.0}
+        self.assertIsNone(_yahoo_5y_growth(info, 30.0))
+
+    def test_fundamental_cap_basic(self):
+        from engine.growth_estimator import _fundamental_cap
+        ticker = MagicMock()
+        # Revenue growing 20% CAGR over 3 years
+        rev = pd.Series([100, 120, 144], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        ni = pd.Series([10, 13, 17], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        inc = pd.DataFrame({'Total Revenue': rev, 'Net Income': ni}).T
+        inc.columns = pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01'])
+        ticker.income_stmt = inc
+        # No buybacks
+        shares = pd.Series([1000, 1000], index=pd.to_datetime(['2022-01-01', '2024-01-01']))
+        bs = pd.DataFrame({'Ordinary Shares Number': shares}).T
+        bs.columns = pd.to_datetime(['2022-01-01', '2024-01-01'])
+        ticker.balance_sheet = bs
+
+        cap = _fundamental_cap(ticker)
+        self.assertIsNotNone(cap)
+        self.assertGreater(cap, 15)  # ~20% rev CAGR + margin expansion
+
+    def test_fundamental_cap_with_buybacks(self):
+        from engine.growth_estimator import _fundamental_cap
+        ticker = MagicMock()
+        rev = pd.Series([100, 110, 121], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        ni = pd.Series([10, 11, 12.1], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        inc = pd.DataFrame({'Total Revenue': rev, 'Net Income': ni}).T
+        inc.columns = pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01'])
+        ticker.income_stmt = inc
+        # 5% annual buyback
+        shares = pd.Series([1000, 950, 902], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        bs = pd.DataFrame({'Ordinary Shares Number': shares}).T
+        bs.columns = pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01'])
+        ticker.balance_sheet = bs
+
+        cap = _fundamental_cap(ticker)
+        self.assertIsNotNone(cap)
+        self.assertGreater(cap, 12)  # ~10% rev + ~5% buyback
+
+    def test_fundamental_cap_no_revenue(self):
+        from engine.growth_estimator import _fundamental_cap
+        ticker = MagicMock()
+        ticker.income_stmt = pd.DataFrame()  # empty
+        ticker.balance_sheet = pd.DataFrame()
+        self.assertIsNone(_fundamental_cap(ticker))
+
+    @patch('engine.growth_estimator._SESSION')
+    def test_fmp_5y_growth_no_key(self, mock_session):
+        from engine.growth_estimator import _fmp_5y_growth
+        import engine.growth_estimator as ge
+        original_key = ge.FMP_KEY
+        ge.FMP_KEY = None
+        self.assertIsNone(_fmp_5y_growth('AAPL'))
+        ge.FMP_KEY = original_key
+
+    @patch('engine.growth_estimator._SESSION')
+    def test_fmp_5y_growth_success(self, mock_session):
+        from engine.growth_estimator import _fmp_5y_growth
+        import engine.growth_estimator as ge
+        original_key = ge.FMP_KEY
+        ge.FMP_KEY = 'test_key'
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [
+            {'date': '2030-01-01', 'epsAvg': 20.0, 'numAnalystsEps': 10},
+            {'date': '2029-01-01', 'epsAvg': 17.0, 'numAnalystsEps': 12},
+            {'date': '2028-01-01', 'epsAvg': 14.0, 'numAnalystsEps': 15},
+            {'date': '2027-01-01', 'epsAvg': 11.5, 'numAnalystsEps': 20},
+            {'date': '2026-01-01', 'epsAvg': 9.5, 'numAnalystsEps': 22},
+            {'date': '2025-01-01', 'epsAvg': 8.0, 'numAnalystsEps': 25},
+        ]
+        mock_session.get.return_value = mock_resp
+
+        result = _fmp_5y_growth('TEST')
+        self.assertIsNotNone(result)
+        # CAGR from 8.0 to 20.0 over 5 years = ~20%
+        self.assertAlmostEqual(result, 20.1, places=0)
+
+        ge.FMP_KEY = original_key
+
+    @patch('engine.growth_estimator._SESSION')
+    def test_fmp_5y_growth_rate_limited_then_succeeds(self, mock_session):
+        from engine.growth_estimator import _fmp_5y_growth
+        import engine.growth_estimator as ge
+        original_key = ge.FMP_KEY
+        ge.FMP_KEY = 'test_key'
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_ok = MagicMock()
+        mock_ok.status_code = 200
+        mock_ok.json.return_value = [
+            {'date': '2030-01-01', 'epsAvg': 15.0, 'numAnalystsEps': 10},
+            {'date': '2025-01-01', 'epsAvg': 10.0, 'numAnalystsEps': 20},
+        ]
+        mock_session.get.side_effect = [mock_429, mock_ok]
+
+        with patch('engine.growth_estimator.time.sleep'):
+            result = _fmp_5y_growth('TEST')
+        self.assertIsNotNone(result)
+        # CAGR from 10 to 15 over 5 years = ~8.4%
+        self.assertAlmostEqual(result, 8.4, places=0)
+
+        ge.FMP_KEY = original_key
+
+    @patch('engine.growth_estimator._SESSION')
+    def test_fmp_5y_growth_double_429_gives_up(self, mock_session):
+        from engine.growth_estimator import _fmp_5y_growth
+        import engine.growth_estimator as ge
+        original_key = ge.FMP_KEY
+        ge.FMP_KEY = 'test_key'
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_session.get.return_value = mock_429
+
+        with patch('engine.growth_estimator.time.sleep'):
+            result = _fmp_5y_growth('TEST')
+        self.assertIsNone(result)
+
+        ge.FMP_KEY = original_key
+
+    def test_estimate_growth_yahoo_only(self):
+        from engine.growth_estimator import estimate_growth
+        info = {'pegRatio': 2.0, 'forwardPE': 30.0}
+        ticker = MagicMock()
+        ticker.income_stmt = pd.DataFrame()  # no fundamental cap
+        ticker.balance_sheet = pd.DataFrame()
+
+        g, sources = estimate_growth('TEST', info, ticker, 30.0, enrich=False)
+        self.assertAlmostEqual(g, 15.0)  # 30 / 2.0
+        self.assertEqual(sources, ['yahoo_peg'])
+
+    def test_estimate_growth_cap_haircut(self):
+        from engine.growth_estimator import estimate_growth
+        info = {'pegRatio': 1.0, 'forwardPE': 30.0}  # yahoo says 30%
+        ticker = MagicMock()
+        # Fundamental cap ~5%
+        rev = pd.Series([100, 105, 110], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        ni = pd.Series([10, 10.5, 11], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        inc = pd.DataFrame({'Total Revenue': rev, 'Net Income': ni}).T
+        inc.columns = pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01'])
+        ticker.income_stmt = inc
+        shares = pd.Series([1000, 1000], index=pd.to_datetime(['2022-01-01', '2024-01-01']))
+        bs = pd.DataFrame({'Ordinary Shares Number': shares}).T
+        bs.columns = pd.to_datetime(['2022-01-01', '2024-01-01'])
+        ticker.balance_sheet = bs
+
+        g, sources = estimate_growth('TEST', info, ticker, 30.0, enrich=False)
+        # Yahoo says 30%, cap ~5%, 30 > 5*1.5 -> haircut: 30*0.6 + 5*0.4 = 20
+        self.assertLess(g, 30.0)
+        self.assertGreater(g, 5.0)
+
+    def test_estimate_growth_no_cap_no_haircut(self):
+        from engine.growth_estimator import estimate_growth
+        info = {'pegRatio': 2.0, 'forwardPE': 30.0}  # yahoo says 15%
+        ticker = MagicMock()
+        # Fundamental cap ~20% (above yahoo)
+        rev = pd.Series([100, 120, 144], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        ni = pd.Series([10, 12, 14.4], index=pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01']))
+        inc = pd.DataFrame({'Total Revenue': rev, 'Net Income': ni}).T
+        inc.columns = pd.to_datetime(['2022-01-01', '2023-01-01', '2024-01-01'])
+        ticker.income_stmt = inc
+        shares = pd.Series([1000, 1000], index=pd.to_datetime(['2022-01-01', '2024-01-01']))
+        bs = pd.DataFrame({'Ordinary Shares Number': shares}).T
+        bs.columns = pd.to_datetime(['2022-01-01', '2024-01-01'])
+        ticker.balance_sheet = bs
+
+        g, sources = estimate_growth('TEST', info, ticker, 30.0, enrich=False)
+        # 15% < 20%*1.5=30% -> no haircut
+        self.assertAlmostEqual(g, 15.0)
+
+    def test_estimate_growth_fallback_when_no_peg(self):
+        from engine.growth_estimator import estimate_growth
+        info = {'pegRatio': None, 'forwardPE': 30.0, 'earningsGrowth': 0.20}
+        ticker = MagicMock()
+        ticker.earnings_estimate = None
+        ticker.income_stmt = pd.DataFrame()
+        ticker.balance_sheet = pd.DataFrame()
+
+        g, sources = estimate_growth('TEST', info, ticker, 30.0, enrich=False)
+        self.assertAlmostEqual(g, 20.0)
+        self.assertEqual(sources, ['fallback_eg'])
+
+    def test_estimate_growth_returns_zero_when_nothing(self):
+        from engine.growth_estimator import estimate_growth
+        info = {'pegRatio': None, 'forwardPE': None}
+        ticker = MagicMock()
+        ticker.earnings_estimate = None
+        ticker.income_stmt = pd.DataFrame()
+        ticker.balance_sheet = pd.DataFrame()
+
+        g, sources = estimate_growth('TEST', info, ticker, None, enrich=False)
+        self.assertEqual(g, 0)
+        self.assertEqual(sources, [])
+
+
 # ─── engine/lynch_pin_core.py ───
 
 class TestLynchPinCore(unittest.TestCase):
@@ -388,8 +634,8 @@ class TestVisualizer(unittest.TestCase):
     @patch('graphics.visualizer.yf.download')
     def test_get_benchmark_data_smh(self, mock_download):
         from graphics.visualizer import LynchPinVisualizer
-        # Mock 5Y price data
-        dates = pd.date_range('2021-01-01', '2026-01-01', freq='ME')
+        # Mock 5Y price data (compatible with both old 'M' and new 'ME' pandas)
+        dates = pd.date_range('2021-01-01', periods=60, freq='MS')
         prices = pd.Series(np.linspace(100, 200, len(dates)), index=dates)
         mock_download.return_value = pd.DataFrame({'Close': prices})
 
