@@ -665,6 +665,96 @@ class TestVisualizer(unittest.TestCase):
         os.rmdir(test_dir)
 
 
+# ─── engine/technical_timing.py ───
+
+class TestTechnicalTiming(unittest.TestCase):
+
+    def _make_ticker(self, prices, n=250):
+        """Create a mock ticker with synthetic price history."""
+        dates = pd.date_range(end='2024-07-18', periods=n, freq='B')
+        close = pd.Series(prices, index=dates)
+        high = close * 1.01
+        low = close * 0.99
+        hist = pd.DataFrame({'Close': close, 'High': high, 'Low': low})
+        ticker = MagicMock()
+        ticker.history.return_value = hist
+        return ticker
+
+    def test_bullish_trend(self):
+        from engine.technical_timing import analyze
+        # Steadily rising prices -> BULLISH
+        prices = np.linspace(100, 200, 250)
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['trend'], 'BULLISH')
+        self.assertGreater(result['price_vs_sma200'], 0)
+
+    def test_bearish_trend(self):
+        from engine.technical_timing import analyze
+        # Steadily falling prices -> BEARISH
+        prices = np.linspace(200, 100, 250)
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['trend'], 'BEARISH')
+        self.assertLess(result['price_vs_sma200'], 0)
+
+    def test_insufficient_data_returns_none(self):
+        from engine.technical_timing import analyze
+        ticker = MagicMock()
+        ticker.history.return_value = pd.DataFrame({'Close': [100]*50, 'High': [101]*50, 'Low': [99]*50})
+        result = analyze(ticker)
+        self.assertIsNone(result)
+
+    def test_empty_history_returns_none(self):
+        from engine.technical_timing import analyze
+        ticker = MagicMock()
+        ticker.history.return_value = pd.DataFrame()
+        result = analyze(ticker)
+        self.assertIsNone(result)
+
+    def test_rsi_in_valid_range(self):
+        from engine.technical_timing import analyze
+        np.random.seed(42)
+        prices = np.linspace(100, 150, 250) + np.random.randn(250) * 2
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertGreaterEqual(result['rsi'], 0)
+        self.assertLessEqual(result['rsi'], 100)
+
+    def test_accumulation_zone_returned(self):
+        from engine.technical_timing import analyze
+        prices = np.linspace(100, 200, 250)
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertIn('accumulation_zone', result)
+        zone = result['accumulation_zone']
+        self.assertEqual(len(zone), 2)
+        self.assertLess(zone[0], zone[1])
+
+    def test_signal_is_valid_label(self):
+        from engine.technical_timing import analyze
+        prices = np.linspace(100, 200, 250)
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertIn(result['signal'], ('BULLISH', 'BEARISH', 'NEUTRAL', 'ACCUMULATION'))
+
+    def test_atr_compression_positive(self):
+        from engine.technical_timing import analyze
+        prices = np.linspace(100, 150, 250)
+        ticker = self._make_ticker(prices)
+        result = analyze(ticker)
+        self.assertGreater(result['atr_compression'], 0)
+
+    def test_exception_returns_none(self):
+        from engine.technical_timing import analyze
+        ticker = MagicMock()
+        ticker.history.side_effect = Exception("API error")
+        result = analyze(ticker)
+        self.assertIsNone(result)
+
+
 # ─── main.py (regex & formatting logic) ───
 
 class TestMainHelpers(unittest.TestCase):
