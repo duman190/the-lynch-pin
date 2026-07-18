@@ -46,43 +46,12 @@ class LynchPinEngine:
         except Exception:
             self.info = {}
 
-    def _get_growth(self, fwd_pe, fwd_eps, eps):
-        """Derives forward growth rate from multiple data points.
-        Prefers 5Y analyst consensus (via pegRatio), falls back to
-        2Y analyst CAGR, then backward-looking metrics."""
-        # 1. Yahoo PEG-derived 5Y growth (reverse-engineered analyst consensus)
-        peg = self.info.get('pegRatio')
-        if peg and peg > 0 and fwd_pe and fwd_pe > 0:
-            g = fwd_pe / peg
-            if 3 < g < 150: return g
-
-        # 2. Analyst consensus 2Y EPS CAGR (proxy for sustained growth)
-        try:
-            ee = self.ticker.earnings_estimate
-            if ee is not None and '0y' in ee.index and '+1y' in ee.index:
-                g0 = ee.loc['0y', 'growth']
-                g1 = ee.loc['+1y', 'growth']
-                if pd.notna(g0) and pd.notna(g1):
-                    compound = (1 + g0) * (1 + g1)
-                    if compound > 0:
-                        cagr = compound ** 0.5 - 1
-                        if 0.03 < cagr < 1.5:
-                            return cagr * 100
-        except Exception:
-            pass
-        
-        # 3. Backward-looking earnings/revenue growth
-        eg = self.info.get('earningsGrowth')
-        if eg and 0.03 < eg < 1.5: return eg * 100
-            
-        rg = self.info.get('revenueGrowth')
-        if rg and 0.03 < rg < 1.5: return rg * 100
-            
-        # 4. EPS delta
-        if fwd_eps and eps and eps > 0.5:
-            g = ((fwd_eps / eps) - 1) * 100
-            if 3 < g < 150: return g
-        return 0
+    def _get_growth(self, fwd_pe, fwd_eps, eps, enrich=False):
+        """Multi-source 5Y EPS growth estimate via growth_estimator module."""
+        from engine.growth_estimator import estimate_growth
+        growth_pct, sources = estimate_growth(self.symbol, self.info, self.ticker, fwd_pe, enrich=enrich)
+        self._growth_sources = sources
+        return growth_pct
 
     @staticmethod
     def _get_cik(ticker):
@@ -279,8 +248,11 @@ class LynchPinEngine:
         except Exception:
             return self._pe_volatility_fallback(curr_peg, growth_pct)
 
-    def get_ticker_stats(self):
-        """Main orchestration method for a single symbol."""
+    def get_ticker_stats(self, enrich=False):
+        """Main orchestration method for a single symbol.
+        Args:
+            enrich: If True, uses FMP + Alpha Vantage for growth (top picks only).
+        """
         try:
             if not self.info: return None 
             
@@ -293,7 +265,7 @@ class LynchPinEngine:
             if not curr_price or not fwd_pe or fwd_pe <= 0:
                 return None
 
-            growth_pct = self._get_growth(fwd_pe, fwd_eps, eps)
+            growth_pct = self._get_growth(fwd_pe, fwd_eps, eps, enrich=enrich)
             if growth_pct <= 0: return None
 
             curr_peg = fwd_pe / growth_pct
@@ -311,8 +283,10 @@ class LynchPinEngine:
                 pt = target_peg * growth_pct * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
-            # High-growth, high-PEG, insufficient data, not yet profitable, or low base ROI
-            base_roi = roi(min(2.5, mean_peg)) * 100
+            # ROI scenarios
+            base_roi = roi(min(1.5, mean_peg)) * 100
+            bull_roi = roi(min(2, mean_peg + 0.5 * std_peg)) * 100
+            bear_roi = roi(min(1, curr_peg)) * 100
             risk = growth_pct > 80 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
@@ -324,9 +298,9 @@ class LynchPinEngine:
                 "PEG": round(curr_peg, 2),
                 "Mean": round(mean_peg, 2),
                 "Dev_SD": round(dev_sd, 2),
-                "Bull": f"{round(roi(min(3, mean_peg + std_peg)) * 100, 1)}%",
+                "Bull": f"{round(bull_roi, 1)}%",
                 "Base": f"{round(base_roi, 1)}%",
-                "Bear": f"{round(roi(min(2, min(curr_peg, mean_peg))) * 100, 1)}%",
+                "Bear": f"{round(bear_roi, 1)}%",
             }
         except Exception:
             return None
