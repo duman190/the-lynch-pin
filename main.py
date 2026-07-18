@@ -83,7 +83,7 @@ def main():
     if args.top:
         df = df.head(args.top)
 
-    # 3. Quantitative Terminal Output
+    # 3. Quantitative Terminal Output (Yahoo-only growth)
     header = (f"{'Ticker':<9} | {'PE':<6} | {'FwdPE':<7} | {'2YFwd':<7} | "
               f"{'5YGrowth':<8} | {'PEG':<6} | {'Mean':<6} | {'Dev(SD)':<7} | "
               f"{'Bull':>8} | {'Base':>8} | {'Bear':>8}")
@@ -95,7 +95,32 @@ def main():
               f"{r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | "
               f"{r['Base']:>8} | {r['Bear']:>8}")
 
-    # 3b. Income Statement & Balance Sheet Grading (for top picks)
+    # 3b. Enrich top picks with multi-source growth (FMP)
+    if args.top and os.environ.get('FMP_API_KEY'):
+        print(f"\n\n🔬 Enriching top {len(df)} picks with FMP analyst estimates...")
+        enriched_data = []
+        for _, row in df.iterrows():
+            sym = row['Ticker'].replace('*', '')
+            if sym in engines:
+                res = engines[sym].get_ticker_stats(enrich=True)
+                if res:
+                    enriched_data.append(res)
+                else:
+                    enriched_data.append(row.to_dict())
+            else:
+                enriched_data.append(row.to_dict())
+        df = pd.DataFrame(enriched_data)
+        df = df.sort_values(by='Dev_SD', ascending=True)
+
+        # Reprint with enriched data
+        print("\n" + header + "\n" + "-" * len(header))
+        for _, r in df.iterrows():
+            print(f"{r['Ticker']:<9} | {r['PE']:>6.1f} | {r['FwdPE']:>7.1f} | "
+                  f"{r['2YFwd']:>7.1f} | {r['5YGrowth']:>8} | {r['PEG']:>6.2f} | "
+                  f"{r['Mean']:>6.2f} | {r['Dev_SD']:>7.2f} | {r['Bull']:>8} | "
+                  f"{r['Base']:>8} | {r['Bear']:>8}")
+
+    # 3c. Income Statement & Balance Sheet Grading (for top picks)
     grader_data = {}
     bs_data = {}
     if args.top:
