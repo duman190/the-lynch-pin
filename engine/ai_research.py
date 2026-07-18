@@ -63,10 +63,10 @@ class LynchPinResearcher:
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
-            # Implied target PE = min(2.5, Mean PEG) × growth (capped at 2.5 PEG)
+            # Implied target PE = min(1.5, Mean PEG) × growth
             try:
                 growth_val = float(d['5YGrowth'].replace('%', ''))
-                target_peg = min(2.5, float(d['Mean']))
+                target_peg = min(1.5, float(d['Mean']))
                 implied_pe = target_peg * growth_val
             except (ValueError, TypeError):
                 growth_val, target_peg, implied_pe = 0, 0, 0
