@@ -34,6 +34,26 @@ _SEC_SESSION = Session(impersonate="chrome", timeout=15, verify=True)
 _CIK_MAP = None  # Lazy-loaded ticker->CIK map
 _CIK_MAP_LOADED = False
 
+
+def _growth_decay(growth_pct):
+    """Step-function decay: higher growth → more aggressive deceleration assumption."""
+    if growth_pct < 20:
+        return 1.0
+    if growth_pct < 30:
+        return 0.95
+    if growth_pct < 50:
+        return 0.90
+    return 0.85
+
+
+def _terminal_peg(growth_pct, mean_peg):
+    """Terminal PEG for ROI projection.
+    Mature companies (<20% growth): use min(2.5, mean_peg).
+    High-growth companies: reversed formula that penalizes extreme growth."""
+    if growth_pct < 20:
+        return min(2.5, mean_peg)
+    return min(mean_peg, max(0.8, 1.5 - 0.5 * (growth_pct / 30 - 1)))
+
 class LynchPinEngine:
     def __init__(self, symbol):
         self.symbol = symbol
@@ -274,19 +294,30 @@ class LynchPinEngine:
             pe_2y = (curr_price / (fwd_eps * (1 + growth_pct / 100))
                      if fwd_eps and fwd_eps > 0 else fwd_pe)
 
-            base_eps = eps if eps and eps > 0 else fwd_eps
+            # Use the lower of trailing and forward EPS as projection base.
+            # Prevents one-time gains (e.g., asset sales) from inflating projections.
+            base_eps = min(eps, fwd_eps) if eps and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
             if not base_eps or base_eps <= 0: return None
                 
             proj_eps = base_eps * ((1 + growth_pct / 100) ** 5)
 
+            # Terminal growth decay: higher growth → more skepticism
+            decay = _growth_decay(growth_pct)
+            terminal_growth = growth_pct ** decay
+
+            # Terminal PEG: mature companies keep mean, high-growth gets penalized
+            terminal_peg = _terminal_peg(growth_pct, mean_peg)
+
             def roi(target_peg):
-                pt = target_peg * growth_pct * proj_eps
+                pt = target_peg * terminal_growth * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
             # ROI scenarios
-            base_roi = roi(min(1.5, mean_peg)) * 100
-            bull_roi = roi(min(2, mean_peg + 0.5 * std_peg)) * 100
-            bear_roi = roi(min(1, curr_peg)) * 100
+            bull_peg = terminal_peg + 0.5 * std_peg
+            bear_peg = max(0.5, min(curr_peg, terminal_peg - 0.5 * std_peg))
+            base_roi = roi(terminal_peg) * 100
+            bull_roi = roi(bull_peg) * 100
+            bear_roi = roi(bear_peg) * 100
             risk = growth_pct > 80 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
