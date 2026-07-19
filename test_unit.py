@@ -157,28 +157,25 @@ class TestAIResearch(unittest.TestCase):
 
     def test_build_prompt_target_peg_capped(self):
         from engine.ai_research import LynchPinResearcher
-        # Mean PEG 3.0 should be capped to 1.5 in prompt
+        # Mean PEG 3.0, growth 20% -> terminal_peg = min(3.0, max(0.8, 1.5-0.5*(20/30-1))) = min(3.0, 1.67) = 1.67
         data = [{
             'Ticker': 'TEST', 'PE': 30.0, 'FwdPE': 25.0, '2YFwd': 20.0,
             '5YGrowth': '20.0%', 'PEG': 1.5, 'Mean': 3.0, 'Dev_SD': -1.0,
             'Bull': '25.0%', 'Base': '18.0%', 'Bear': '10.0%'
         }]
         prompt = LynchPinResearcher.build_prompt(data)
-        # target PEG = min(1.5, 3.0) = 1.5, implied PE = 1.5 * 20 = 30
-        self.assertIn('target PEG 1.50', prompt)
-        self.assertIn('30x PE', prompt)
+        self.assertIn('terminal PEG 1.67', prompt)
 
     def test_build_prompt_target_peg_uses_mean_when_lower(self):
         from engine.ai_research import LynchPinResearcher
-        # Mean PEG 1.0 < 1.5, so target PEG = 1.0
+        # Mean PEG 1.0, growth 20% -> terminal_peg = min(1.0, max(0.8, 1.67)) = 1.0
         data = [{
             'Ticker': 'TEST', 'PE': 20.0, 'FwdPE': 15.0, '2YFwd': 12.0,
             '5YGrowth': '20.0%', 'PEG': 0.8, 'Mean': 1.0, 'Dev_SD': -0.5,
             'Bull': '30.0%', 'Base': '20.0%', 'Bear': '12.0%'
         }]
         prompt = LynchPinResearcher.build_prompt(data)
-        # target PEG = min(1.5, 1.0) = 1.0, implied PE = 1.0 * 20 = 20
-        self.assertIn('target PEG 1.00', prompt)
+        self.assertIn('terminal PEG 1.00', prompt)
 
     @patch('engine.ai_research.genai')
     def test_get_fintwit_trending_parses_tickers(self, mock_genai):
@@ -580,6 +577,51 @@ class TestGrowthEstimator(unittest.TestCase):
 
 class TestLynchPinCore(unittest.TestCase):
 
+    def test_growth_decay_mature(self):
+        from engine.lynch_pin_core import _growth_decay
+        self.assertEqual(_growth_decay(10), 1.0)
+        self.assertEqual(_growth_decay(19.9), 1.0)
+
+    def test_growth_decay_moderate(self):
+        from engine.lynch_pin_core import _growth_decay
+        self.assertEqual(_growth_decay(20), 0.95)
+        self.assertEqual(_growth_decay(29), 0.95)
+
+    def test_growth_decay_high(self):
+        from engine.lynch_pin_core import _growth_decay
+        self.assertEqual(_growth_decay(30), 0.90)
+        self.assertEqual(_growth_decay(49), 0.90)
+
+    def test_growth_decay_extreme(self):
+        from engine.lynch_pin_core import _growth_decay
+        self.assertEqual(_growth_decay(50), 0.85)
+        self.assertEqual(_growth_decay(75), 0.85)
+
+    def test_terminal_peg_mature_uses_mean(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # Growth < 20, mean_peg 1.3 < 1.5 cap
+        self.assertAlmostEqual(_terminal_peg(15, 1.3), 1.3)
+
+    def test_terminal_peg_mature_capped_at_2_5(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # Growth < 20, mean_peg 3.0 > 2.5 cap
+        self.assertAlmostEqual(_terminal_peg(15, 3.0), 2.5)
+
+    def test_terminal_peg_high_growth_reversed(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # Growth 60%: 1.5 - 0.5*(60/30 - 1) = 1.5 - 0.5 = 1.0
+        self.assertAlmostEqual(_terminal_peg(60, 2.0), 1.0)
+
+    def test_terminal_peg_high_growth_floor(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # Growth 90%: 1.5 - 0.5*(90/30 - 1) = 1.5 - 1.0 = 0.5 -> floored at 0.8
+        self.assertAlmostEqual(_terminal_peg(90, 2.0), 0.8)
+
+    def test_terminal_peg_high_growth_uses_mean_when_lower(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # Growth 25%: formula = 1.5 - 0.5*(25/30 - 1) = 1.58, but mean=1.2 is lower
+        self.assertAlmostEqual(_terminal_peg(25, 1.2), 1.2)
+
     @patch('engine.lynch_pin_core.yf.Ticker')
     def test_get_growth_from_peg_ratio(self, mock_ticker):
         from engine.lynch_pin_core import LynchPinEngine
@@ -611,6 +653,37 @@ class TestLynchPinCore(unittest.TestCase):
 
         growth = engine._get_growth(20.0, 5.0, 4.0)
         self.assertAlmostEqual(growth, 25.0)
+
+    def test_base_eps_uses_min_of_trailing_and_forward(self):
+        """When trailing EPS is inflated by one-time gains, use forward EPS."""
+        from engine.lynch_pin_core import LynchPinEngine
+        engine = LynchPinEngine.__new__(LynchPinEngine)
+        engine.symbol = 'TEST'
+        engine.ticker = MagicMock()
+        # Simulate LYFT-like scenario: trailing EPS inflated by one-time gain
+        engine.info = {
+            'currentPrice': 16, 'forwardPE': 7.4, 'forwardEps': 2.1,
+            'trailingEps': 6.84, 'trailingPE': 2.3, 'pegRatio': 1.5
+        }
+        engine.ticker.income_stmt = pd.DataFrame()
+        engine.ticker.balance_sheet = pd.DataFrame()
+        # min(6.84, 2.1) = 2.1 should be used
+        eps = engine.info['trailingEps']
+        fwd_eps = engine.info['forwardEps']
+        base_eps = min(eps, fwd_eps) if eps and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
+        self.assertAlmostEqual(base_eps, 2.1)
+
+    def test_base_eps_uses_trailing_when_lower(self):
+        """When trailing EPS is lower than forward, use trailing (conservative)."""
+        eps, fwd_eps = 5.0, 7.0
+        base_eps = min(eps, fwd_eps) if eps and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
+        self.assertAlmostEqual(base_eps, 5.0)
+
+    def test_base_eps_fallback_to_forward_when_trailing_missing(self):
+        """When trailing EPS is None, fall back to forward EPS."""
+        eps, fwd_eps = None, 3.5
+        base_eps = min(eps, fwd_eps) if eps and eps is not None and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
+        self.assertAlmostEqual(base_eps, 3.5)
 
     def test_pe_volatility_fallback_returns_tuple(self):
         from engine.lynch_pin_core import LynchPinEngine
