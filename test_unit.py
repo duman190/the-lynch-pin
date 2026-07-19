@@ -654,35 +654,22 @@ class TestLynchPinCore(unittest.TestCase):
         growth = engine._get_growth(20.0, 5.0, 4.0)
         self.assertAlmostEqual(growth, 25.0)
 
-    def test_base_eps_uses_min_of_trailing_and_forward(self):
-        """When trailing EPS is inflated by one-time gains, use forward EPS."""
-        from engine.lynch_pin_core import LynchPinEngine
-        engine = LynchPinEngine.__new__(LynchPinEngine)
-        engine.symbol = 'TEST'
-        engine.ticker = MagicMock()
-        # Simulate LYFT-like scenario: trailing EPS inflated by one-time gain
-        engine.info = {
-            'currentPrice': 16, 'forwardPE': 7.4, 'forwardEps': 2.1,
-            'trailingEps': 6.84, 'trailingPE': 2.3, 'pegRatio': 1.5
-        }
-        engine.ticker.income_stmt = pd.DataFrame()
-        engine.ticker.balance_sheet = pd.DataFrame()
-        # min(6.84, 2.1) = 2.1 should be used
-        eps = engine.info['trailingEps']
-        fwd_eps = engine.info['forwardEps']
-        base_eps = min(eps, fwd_eps) if eps and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
+    def test_base_eps_uses_forward(self):
+        """Forward EPS is used as projection base to reflect market pricing."""
+        eps, fwd_eps = 5.0, 7.0
+        base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
+        self.assertAlmostEqual(base_eps, 7.0)
+
+    def test_base_eps_forward_handles_inflated_trailing(self):
+        """Forward EPS naturally avoids inflated trailing (one-time gains)."""
+        eps, fwd_eps = 6.84, 2.1
+        base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
         self.assertAlmostEqual(base_eps, 2.1)
 
-    def test_base_eps_uses_trailing_when_lower(self):
-        """When trailing EPS is lower than forward, use trailing (conservative)."""
-        eps, fwd_eps = 5.0, 7.0
-        base_eps = min(eps, fwd_eps) if eps and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
-        self.assertAlmostEqual(base_eps, 5.0)
-
-    def test_base_eps_fallback_to_forward_when_trailing_missing(self):
-        """When trailing EPS is None, fall back to forward EPS."""
-        eps, fwd_eps = None, 3.5
-        base_eps = min(eps, fwd_eps) if eps and eps is not None and eps > 0 and fwd_eps and fwd_eps > 0 else (fwd_eps or eps)
+    def test_base_eps_fallback_to_trailing_when_forward_negative(self):
+        """When forward EPS is negative (temporary headwinds), use trailing."""
+        eps, fwd_eps = 3.5, -0.5
+        base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
         self.assertAlmostEqual(base_eps, 3.5)
 
     def test_pe_volatility_fallback_returns_tuple(self):
