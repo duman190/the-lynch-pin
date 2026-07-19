@@ -114,6 +114,40 @@ Computes trend, momentum, and accumulation signals from 1-year daily price histo
 
 The accumulation zone and signal are displayed on per-ticker charts and fed to the AI narrative for entry timing context.
 
+## 5Y ROI Projections
+
+Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) using a **terminal multiple framework** that accounts for growth deceleration.
+
+**Terminal Growth Decay** — higher current growth rates receive more aggressive deceleration assumptions:
+
+| Current Growth | Decay Exponent | Example: 40% → Terminal |
+|---|---|---|
+| < 20% | 1.0 (no decay) | 15% → 15% |
+| 20–30% | 0.95 | 25% → 21.3% |
+| 30–50% | 0.90 | 40% → 27.7% |
+| 50%+ | 0.85 | 60% → 32.5% |
+
+**Terminal PEG** — the multiple assigned at maturity:
+
+| Growth Regime | Terminal PEG Formula |
+|---|---|
+| Mature (< 20%) | `min(2.5, mean_peg)` |
+| High-growth (20%+) | `min(mean_peg, max(0.8, 1.5 - 0.5 × (growth/30 - 1)))` |
+
+**ROI Scenarios:**
+
+| Scenario | PEG Used | Interpretation |
+|---|---|---|
+| **Bull** | `terminal_peg + 0.5 × SD` | Market re-rates above mean — multiple expansion. |
+| **Base** | `terminal_peg` | Mean reversion — fair value at maturity. |
+| **Bear** | `max(0.5, min(curr_peg, terminal_peg - 0.5 × SD))` | No re-rating or compression — market stays skeptical. |
+
+**Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`
+
+**EPS Base Selection** — the projection base uses `min(trailing_EPS, forward_EPS)` to prevent one-time gains (asset sales, legal settlements) from inflating the compounding base. If trailing EPS is unavailable or negative, forward EPS is used as fallback.
+
+This prevents hypergrowth companies (LYFT, CELH) from producing fantasy ROIs by capping terminal PE at realistic levels (~32–39x), while leaving mature compounders (MSFT, PEP) unchanged.
+
 ## Testing
 
 ```bash
