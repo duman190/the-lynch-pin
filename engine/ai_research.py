@@ -76,23 +76,27 @@ class LynchPinResearcher:
     @staticmethod
     def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None):
         """Builds single combined prompt for sentiment + per-ticker narratives."""
+        from engine.lynch_pin_core import _growth_decay, _terminal_peg
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
-            # Implied target PE = min(1.5, Mean PEG) × growth
             try:
                 growth_val = float(d['5YGrowth'].replace('%', ''))
-                target_peg = min(1.5, float(d['Mean']))
-                implied_pe = target_peg * growth_val
+                mean_peg_val = float(d['Mean'])
+                decay = _growth_decay(growth_val)
+                terminal_growth = growth_val ** decay
+                t_peg = _terminal_peg(growth_val, mean_peg_val)
+                implied_pe = t_peg * terminal_growth
             except (ValueError, TypeError):
-                growth_val, target_peg, implied_pe = 0, 0, 0
+                growth_val, t_peg, terminal_growth, implied_pe = 0, 0, 0, 0
             line = (
                 f"- {d['Ticker']}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
                 f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
                 f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}. "
-                f"Base ROI math: EPS must compound at {d['5YGrowth']}/yr for 5 years, "
-                f"then stock re-rates to {implied_pe:.0f}x PE (target PEG {target_peg:.2f} × {d['5YGrowth']} growth). "
-                f"Current PE is {d['FwdPE']}x → needs to expand to {implied_pe:.0f}x while earnings grow."
+                f"Base ROI math: EPS compounds at {d['5YGrowth']}/yr for 5 years, "
+                f"terminal growth decays to {terminal_growth:.1f}% (decay {decay}), "
+                f"terminal PEG {t_peg:.2f} × {terminal_growth:.1f}% = {implied_pe:.0f}x implied PE. "
+                f"Current FwdPE is {d['FwdPE']}x → re-rates to {implied_pe:.0f}x at maturity."
             )
             if grader_data and ticker in grader_data:
                 line += "\n" + LynchPinResearcher._format_grader(grader_data[ticker])
@@ -132,8 +136,10 @@ If PEG low but grade poor = trap vs opportunity.]
 
 📊 Reverse DCF: [CITE ALL NUMBERS from "Base ROI math" in the dataset. Be concise but include
 every important number. Structure: (1) What the company does and its competitive moat.
-(2) The math: "X% base ROI requires EPS to compound at Y%/yr for 5 years while PE re-rates
-from current Zx to implied Wx." (3) What this means operationally — specific revenue growth,
+(2) The math: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating
+from current Mx FwdPE to Nx implied PE at maturity." Do NOT mention decay exponents,
+terminal PEG formulas, or intermediate calculation steps — just state the final implied PE.
+(3) What this means operationally — specific revenue growth,
 margin targets, market share gains needed. (4) Your verdict: is this realistic, achievable,
 or a stretch given current trajectory? Use numbers freely, don't be vague.]
 
