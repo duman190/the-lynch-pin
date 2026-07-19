@@ -654,19 +654,19 @@ class TestLynchPinCore(unittest.TestCase):
         growth = engine._get_growth(20.0, 5.0, 4.0)
         self.assertAlmostEqual(growth, 25.0)
 
-    def test_base_eps_uses_forward(self):
-        """Forward EPS is used as projection base to reflect market pricing."""
+    def test_base_eps_uses_max(self):
+        """Uses max of forward and trailing EPS as projection base."""
         eps, fwd_eps = 5.0, 7.0
-        base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
+        base_eps = max(fwd_eps, eps)
         self.assertAlmostEqual(base_eps, 7.0)
 
-    def test_base_eps_forward_handles_inflated_trailing(self):
-        """Forward EPS naturally avoids inflated trailing (one-time gains)."""
+    def test_base_eps_uses_trailing_when_higher(self):
+        """When trailing is higher (one-time gains), max picks trailing."""
         eps, fwd_eps = 6.84, 2.1
-        base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
-        self.assertAlmostEqual(base_eps, 2.1)
+        base_eps = max(fwd_eps, eps)
+        self.assertAlmostEqual(base_eps, 6.84)
 
-    def test_base_eps_fallback_to_trailing_when_forward_negative(self):
+    def test_base_eps_fallback_when_forward_negative(self):
         """When forward EPS is negative (temporary headwinds), use trailing."""
         eps, fwd_eps = 3.5, -0.5
         base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
