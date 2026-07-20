@@ -294,13 +294,10 @@ class LynchPinEngine:
             pe_2y = (curr_price / (fwd_eps * (1 + growth_pct / 100))
                      if fwd_eps and fwd_eps > 0 else fwd_pe)
 
-            # Use max of forward and trailing EPS as projection base — reflects
-            # the higher earnings power the market is pricing in (e.g., AMD's AI
-            # shift). Falls back to whichever is available if one is missing/negative.
-            if fwd_eps and fwd_eps > 0 and eps and eps > 0:
-                base_eps = max(fwd_eps, eps)
-            else:
-                base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
+            # Use forward EPS as projection base — reflects market's pricing
+            # of near-term earnings (e.g., AMD's AI shift). Fall back to trailing
+            # only when forward is unavailable or negative (temporary headwinds).
+            base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
             if not base_eps or base_eps <= 0: return None
                 
             proj_eps = base_eps * ((1 + growth_pct / 100) ** 5)
