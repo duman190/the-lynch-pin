@@ -40,7 +40,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 |---|---|
 | `--src` | Path to ticker file (default: `database/mag7.txt`) |
 | `--top N` | Limit output to top N stocks by valuation deviation; also runs income statement grading |
-| `--excl-bad` | Exclude risk-flagged (`*`) tickers |
+| `--excl-bad` | Exclude risk-flagged (`*`) tickers, income grade < B, and credit rating < BBB |
 | `--research` | Generate Gemini AI narratives per ticker |
 | `--plot` | Output dark-mode charts to `tmp/` |
 | `--post` | Publish full analysis thread to X |
