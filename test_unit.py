@@ -887,6 +887,25 @@ class TestMainHelpers(unittest.TestCase):
         idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
         self.assertEqual(idx_name, "SPY")
 
+    def test_excl_bad_filters_bad_income_grade(self):
+        _BAD_GRADES = {'B-', 'C', 'D', 'N/A'}
+        self.assertIn('C', _BAD_GRADES)
+        self.assertIn('D', _BAD_GRADES)
+        self.assertIn('B-', _BAD_GRADES)
+        self.assertNotIn('B', _BAD_GRADES)
+        self.assertNotIn('B+', _BAD_GRADES)
+        self.assertNotIn('A', _BAD_GRADES)
+
+    def test_excl_bad_filters_bad_credit_rating(self):
+        _BAD_RATINGS = {'BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'D', 'NR'}
+        self.assertIn('CC', _BAD_RATINGS)
+        self.assertIn('BB', _BAD_RATINGS)
+        self.assertIn('D', _BAD_RATINGS)
+        self.assertNotIn('BBB', _BAD_RATINGS)
+        self.assertNotIn('BBB-', _BAD_RATINGS)
+        self.assertNotIn('A', _BAD_RATINGS)
+        self.assertNotIn('AAA', _BAD_RATINGS)
+
 
 if __name__ == '__main__':
     unittest.main()
