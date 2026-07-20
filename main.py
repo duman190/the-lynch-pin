@@ -77,8 +77,25 @@ def main():
         return
 
     df = pd.DataFrame(all_data)
+
+    # Pre-filter: grade all tickers for --excl-bad quality gate
     if args.excl_bad:
         df = df[~df['Ticker'].str.endswith('*')]
+        _BAD_GRADES = {'B-', 'C', 'D', 'N/A'}
+        _BAD_RATINGS = {'BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'D', 'NR'}
+        exclude = set()
+        for _, row in df.iterrows():
+            sym = row['Ticker'].replace('*', '')
+            if sym not in engines:
+                continue
+            ig = grade_ticker(engines[sym].ticker)
+            if ig and ig['grade'] in _BAD_GRADES:
+                exclude.add(row['Ticker'])
+            bg = grade_bs_ticker(engines[sym].ticker)
+            if bg and bg['rating'] in _BAD_RATINGS:
+                exclude.add(row['Ticker'])
+        if exclude:
+            df = df[~df['Ticker'].isin(exclude)]
 
     df = df.sort_values(by='Dev_SD', ascending=True)
     if args.top:
