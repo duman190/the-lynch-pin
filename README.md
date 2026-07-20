@@ -144,7 +144,7 @@ Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) usin
 
 **Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`
 
-**EPS Base Selection** — the projection base uses `max(forward_EPS, trailing_EPS)` to capture the higher earnings power the market is pricing in (e.g., AMD's AI shift). Falls back to trailing EPS only when forward EPS is unavailable or negative (temporary headwinds).
+**EPS Base Selection** — the projection base uses forward EPS to reflect the market's current pricing of near-term earnings trajectory (e.g., AMD's AI shift). Falls back to trailing EPS only when forward EPS is unavailable or negative (temporary headwinds).
 
 This prevents hypergrowth companies (LYFT, CELH) from producing fantasy ROIs by capping terminal PE at realistic levels (~32–39x), while leaving mature compounders (MSFT, PEP) unchanged.
 
