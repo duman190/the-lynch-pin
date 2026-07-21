@@ -6,8 +6,8 @@ import os
 class LynchPinResearcher:
     def __init__(self):
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.best_model = "gemini-3.5-flash"
-        self.backup_model = "gemini-2.5-flash"
+        self.best_model = "gemini-3.6-flash"
+        self.backup_model = "gemini-3.5-flash"
 
     def _call_gemini(self, prompt, retries=5, delay=30):
         """Calls Gemini with retry logic for 503s/429s, cascading through models."""
