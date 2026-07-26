@@ -143,6 +143,34 @@ class TestAIResearch(unittest.TestCase):
         from engine.ai_research import LynchPinResearcher
         self.assertEqual(LynchPinResearcher._format_balance_sheet(None), "Balance Sheet: N/A")
 
+    def test_format_technicals_valid_zone(self):
+        from engine.ai_research import LynchPinResearcher
+        tech = {'signal': 'BULLISH', 'trend': 'BULLISH', 'price_vs_sma200': 5.0,
+                'rsi': 55, 'atr_compression': 0.95, 'accumulation_zone': (400.0, 450.0)}
+        output = LynchPinResearcher._format_technicals(tech)
+        self.assertIn('BULLISH', output)
+        self.assertIn('$400-$450', output)
+
+    def test_format_technicals_nan_zone(self):
+        from engine.ai_research import LynchPinResearcher
+        tech = {'signal': 'BULLISH', 'trend': 'BULLISH', 'price_vs_sma200': 5.0,
+                'rsi': 55, 'atr_compression': 0.95, 'accumulation_zone': (float('nan'), float('nan'))}
+        output = LynchPinResearcher._format_technicals(tech)
+        self.assertIn('BULLISH', output)
+        self.assertNotIn('Accumulation Zone', output)
+
+    def test_format_technicals_no_zone_key(self):
+        from engine.ai_research import LynchPinResearcher
+        tech = {'signal': 'BEARISH', 'trend': 'BEARISH', 'price_vs_sma200': -10.0,
+                'rsi': 35, 'atr_compression': 1.1}
+        output = LynchPinResearcher._format_technicals(tech)
+        self.assertIn('BEARISH', output)
+        self.assertNotIn('Accumulation Zone', output)
+
+    def test_format_technicals_none(self):
+        from engine.ai_research import LynchPinResearcher
+        self.assertEqual(LynchPinResearcher._format_technicals(None), "Technicals: N/A")
+
     def test_build_prompt_contains_ticker(self):
         from engine.ai_research import LynchPinResearcher
         data = [{
