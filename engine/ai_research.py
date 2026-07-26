@@ -1,3 +1,4 @@
+import math
 import time
 from google import genai
 import os
@@ -6,8 +7,8 @@ import os
 class LynchPinResearcher:
     def __init__(self):
         self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        self.best_model = "gemini-3.6-flash"
-        self.backup_model = "gemini-3.5-flash"
+        self.best_model = "gemini-3.5-flash"
+        self.backup_model = "gemini-2.5-flash"
 
     def _call_gemini(self, prompt, retries=5, delay=30):
         """Calls Gemini with retry logic for 503s/429s, cascading through models."""
@@ -69,8 +70,9 @@ class LynchPinResearcher:
             f"ATR Compression: {tech_result['atr_compression']:.2f}"
         )
         zone = tech_result.get('accumulation_zone')
-        if zone:
-            line += f" | Accumulation Zone: ${int(zone[0])}-${int(zone[1])}"
+        if zone and len(zone) >= 2:
+            if not (math.isnan(zone[0]) or math.isnan(zone[1])):
+                line += f" | Accumulation Zone: ${int(zone[0])}-${int(zone[1])}"
         return line
 
     @staticmethod
