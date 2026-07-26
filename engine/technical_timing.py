@@ -97,6 +97,8 @@ def analyze(ticker_obj):
             signal = "BEARISH"
 
         # Accumulation zone: SMA200-based support band (SMA200 ± 1 ATR)
+        if np.isnan(sma200) or np.isnan(atr_now):
+            return None
         zone_low = round(float(sma200 - atr_now), 0)
         zone_high = round(float(sma200 + atr_now), 0)
 
