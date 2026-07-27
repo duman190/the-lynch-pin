@@ -49,6 +49,7 @@ def analyze(ticker_obj):
     """
     try:
         hist = ticker_obj.history(period="1y", interval="1d")
+        hist = hist.dropna(subset=['Close'])
         if hist.empty or len(hist) < 200:
             return None
 
