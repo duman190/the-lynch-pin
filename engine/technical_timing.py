@@ -6,6 +6,7 @@ No external dependencies beyond numpy/pandas (uses yfinance history already fetc
 
 import numpy as np
 import pandas as pd
+from experimental.back_test import backtest
 
 
 def _ema(series, span):
@@ -111,6 +112,55 @@ def analyze(ticker_obj):
             'atr_compression': round(atr_compression, 2),
             'signal': signal,
             'accumulation_zone': (zone_low, zone_high),
+        }
+    except Exception:
+        return None
+
+
+def backtest_edge(ticker_symbol, index_symbol="QQQ", days=180):
+    """Run 6-month directional backtest and return bull/bear accuracy.
+
+    Uses the experimental trade assistant's scoring engine to determine
+    which direction has a statistical edge for this ticker.
+
+    Args:
+        ticker_symbol: Stock symbol.
+        index_symbol: Reference index for relative strength.
+        days: Backtest window in trading days (default 180 ≈ 6 months).
+
+    Returns:
+        dict with bull_acc, bull_pnl, bear_acc, bear_pnl, best_edge
+        or None if backtest fails.
+    """
+    try:
+        bt = backtest(ticker_symbol, index_symbol, days=days)
+        if "error" in bt:
+            return None
+        bd = bt["breakdown"]
+        bull = bd.get("BULLISH", {})
+        bear = bd.get("BEARISH", {})
+        bull_acc = bull.get("accuracy", 0)
+        bull_pnl = bull.get("avg_dir_pnl", 0)
+        bear_acc = bear.get("accuracy", 0)
+        bear_pnl = bear.get("avg_dir_pnl", 0)
+        bull_n = bull.get("count", 0)
+        bear_n = bear.get("count", 0)
+
+        if bull_acc > bear_acc:
+            best = "BULL"
+        elif bear_acc > bull_acc:
+            best = "BEAR"
+        else:
+            best = "—"
+
+        return {
+            "bull_acc": bull_acc,
+            "bull_pnl": bull_pnl,
+            "bull_n": bull_n,
+            "bear_acc": bear_acc,
+            "bear_pnl": bear_pnl,
+            "bear_n": bear_n,
+            "best_edge": best,
         }
     except Exception:
         return None
