@@ -17,8 +17,9 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── growth_estimator.py         # Multi-source 5Y EPS growth (Yahoo + FMP + fundamental cap)
 │   ├── income_statement_grader.py  # Quant income statement waterfall grader
 │   ├── balance_sheet_grader.py     # Synthetic credit rating (Damodaran methodology)
-│   ├── technical_timing.py         # Technical trend, momentum & accumulation signals
+│   ├── technical_timing.py         # Technical trend, momentum, accumulation & 6M directional edge
 │   └── ai_research.py              # Gemini AI batch narrative generation
+├── experimental/          # Quant trading research (order flow, IV surface, backtesting)
 ├── graphics/
 │   └── visualizer.py      # Dark-mode benchmark & distribution charts
 ├── social/
@@ -114,6 +115,33 @@ Computes trend, momentum, and accumulation signals from 1-year daily price histo
 
 The accumulation zone and signal are displayed on per-ticker charts and fed to the AI narrative for entry timing context.
 
+## 6M Directional Edge
+
+Runs a 180-day backtest per ticker using order flow intensity, IV-derived expected moves, trend/regime detection, and relative strength scoring to determine which direction (bull or bear) has a statistical edge.
+
+```
+📉 TECHNICAL TIMING + 6M DIRECTIONAL EDGE
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Ticker Signal        RSI  SMA200   ATR   Accum Zone  Bull Acc  Bull P&L  Bear Acc  Bear P&L   Edge
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  MSFT   BEARISH        60     -8%  0.96    $422-$445    73%(22)   +4.02%    47%(68)   +0.44%   BULL
+  META   BEARISH        48     -7%  1.27    $610-$662    38%(37)   -0.68%    53%(70)   -0.54%   BEAR
+  KLAC   NEUTRAL        33    +17%  1.03    $170-$195    63%(92)   +2.52%    67%(30)   +3.57%   BEAR
+  MU     NEUTRAL        39    +60%  1.06     $85-$100    66%(108)  +4.46%    47%(32)   -4.22%   BULL
+────────────────────────────────────────────────────────────────────────────────────────────────────────
+  💡 BULL edge → sell cash-secured puts on dips | BEAR edge → sell covered calls on bounces
+```
+
+**Options income application:**
+
+| Edge Direction | Strategy | Rationale |
+|---|---|---|
+| **BULL** (>60% acc) | Sell cash-secured puts on dips | Stock statistically moves up — put expires worthless or you get assigned at a great entry |
+| **BEAR** (>60% acc) | Sell covered calls on bounces | Stock statistically moves down — call expires worthless, you collect premium on existing long position |
+| **Neither** (<55%) | No options income | Low-conviction — edge is not reliable enough to sell premium against |
+
+The directional edge is incorporated into the AI narrative, displayed on per-ticker charts, and printed in the technical timing table for `--top` picks.
+
 ## 5Y ROI Projections
 
 Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) using a **terminal multiple framework** that accounts for growth deceleration.
@@ -162,7 +190,7 @@ Unit tests covering all modules:
 | `engine/growth_estimator.py` | Yahoo/FMP blend, fundamental cap, fallback logic, rate limiting |
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
-| `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels |
+| `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels, 6M directional edge |
 | `engine/ai_research.py` | Prompt building, format helpers, ticker parsing |
 | `graphics/visualizer.py` | Benchmark resolution, output directory creation |
 | `social/x_publisher.py` | Media upload, retry logic, tweet creation |
