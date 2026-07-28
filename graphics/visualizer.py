@@ -157,7 +157,7 @@ class LynchPinVisualizer:
         plt.close()
         return path
 
-    def plot_ticker_distribution(self, row, grade_result=None, bs_result=None, tech_result=None):
+    def plot_ticker_distribution(self, row, grade_result=None, bs_result=None, tech_result=None, edge_result=None):
         ticker = row['Ticker'].replace('*', '')
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
         
@@ -236,7 +236,12 @@ class LynchPinVisualizer:
                 lo, hi = int(zone[0]), int(zone[1])
                 accum_val = "$" + str(lo) + "-$" + str(hi)
                 stats_text += f"\n- ACCUM: {accum_val:>11}"
-        ax.text(0.02, 1, stats_text, transform=ax.transAxes, fontsize=16, 
+        if edge_result:
+            stats_text += (
+                f"\n- 6M Bull edge: {edge_result['bull_acc']:>3.0f}%\n"
+                f"- 6M Bear edge: {edge_result['bear_acc']:>3.0f}%"
+            )
+        ax.text(0.02, 1.02, stats_text, transform=ax.transAxes, fontsize=16, 
                 color='#E0E0E0', family='monospace', verticalalignment='top',
                 bbox=box_style, zorder=9, fontweight='bold', parse_math=False)
 
@@ -264,7 +269,7 @@ class LynchPinVisualizer:
                     right_lines.append(f"  {label:<10} {'N/A':>8}")
 
         if right_lines:
-            ax.text(0.98, 1.08, "\n".join(right_lines), transform=ax.transAxes, 
+            ax.text(0.98, 1.09, "\n".join(right_lines), transform=ax.transAxes, 
                     fontsize=16, color='#E0E0E0', family='monospace', ha='right',
                     verticalalignment='top', bbox=box_style, zorder=9, fontweight='bold')
 
