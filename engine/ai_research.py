@@ -76,7 +76,18 @@ class LynchPinResearcher:
         return line
 
     @staticmethod
-    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None):
+    def _format_edge(edge_result):
+        """Formats 6M directional edge data into a compact string for the prompt."""
+        if not edge_result:
+            return "6M Directional Edge: N/A"
+        return (
+            f"6M Directional Edge: {edge_result['best_edge']} | "
+            f"Bull: {edge_result['bull_acc']:.0f}% acc, {edge_result['bull_pnl']:+.1f}% avg P&L ({edge_result['bull_n']} signals) | "
+            f"Bear: {edge_result['bear_acc']:.0f}% acc, {edge_result['bear_pnl']:+.1f}% avg P&L ({edge_result['bear_n']} signals)"
+        )
+
+    @staticmethod
+    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None):
         """Builds single combined prompt for sentiment + per-ticker narratives."""
         from engine.lynch_pin_core import _growth_decay, _terminal_peg
         context_lines = []
@@ -106,6 +117,8 @@ class LynchPinResearcher:
                 line += "\n" + LynchPinResearcher._format_balance_sheet(bs_data[ticker])
             if tech_data and ticker in tech_data:
                 line += "\n" + LynchPinResearcher._format_technicals(tech_data[ticker])
+            if edge_data and ticker in edge_data:
+                line += "\n" + LynchPinResearcher._format_edge(edge_data[ticker])
             context_lines.append(line)
 
         context = "\n\n".join(context_lines)
@@ -152,7 +165,11 @@ Factor in balance sheet health: if credit rating is high (AA+/AAA), note the for
 as a mitigating factor. If rating is low (BBB or below), flag debt burden as a key risk.
 Reference specific metrics like interest coverage, net debt/EBITDA, or debt service/FCF when relevant.
 If Technicals show BEARISH or price is below SMA200, warn about catching a falling knife.
-If ACCUMULATION signal is present, note the favorable entry timing.]
+If ACCUMULATION signal is present, note the favorable entry timing.
+If 6M Directional Edge data is available, incorporate it:
+  - If BULL edge (>60% accuracy): note this supports selling cash-secured puts on dips for income.
+  - If BEAR edge (>60% accuracy): note this supports selling covered calls on bounces for income.
+  - If neither direction has >55% accuracy, flag as low-conviction for options income.]
 
 Separate each ticker block with a double newline.
 Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
@@ -160,9 +177,9 @@ Do NOT use markdown formatting. Plain text only."""
 
         return prompt
 
-    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None):
+    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None):
         """Single API call: returns sentiment + all per-ticker narratives."""
-        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data)
+        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data)
         return self._call_gemini(prompt)
 
     def get_fintwit_trending(self):
