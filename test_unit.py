@@ -171,6 +171,54 @@ class TestAIResearch(unittest.TestCase):
         from engine.ai_research import LynchPinResearcher
         self.assertEqual(LynchPinResearcher._format_technicals(None), "Technicals: N/A")
 
+    def test_format_edge_bull(self):
+        from engine.ai_research import LynchPinResearcher
+        edge = {'bull_acc': 73.0, 'bull_pnl': 4.0, 'bull_n': 22,
+                'bear_acc': 47.0, 'bear_pnl': 0.4, 'bear_n': 68, 'best_edge': 'BULL'}
+        output = LynchPinResearcher._format_edge(edge)
+        self.assertIn('BULL', output)
+        self.assertIn('73%', output)
+        self.assertIn('+4.0%', output)
+        self.assertIn('22 signals', output)
+
+    def test_format_edge_bear(self):
+        from engine.ai_research import LynchPinResearcher
+        edge = {'bull_acc': 38.0, 'bull_pnl': -0.7, 'bull_n': 37,
+                'bear_acc': 67.0, 'bear_pnl': 3.5, 'bear_n': 30, 'best_edge': 'BEAR'}
+        output = LynchPinResearcher._format_edge(edge)
+        self.assertIn('BEAR', output)
+        self.assertIn('67%', output)
+        self.assertIn('+3.5%', output)
+
+    def test_format_edge_none(self):
+        from engine.ai_research import LynchPinResearcher
+        self.assertEqual(LynchPinResearcher._format_edge(None), "6M Directional Edge: N/A")
+
+    def test_build_prompt_includes_edge_data(self):
+        from engine.ai_research import LynchPinResearcher
+        data = [{
+            'Ticker': 'MSFT', 'PE': 24.0, 'FwdPE': 21.0, '2YFwd': 18.0,
+            '5YGrowth': '17.5%', 'PEG': 1.18, 'Mean': 1.81, 'Dev_SD': -2.28,
+            'Bull': '30.0%', 'Base': '28.0%', 'Bear': '17.5%'
+        }]
+        edge_data = {'MSFT': {'bull_acc': 73.0, 'bull_pnl': 4.0, 'bull_n': 22,
+                              'bear_acc': 47.0, 'bear_pnl': 0.4, 'bear_n': 68, 'best_edge': 'BULL'}}
+        prompt = LynchPinResearcher.build_prompt(data, edge_data=edge_data)
+        self.assertIn('6M Directional Edge: BULL', prompt)
+        self.assertIn('73%', prompt)
+        self.assertIn('cash-secured puts', prompt)
+
+    def test_build_prompt_without_edge_data(self):
+        from engine.ai_research import LynchPinResearcher
+        data = [{
+            'Ticker': 'AAPL', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0,
+            '5YGrowth': '15.0%', 'PEG': 1.33, 'Mean': 1.5, 'Dev_SD': -0.5,
+            'Bull': '20.0%', 'Base': '15.0%', 'Bear': '8.0%'
+        }]
+        prompt = LynchPinResearcher.build_prompt(data, edge_data=None)
+        self.assertNotIn('6M Directional Edge: BULL', prompt)
+        self.assertNotIn('6M Directional Edge: BEAR', prompt)
+
     def test_build_prompt_contains_ticker(self):
         from engine.ai_research import LynchPinResearcher
         data = [{
@@ -752,6 +800,19 @@ class TestVisualizer(unittest.TestCase):
         self.assertTrue(os.path.exists(test_dir))
         os.rmdir(test_dir)
 
+    def test_plot_ticker_distribution_with_edge(self):
+        from graphics.visualizer import LynchPinVisualizer
+        import tempfile
+        viz = LynchPinVisualizer(output_dir=tempfile.gettempdir())
+        row = {'Ticker': 'TEST', 'PE': 20.0, 'FwdPE': 18.0, '2YFwd': 16.0,
+               '5YGrowth': '15%', 'PEG': 1.2, 'Mean': 1.8, 'Dev_SD': -1.5,
+               'Bull': '+18%', 'Base': '+12%', 'Bear': '+5%'}
+        edge = {'bull_acc': 63.0, 'bull_pnl': 2.5, 'bull_n': 92,
+                'bear_acc': 67.0, 'bear_pnl': 3.6, 'bear_n': 30, 'best_edge': 'BEAR'}
+        path = viz.plot_ticker_distribution(row, None, None, None, edge)
+        self.assertTrue(os.path.exists(path))
+        os.remove(path)
+
 
 # ─── engine/technical_timing.py ───
 
@@ -840,6 +901,73 @@ class TestTechnicalTiming(unittest.TestCase):
         ticker = MagicMock()
         ticker.history.side_effect = Exception("API error")
         result = analyze(ticker)
+        self.assertIsNone(result)
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_bull(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.return_value = {
+            'breakdown': {
+                'BULLISH': {'accuracy': 70.0, 'avg_dir_pnl': 3.5, 'count': 50},
+                'BEARISH': {'accuracy': 45.0, 'avg_dir_pnl': -1.2, 'count': 30},
+            }
+        }
+        result = backtest_edge('TEST', 'QQQ', days=180)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['best_edge'], 'BULL')
+        self.assertEqual(result['bull_acc'], 70.0)
+        self.assertEqual(result['bear_acc'], 45.0)
+        self.assertEqual(result['bull_n'], 50)
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_bear(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.return_value = {
+            'breakdown': {
+                'BULLISH': {'accuracy': 40.0, 'avg_dir_pnl': -0.5, 'count': 20},
+                'BEARISH': {'accuracy': 67.0, 'avg_dir_pnl': 3.0, 'count': 60},
+            }
+        }
+        result = backtest_edge('TEST', 'SMH', days=180)
+        self.assertEqual(result['best_edge'], 'BEAR')
+        self.assertEqual(result['bear_pnl'], 3.0)
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_error(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.return_value = {'error': 'Insufficient data'}
+        result = backtest_edge('TEST', 'QQQ')
+        self.assertIsNone(result)
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_equal_accuracy(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.return_value = {
+            'breakdown': {
+                'BULLISH': {'accuracy': 55.0, 'avg_dir_pnl': 1.0, 'count': 40},
+                'BEARISH': {'accuracy': 55.0, 'avg_dir_pnl': 1.0, 'count': 40},
+            }
+        }
+        result = backtest_edge('TEST', 'QQQ')
+        self.assertEqual(result['best_edge'], '\u2014')
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_missing_direction(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.return_value = {
+            'breakdown': {
+                'BULLISH': {'accuracy': 60.0, 'avg_dir_pnl': 2.0, 'count': 80},
+            }
+        }
+        result = backtest_edge('TEST', 'QQQ')
+        self.assertEqual(result['best_edge'], 'BULL')
+        self.assertEqual(result['bear_acc'], 0)
+
+    @patch('engine.technical_timing.backtest')
+    def test_backtest_edge_exception(self, mock_bt):
+        from engine.technical_timing import backtest_edge
+        mock_bt.side_effect = Exception("Network error")
+        result = backtest_edge('TEST', 'QQQ')
         self.assertIsNone(result)
 
 
