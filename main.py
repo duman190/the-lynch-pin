@@ -9,7 +9,7 @@ from engine.lynch_pin_core import LynchPinEngine
 from engine.income_statement_grader import print_grader_table, grade_ticker
 from engine.balance_sheet_grader import print_grader_table as print_bs_table, grade_ticker as grade_bs_ticker
 from engine.ai_research import LynchPinResearcher
-from engine.technical_timing import analyze as analyze_technicals
+from engine.technical_timing import analyze as analyze_technicals, backtest_edge
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
 from social.threads_publisher import ThreadsPublisher
@@ -142,6 +142,7 @@ def main():
     grader_data = {}
     bs_data = {}
     tech_data = {}
+    edge_data = {}
     if args.top:
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
@@ -158,6 +159,44 @@ def main():
         print_grader_table(df.to_dict('records'), engines)
         print_bs_table(df.to_dict('records'), engines)
 
+        # 3d. Technical Timing + 6M Directional Edge
+        if args.weekly:
+            idx_name = "SPY"
+        else:
+            src_stem = os.path.basename(args.src).lower().replace('.txt', '')
+            idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
+
+        print(f"\n\n📉 TECHNICAL TIMING + 6M DIRECTIONAL EDGE")
+        print(f"{'─' * 100}")
+        print(f"  {'Ticker':<6} {'Signal':<12} {'RSI':>4} {'SMA200':>7} {'ATR':>5} {'Accum Zone':>12} "
+              f"{'Bull Acc':>9} {'Bull P&L':>9} {'Bear Acc':>9} {'Bear P&L':>9} {'Edge':>6}")
+        print(f"{'─' * 100}")
+
+        for _, row in df.iterrows():
+            sym = row['Ticker'].replace('*', '')
+            t = tech_data.get(sym)
+            print(f"\r  Running 6M backtest for {sym}...", end="", flush=True)
+            e = backtest_edge(sym, idx_name, days=180)
+            if e:
+                edge_data[sym] = e
+            sig = t['signal'] if t else '—'
+            rsi = f"{int(t['rsi'])}" if t else '—'
+            sma = f"{t['price_vs_sma200']:+.0f}%" if t else '—'
+            atr = f"{t['atr_compression']:.2f}" if t else '—'
+            zone = t.get('accumulation_zone') if t else None
+            zone_str = f"${int(zone[0])}-${int(zone[1])}" if zone else '—'
+            if e:
+                print(f"\r  {sym:<6} {sig:<12} {rsi:>4} {sma:>7} {atr:>5} {zone_str:>12} "
+                      f"{e['bull_acc']:>6.0f}%({e['bull_n']:>2d}) {e['bull_pnl']:>+7.2f}% "
+                      f"{e['bear_acc']:>6.0f}%({e['bear_n']:>2d}) {e['bear_pnl']:>+7.2f}% "
+                      f"{e['best_edge']:>6}")
+            else:
+                print(f"\r  {sym:<6} {sig:<12} {rsi:>4} {sma:>7} {atr:>5} {zone_str:>12} "
+                      f"{'—':>9} {'—':>9} {'—':>9} {'—':>9} {'—':>6}")
+
+        print(f"{'─' * 100}")
+        print(f"  💡 BULL edge → sell cash-secured puts on dips | BEAR edge → sell covered calls on bounces")
+
     # 4. AI Narrative (Batch) & Visuals
     researcher = LynchPinResearcher() if args.research or args.post or args.post_threads else None
     bulk_ai_text = ""
@@ -171,7 +210,7 @@ def main():
             src_stem = os.path.basename(args.src).lower().replace('.txt', '')
             idx_name = next((v for k, v in IDX_MAP.items() if k in src_stem), "SPY")
 
-        raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name, bs_data, tech_data)
+        raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name, bs_data, tech_data, edge_data)
 
         # Parse sentiment from response
         sent_match = re.search(r'SENTIMENT:\s*(.+)', raw_ai)
@@ -197,7 +236,7 @@ def main():
 
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
-            viz.plot_ticker_distribution(row, grader_data.get(sym), bs_data.get(sym), tech_data.get(sym))
+            viz.plot_ticker_distribution(row, grader_data.get(sym), bs_data.get(sym), tech_data.get(sym), edge_data.get(sym))
 
     # 5. X (Twitter) Posting Support
     if args.post:
