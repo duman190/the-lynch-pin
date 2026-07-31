@@ -90,7 +90,7 @@ def analyze(ticker_obj):
 
         # Signal label
         if accumulation:
-            signal = "ACCUMULATION"
+            signal = "ACCUMUL"
         elif trend == "BULLISH":
             signal = "BULLISH"
         elif trend == "NEUTRAL":
