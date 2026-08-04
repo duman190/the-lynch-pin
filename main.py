@@ -81,7 +81,7 @@ def main():
     # Pre-filter: grade all tickers for --excl-bad quality gate
     if args.excl_bad:
         df = df[~df['Ticker'].str.endswith('*')]
-        _BAD_GRADES = {'B-', 'C', 'D', 'N/A'}
+        _BAD_GRADES = {'B-', 'C', 'D'}
         _BAD_RATINGS = {'BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'D', 'NR'}
         exclude = set()
         for _, row in df.iterrows():
