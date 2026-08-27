@@ -82,6 +82,24 @@ The growth estimate is the keystone of the entire PEG valuation framework. A sin
 
 This prevents fantasy projections (e.g., TSLA 40% growth with 1% fundamental support) from making expensive stocks appear cheap, while trusting analyst consensus when it aligns with demonstrated performance.
 
+## Historical Forward PEG Reconstruction
+
+Historical PEG statistics (Mean, SD, deviation) compare today's PEG against where the stock has traded over 5 years. Free data sources only provide historical *trailing* EPS, which is contaminated by one-time gains (e.g., investment mark-ups) and low-base explosions (recently profitable companies show absurd trailing PEs). Naively dividing historical trailing PE by today's growth estimate inflates the historical mean and makes such stocks look falsely cheap (e.g., PLTR's mean PEG computed that way is ~6 vs ~1.8 in reality).
+
+Instead, the engine **reconstructs the historical forward PEG** each month over 5 years ("Method B2"):
+
+| Component | Formula | Rationale |
+|---|---|---|
+| **Forward EPS proxy** | `fwd_eps_now × √(rev(t)/rev(now) × eps(t)/eps(now))` | Walks today's forward consensus back in time. Revenue ratio = business scale (immune to one-time gains); EPS ratio = margin/share-count trajectory. The geometric mean halves the impact of one-time items in trailing EPS. |
+| **Blended growth** | `max((k × realized_rev_CAGR + (5−k) × proj_5Y) / 5, 4%)` | k years back, an investor's 5Y view covered k years that have since happened (realized revenue CAGR, clean data) plus (5−k) years still ahead (today's projection). |
+| **PEG(t)** | `(price(t) / fwd_eps_proxy(t)) / blended_growth(t)` | Historical forward PEG as the market would have seen it. |
+
+The **4% growth floor** prevents denominator blow-ups for mature/shrinking businesses whose realized revenue CAGR is near zero or negative (e.g., dividend names in SCHD).
+
+TTM revenue comes from SEC EDGAR quarterly filings (same companyfacts download as quarterly EPS, most-recently-filed value per period). When revenue data is unavailable (some banks, missing CIK), the engine falls back to the legacy trailing-PE-based series, then to PE volatility.
+
+Validated against ~200 tickers (Nasdaq 100 + SCHD): the reconstructed forward EPS proxy lands within ±26% median error of the EPS actually realized 12 months later, and corrects 3–8× mean-PEG distortions for names with distorted trailing EPS history (PLTR, AMD, WDAY, MRK, PANW, AXON) while leaving stable compounders (PEP, KO) unchanged.
+
 ## Balance Sheet Credit Rating
 
 Assigns a synthetic S&P-style credit rating (AAA → D) using [Damodaran's interest coverage methodology](https://pages.stern.nyu.edu/~adamodar/New_Home_Page/valquestions/syntrating.htm), adjusted by leverage and liquidity metrics.
