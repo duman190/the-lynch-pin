@@ -451,7 +451,7 @@ class LynchPinEngine:
             base_roi = roi(terminal_peg) * 100
             bull_roi = roi(bull_peg) * 100
             bear_roi = roi(bear_peg) * 100
-            risk = growth_pct > 80 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
+            risk = growth_pct > 99 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
                 "Ticker": f"{self.symbol}*" if risk else self.symbol,
