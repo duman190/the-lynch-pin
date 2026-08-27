@@ -763,6 +763,152 @@ class TestLynchPinCore(unittest.TestCase):
         self.assertEqual(dev, 0.0)
 
 
+# ─── engine/lynch_pin_core.py — historical forward PEG reconstruction (B2) ───
+
+class TestHistoricalPegReconstruction(unittest.TestCase):
+
+    # _blended_growth
+
+    def test_blended_growth_at_now_equals_projection(self):
+        from engine.lynch_pin_core import _blended_growth
+        # k=0: nothing realized yet -> pure 5Y projection
+        self.assertAlmostEqual(_blended_growth(0.0, 50.0, 20.0), 20.0)
+
+    def test_blended_growth_five_years_back_equals_realized(self):
+        from engine.lynch_pin_core import _blended_growth
+        # k=5: the whole window has already happened
+        self.assertAlmostEqual(_blended_growth(5.0, 12.0, 20.0), 12.0)
+
+    def test_blended_growth_midpoint(self):
+        from engine.lynch_pin_core import _blended_growth
+        # k=2.5 -> (2.5*10 + 2.5*20)/5 = 15
+        self.assertAlmostEqual(_blended_growth(2.5, 10.0, 20.0), 15.0)
+
+    def test_blended_growth_floor_on_shrinking_revenue(self):
+        from engine.lynch_pin_core import _blended_growth, _MIN_BLENDED_GROWTH
+        # Negative realized growth (shrinking value names) must not
+        # collapse the PEG denominator toward zero
+        self.assertAlmostEqual(_blended_growth(5.0, -2.0, 3.0), _MIN_BLENDED_GROWTH)
+
+    def test_blended_growth_clamps_k_beyond_window(self):
+        from engine.lynch_pin_core import _blended_growth
+        # k>5 behaves like k=5 (fully realized)
+        self.assertAlmostEqual(_blended_growth(7.0, 10.0, 20.0), 10.0)
+
+    # _fwd_eps_proxy
+
+    def test_fwd_eps_proxy_stable_margins(self):
+        from engine.lynch_pin_core import _fwd_eps_proxy
+        # Revenue and EPS both halved -> proxy = fwd_eps / 2
+        self.assertAlmostEqual(_fwd_eps_proxy(10.0, 0.5, 0.5), 5.0)
+
+    def test_fwd_eps_proxy_geometric_blend(self):
+        from engine.lynch_pin_core import _fwd_eps_proxy
+        # Margin expansion: EPS grew faster than revenue.
+        # sqrt(0.8 * 0.2) = 0.4 -> proxy lands between the two ratios
+        self.assertAlmostEqual(_fwd_eps_proxy(10.0, 0.8, 0.2), 4.0)
+
+    def test_fwd_eps_proxy_handles_zero_ratio(self):
+        from engine.lynch_pin_core import _fwd_eps_proxy
+        # Degenerate input must not raise or return negative
+        self.assertGreater(_fwd_eps_proxy(10.0, 0.0, 0.5), 0.0)
+
+    # _parse_sec_quarterly
+
+    def test_parse_sec_quarterly_filters_annuals_prefers_restatements(self):
+        from engine.lynch_pin_core import LynchPinEngine
+        facts = {
+            'Revenues': {'units': {'USD': [
+                # annual entry (365 days) must be skipped
+                {'form': '10-K', 'start': '2023-01-01', 'end': '2023-12-31',
+                 'filed': '2024-02-01', 'val': 400.0},
+                # quarterly, original filing
+                {'form': '10-Q', 'start': '2023-07-01', 'end': '2023-09-30',
+                 'filed': '2023-10-25', 'val': 100.0},
+                # same quarter restated later -> must win
+                {'form': '10-Q', 'start': '2023-07-01', 'end': '2023-09-30',
+                 'filed': '2024-10-25', 'val': 105.0},
+                {'form': '10-Q', 'start': '2023-04-01', 'end': '2023-06-30',
+                 'filed': '2023-07-25', 'val': 95.0},
+            ]}}}
+        s = LynchPinEngine._parse_sec_quarterly(facts, ['Revenues'], ['USD'])
+        self.assertEqual(len(s), 2)
+        self.assertAlmostEqual(s['2023-09-30'], 105.0)
+        self.assertAlmostEqual(s['2023-06-30'], 95.0)
+
+    def test_parse_sec_quarterly_tag_priority(self):
+        from engine.lynch_pin_core import LynchPinEngine
+        facts = {
+            'RevenueFromContractWithCustomerExcludingAssessedTax': {'units': {'USD': [
+                {'form': '10-Q', 'start': '2023-07-01', 'end': '2023-09-30',
+                 'filed': '2023-10-25', 'val': 100.0}]}},
+            'Revenues': {'units': {'USD': [
+                {'form': '10-Q', 'start': '2023-07-01', 'end': '2023-09-30',
+                 'filed': '2023-10-25', 'val': 999.0}]}},
+        }
+        s = LynchPinEngine._parse_sec_quarterly(
+            facts,
+            ['RevenueFromContractWithCustomerExcludingAssessedTax', 'Revenues'],
+            ['USD'])
+        self.assertAlmostEqual(s['2023-09-30'], 100.0)
+
+    def test_parse_sec_quarterly_missing_tags_returns_empty(self):
+        from engine.lynch_pin_core import LynchPinEngine
+        s = LynchPinEngine._parse_sec_quarterly({}, ['Revenues'], ['USD'])
+        self.assertEqual(len(s), 0)
+
+    # calculate_peg_statistics end-to-end (mocked data)
+
+    def _make_engine(self, fwd_eps=5.0, revenue=None):
+        """Engine with constant price=100, TTM EPS=4, optional TTM revenue."""
+        from engine.lynch_pin_core import LynchPinEngine
+        engine = LynchPinEngine.__new__(LynchPinEngine)
+        engine.symbol = 'TEST'
+        engine.info = {'forwardEps': fwd_eps}
+        engine.ticker = MagicMock()
+        dates = pd.date_range('2021-01-31', periods=60, freq='MS', tz='UTC')
+        engine.ticker.history.return_value = pd.DataFrame(
+            {'Close': [100.0] * 60}, index=dates)
+        eps_dates = pd.date_range('2020-03-31', periods=24, freq='3MS')
+        engine._build_ttm_eps_from_sec = lambda: pd.Series(4.0, index=eps_dates)
+        engine._build_ttm_eps_from_yfinance = lambda: None
+        engine._build_ttm_revenue_from_sec = lambda: revenue
+        return engine
+
+    def test_peg_statistics_b2_constant_series(self):
+        """Constant price/revenue/EPS with projection at the floor yields a
+        flat reconstructed PEG = price / fwd_eps / floor."""
+        from engine.lynch_pin_core import _MIN_BLENDED_GROWTH
+        eps_dates = pd.date_range('2020-03-31', periods=24, freq='3MS')
+        engine = self._make_engine(
+            fwd_eps=5.0, revenue=pd.Series(1000.0, index=eps_dates))
+        # constant revenue -> realized growth 0 -> blended floored everywhere
+        mean, std, dev = engine.calculate_peg_statistics(
+            curr_peg=1.0, growth_pct=_MIN_BLENDED_GROWTH)
+        # PEG(t) = 100 / 5 / 4 = 5.0 for every month
+        self.assertAlmostEqual(mean, 5.0, places=6)
+        self.assertAlmostEqual(std, 0.01)  # min std floor
+        self.assertAlmostEqual(dev, (1.0 - 5.0) / 0.01, places=3)
+
+    def test_peg_statistics_falls_back_to_trailing_pe_series(self):
+        """Without SEC revenue, the legacy trailing-PE-based series is used."""
+        engine = self._make_engine(fwd_eps=5.0, revenue=None)
+        mean, std, dev = engine.calculate_peg_statistics(
+            curr_peg=1.0, growth_pct=4.0)
+        # legacy: PE=100/4=25, PEG = 25/4 = 6.25 for every month
+        self.assertAlmostEqual(mean, 6.25, places=6)
+        self.assertAlmostEqual(std, 0.01)
+
+    def test_peg_statistics_b2_skipped_without_forward_eps(self):
+        """Negative forward EPS disables reconstruction -> legacy series."""
+        eps_dates = pd.date_range('2020-03-31', periods=24, freq='3MS')
+        engine = self._make_engine(
+            fwd_eps=-1.0, revenue=pd.Series(1000.0, index=eps_dates))
+        mean, std, dev = engine.calculate_peg_statistics(
+            curr_peg=1.0, growth_pct=4.0)
+        self.assertAlmostEqual(mean, 6.25, places=6)  # legacy path
+
+
 # ─── graphics/visualizer.py ───
 
 class TestVisualizer(unittest.TestCase):
@@ -1061,6 +1207,158 @@ class TestMainHelpers(unittest.TestCase):
         self.assertNotIn('BBB-', _BAD_RATINGS)
         self.assertNotIn('A', _BAD_RATINGS)
         self.assertNotIn('AAA', _BAD_RATINGS)
+
+
+class TestSimulator(unittest.TestCase):
+    """Tests for experimental/simulator.py setup ranking and fill validation."""
+
+    @classmethod
+    def setUpClass(cls):
+        from experimental import simulator
+        cls.sim = simulator
+
+    def _setup(self, sym, rr, score, edge=60):
+        return {"symbol": sym, "index": "QQQ", "direction": "bull",
+                "price": 100.0, "target": 110.0, "stop": 95.0,
+                "score": score, "edge": edge, "edge_pnl": 1.0, "rr": rr}
+
+    def test_rank_setups_rr_primary(self):
+        """Setups sorted by R/R descending regardless of edge/score."""
+        setups = [self._setup("A", rr=1.6, score=7, edge=75),
+                  self._setup("B", rr=3.0, score=3, edge=55),
+                  self._setup("C", rr=2.2, score=5, edge=65)]
+        ranked = self.sim._rank_setups(setups)
+        self.assertEqual([s["symbol"] for s in ranked], ["B", "C", "A"])
+
+    def test_rank_setups_score_tiebreaker(self):
+        """Equal R/R falls back to score."""
+        setups = [self._setup("LOW", rr=2.0, score=3),
+                  self._setup("HIGH", rr=2.0, score=6),
+                  self._setup("MID", rr=2.0, score=4)]
+        ranked = self.sim._rank_setups(setups)
+        self.assertEqual([s["symbol"] for s in ranked], ["HIGH", "MID", "LOW"])
+
+    def test_fill_rr_valid_bull(self):
+        # reward = 110 - 100 = 10, risk = 100 - 95 = 5 -> rr 2.0
+        self.assertEqual(self.sim._fill_rr("bull", 100.0, 110.0, 95.0), 2.0)
+
+    def test_fill_rr_valid_bear(self):
+        # reward = 100 - 90 = 10, risk = 104 - 100 = 4 -> rr 2.5
+        self.assertEqual(self.sim._fill_rr("bear", 100.0, 90.0, 104.0), 2.5)
+
+    def test_fill_rr_rejects_price_through_stop(self):
+        """Bull whose fill price drifted below stop -> invalid geometry."""
+        self.assertIsNone(self.sim._fill_rr("bull", 94.0, 110.0, 95.0))
+
+    def test_fill_rr_rejects_price_through_target(self):
+        """Bull whose fill price drifted above target -> no reward left."""
+        self.assertIsNone(self.sim._fill_rr("bull", 111.0, 110.0, 95.0))
+
+    def test_fill_rr_rejects_compressed_ratio(self):
+        """Price drift compressed R/R below MIN_RR -> rejected.
+        reward = 110 - 108 = 2, risk = 108 - 95 = 13 -> rr 0.15 < MIN_RR."""
+        self.assertIsNone(self.sim._fill_rr("bull", 108.0, 110.0, 95.0))
+
+    def test_fill_rr_boundary_at_min_rr(self):
+        """R/R exactly at MIN_RR is accepted."""
+        # reward = MIN_RR * risk: risk = 5, reward = MIN_RR * 5
+        target = 100.0 + self.sim.MIN_RR * 5.0
+        self.assertEqual(self.sim._fill_rr("bull", 100.0, target, 95.0), self.sim.MIN_RR)
+
+    def test_min_score_floor_is_three(self):
+        self.assertEqual(self.sim.MIN_SCORE, 3)
+
+    def test_score_band_excludes_six_plus(self):
+        """History showed score 6+ setups underperform — band is 3-5."""
+        self.assertEqual(self.sim.MAX_SCORE, 5)
+        for score, expect_pass in [(2, False), (3, True), (5, True), (6, False), (7, False)]:
+            in_band = self.sim.MIN_SCORE <= score <= self.sim.MAX_SCORE
+            self.assertEqual(in_band, expect_pass, f"score={score}")
+
+    def test_min_rr_floor(self):
+        self.assertEqual(self.sim.MIN_RR, 2.0)
+
+    # ── Slippage ──────────────────────────────────────────────────────────
+
+    def test_slip_always_worse(self):
+        """Every fill is worse than the quote: buys pay up, sells receive less."""
+        q = 100.0
+        self.assertGreater(self.sim._slip(q, "bull", "entry"), q)   # buy
+        self.assertLess(self.sim._slip(q, "bull", "exit"), q)       # sell
+        self.assertLess(self.sim._slip(q, "bear", "entry"), q)      # short sell
+        self.assertGreater(self.sim._slip(q, "bear", "exit"), q)    # buy to cover
+
+    def test_slip_magnitude(self):
+        expected = 100.0 * (1 + self.sim.SLIPPAGE_BPS / 10000.0)
+        self.assertAlmostEqual(self.sim._slip(100.0, "bull", "entry"), expected)
+
+    # ── Risk-based sizing ─────────────────────────────────────────────────
+
+    def test_position_size_equal_dollar_risk(self):
+        """A 4% stop and a 5% stop should risk the same dollars."""
+        equity, cash = 10000.0, 10000.0
+        tight = self.sim._position_size(equity, cash, 100.0, 96.0)   # 4% stop
+        wide = self.sim._position_size(equity, cash, 100.0, 95.0)    # 5% stop
+        # dollar risk = size * stop_frac — must be equal (= equity * RISK_PCT)
+        self.assertAlmostEqual(tight * 0.04, wide * 0.05, places=2)
+        self.assertAlmostEqual(tight * 0.04, equity * self.sim.RISK_PCT, places=2)
+
+    def test_position_size_notional_cap(self):
+        """A very tight stop can't blow past the notional cap."""
+        equity, cash = 10000.0, 10000.0
+        size = self.sim._position_size(equity, cash, 100.0, 99.9)  # 0.1% stop
+        self.assertLessEqual(size, equity * self.sim.MAX_NOTIONAL_PCT)
+
+    def test_position_size_cash_cap_and_degenerate(self):
+        self.assertLessEqual(self.sim._position_size(10000.0, 500.0, 100.0, 98.0), 500.0)
+        self.assertEqual(self.sim._position_size(10000.0, 10000.0, 100.0, 100.0), 0.0)
+        self.assertEqual(self.sim._position_size(10000.0, 10000.0, 0.0, 98.0), 0.0)
+
+    # ── Time stop ─────────────────────────────────────────────────────────
+
+    def test_trading_days_held_skips_weekends(self):
+        from datetime import datetime
+        # Fri 2026-08-07 -> Mon 2026-08-10 is 1 trading day
+        held = self.sim._trading_days_held("2026-08-07T07:45:00",
+                                           now=datetime(2026, 8, 10, 8, 0))
+        self.assertEqual(held, 1)
+        # Fri -> next Fri = 5 trading days (time stop fires)
+        held = self.sim._trading_days_held("2026-08-07T07:45:00",
+                                           now=datetime(2026, 8, 14, 8, 0))
+        self.assertEqual(held, 5)
+        self.assertGreaterEqual(held, self.sim.MAX_HOLD_DAYS)
+
+    def test_trading_days_held_same_day(self):
+        from datetime import datetime
+        held = self.sim._trading_days_held("2026-08-10T07:45:00",
+                                           now=datetime(2026, 8, 10, 12, 0))
+        self.assertEqual(held, 0)
+
+    # ── Breakeven stop ────────────────────────────────────────────────────
+
+    def _pos(self, direction="bull", entry=100.0, stop=95.0, target=110.0):
+        return {"symbol": "X", "direction": direction, "entry_price": entry,
+                "stop": stop, "target": target, "initial_risk": abs(entry - stop),
+                "size": 1000.0, "shares": 10.0}
+
+    def test_breakeven_arms_at_one_r_bull(self):
+        pos = self._pos()  # risk = 5
+        self.assertFalse(self.sim._maybe_breakeven(pos, 104.9))  # < +1R
+        self.assertEqual(pos["stop"], 95.0)
+        self.assertTrue(self.sim._maybe_breakeven(pos, 105.0))   # = +1R
+        self.assertEqual(pos["stop"], 100.0)
+
+    def test_breakeven_arms_at_one_r_bear(self):
+        pos = self._pos(direction="bear", entry=100.0, stop=104.0, target=90.0)  # risk = 4
+        self.assertFalse(self.sim._maybe_breakeven(pos, 96.5))
+        self.assertTrue(self.sim._maybe_breakeven(pos, 96.0))
+        self.assertEqual(pos["stop"], 100.0)
+
+    def test_breakeven_only_fires_once(self):
+        pos = self._pos()
+        self.assertTrue(self.sim._maybe_breakeven(pos, 105.0))
+        self.assertFalse(self.sim._maybe_breakeven(pos, 106.0))  # already at entry
+        self.assertEqual(pos["stop"], 100.0)
 
 
 if __name__ == '__main__':
