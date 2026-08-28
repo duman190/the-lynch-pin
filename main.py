@@ -294,7 +294,9 @@ def main():
             grok_ref = f"${idx_name}"
         disclaimer = (f"In this market, you'll miss the best compounders waiting for a perfect 1.0 PEG."
                       f" Which of these {universe_label} anomalies are the hardest for your stomach? 👇\n\n"
-                      f"@grok What's the best and worst among above {grok_ref} deals and why?\n\n"
+                      f"@grok Search recent X posts about the {grok_ref} tickers in this thread. "
+                      f"Based on FinTwit sentiment alone (not the numbers above), which one does "
+                      f"FinTwit love most and hate most right now, and why?\n\n"
                       "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
                       "Investing involves risk. Always DYOR. 🫶")
 
