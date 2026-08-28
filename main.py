@@ -323,9 +323,10 @@ def main():
         # Topic tag: ticker for daily, FinTwit for weekly
         topic_tag = "FinTwit" if args.weekly else idx_name
 
-        # Copy images to images/ and push to GitHub for public URLs
+        # Copy images to images/, remove old and push to GitHub for public URLs
         img_dir = "images"
         os.makedirs(img_dir, exist_ok=True)
+        os.system(f"rm -f {img_dir}/*")
 
         bench_src = "tmp/benchmark_comparison.png"
         bench_dest = f"{img_dir}/{idx_name.lower()}_benchmark.png"
@@ -341,7 +342,7 @@ def main():
         # Git commit and push images
         print("  [git] Pushing images to GitHub...")
         commit_msg = f"{idx_name}: update chart images on {date.today()} scan"
-        os.system(f'cd {os.getcwd()} && git add {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
+        os.system(f'cd {os.getcwd()} && git add -A {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
         time.sleep(5)  # Give GitHub CDN a moment to propagate
 
         GITHUB_RAW = os.environ.get("GITHUB_IMAGE_PATH", "https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images")
