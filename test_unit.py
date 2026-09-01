@@ -1144,8 +1144,8 @@ class TestMainHelpers(unittest.TestCase):
         import re
         bulk = "$MSFT:\n🤖: Great company.\n📊 Reverse DCF: Strong moat.\n\n$AAPL:\n🤖: Good."
         bulk = re.sub(r'SECTION \d+[^\n]*\n*', '', bulk)
-        pattern = rf"\$?\bMSFT\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-        match = re.search(pattern, bulk, re.DOTALL | re.IGNORECASE)
+        pattern = rf"^\$MSFT\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
+        match = re.search(pattern, bulk, re.DOTALL | re.MULTILINE)
         self.assertIsNotNone(match)
         self.assertIn("Great company", match.group(1))
 
@@ -1153,10 +1153,25 @@ class TestMainHelpers(unittest.TestCase):
         import re
         bulk = "$NVDA\n🤖: Monster growth.\n📊 Reverse DCF: AI dominance.\n\n$AMD\n🤖: Challenger."
         bulk = re.sub(r'SECTION \d+[^\n]*\n*', '', bulk)
-        pattern = rf"\$?\bNVDA\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-        match = re.search(pattern, bulk, re.DOTALL | re.IGNORECASE)
+        pattern = rf"^\$NVDA\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
+        match = re.search(pattern, bulk, re.DOTALL | re.MULTILINE)
         self.assertIsNotNone(match)
         self.assertIn("Monster growth", match.group(1))
+
+    def test_ticker_regex_stopword_ticker(self):
+        """Regression: ticker ON must not match the English word 'on' inside
+        another ticker's narrative (bug: ON reply showed ARM's analysis)."""
+        import re
+        bulk = ("$ARM:\n🤖: A bet on future dominance. Buyer beware.\n"
+                "📊 Reverse DCF: ARM designs chips.\n\n"
+                "$ON:\n🤖: ON Semiconductor is a compelling value.\n"
+                "📊 Reverse DCF: Power and sensing leader.")
+        pattern = rf"^\$ON\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
+        match = re.search(pattern, bulk, re.DOTALL | re.MULTILINE)
+        self.assertIsNotNone(match)
+        self.assertIn("ON Semiconductor is a compelling value", match.group(1))
+        self.assertNotIn("future dominance", match.group(1))
+        self.assertNotIn("ARM designs", match.group(1))
 
     def test_section_header_stripping(self):
         import re
