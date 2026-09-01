@@ -269,9 +269,12 @@ def main():
             emoji = num_emojis[i] if i < 10 else f"{i+1}."
             main_tweet += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            # Extract full AI narrative for this ticker
-            pattern = rf"\$?\b{clean_t}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
+            # Extract full AI narrative for this ticker.
+            # Anchored to a line-start "$TICKER" header (case-sensitive) so short
+            # tickers that are English words (e.g. ON) can't match prose inside
+            # another ticker's narrative.
+            pattern = rf"^\${re.escape(clean_t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
+            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.MULTILINE)
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
             # Update section labels for tweet
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '📊 Reverse 5Y DCF:')
@@ -365,8 +368,8 @@ def main():
             emoji = num_emojis[i] if i < 10 else f"{i+1}."
             threads_main += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            pattern = rf"\$?\b{clean_t}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.IGNORECASE)
+            pattern = rf"^\${re.escape(clean_t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
+            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.MULTILINE)
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '\n📊:')
             raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '\n🐻 "Stomach Test" (why it can underperform in the next 5 years):')
