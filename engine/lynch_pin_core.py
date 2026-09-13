@@ -62,6 +62,35 @@ def _terminal_peg(growth_pct, mean_peg):
     return min(mean_peg, max(0.8, 1.5 - 0.5 * (growth_pct / 30 - 1)))
 
 
+def _scenario_pegs(growth_pct, mean_peg, curr_peg, std_peg):
+    """Terminal PEG for the Bull / Base / Bear ROI scenarios.
+
+    Below-or-at its historical mean (the classic GARP setup): base is the
+    terminal PEG (mean, capped for growth regime), bull adds half an SD,
+    bear takes half an SD off but never below 0.5 or above today's PEG.
+
+    Above its historical mean: the market is already paying more than the
+    stock's own history — either a re-rating or a broken history (e.g. a
+    cyclical whose trough EPS collapsed the reconstructed mean, MU). Here
+    the scenarios anchor on today's multiple *holding* rather than on mean
+    reversion: bull = today's PEG (growth-regime cap still applies), base =
+    half an SD below it, bear = a full SD below it. Proportional floors keep
+    the ordering bull > base > bear > 0 when the SD is large.
+
+    Returns ``(bull_peg, base_peg, bear_peg)``.
+    """
+    if curr_peg > mean_peg:
+        anchor = _terminal_peg(growth_pct, curr_peg)
+        bull = anchor
+        base = max(anchor - 0.5 * std_peg, 0.5 * anchor)
+        bear = max(anchor - 1.0 * std_peg, 0.25 * anchor)
+        return bull, base, bear
+    terminal_peg = _terminal_peg(growth_pct, mean_peg)
+    bull = terminal_peg + 0.5 * std_peg
+    bear = max(0.5, min(curr_peg, terminal_peg - 0.5 * std_peg))
+    return bull, terminal_peg, bear
+
+
 # Floor (in %) for the blended growth denominator in historical PEG
 # reconstruction. Prevents division blow-ups for companies whose realized
 # revenue CAGR is near zero or negative (mature/shrinking dividend names).
@@ -438,20 +467,16 @@ class LynchPinEngine:
             decay = _growth_decay(growth_pct)
             terminal_growth = growth_pct ** decay
 
-            # Terminal PEG: mature companies keep mean, high-growth gets penalized
-            terminal_peg = _terminal_peg(growth_pct, mean_peg)
-
             def roi(target_peg):
                 pt = target_peg * terminal_growth * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
-            # ROI scenarios
-            bull_peg = terminal_peg + 0.5 * std_peg
-            bear_peg = max(0.5, min(curr_peg, terminal_peg - 0.5 * std_peg))
-            base_roi = roi(terminal_peg) * 100
+            # ROI scenarios: mean-reversion below the mean, "multiple holds" above it
+            bull_peg, base_peg, bear_peg = _scenario_pegs(growth_pct, mean_peg, curr_peg, std_peg)
+            base_roi = roi(base_peg) * 100
             bull_roi = roi(bull_peg) * 100
             bear_roi = roi(bear_peg) * 100
-            risk = growth_pct > 99 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 11.0
+            risk = growth_pct > 99 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
                 "Ticker": f"{self.symbol}*" if risk else self.symbol,
