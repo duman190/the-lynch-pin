@@ -18,10 +18,11 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── income_statement_grader.py  # Quant income statement waterfall grader
 │   ├── balance_sheet_grader.py     # Synthetic credit rating (Damodaran methodology)
 │   ├── technical_timing.py         # Technical trend, momentum, accumulation & 6M directional edge
+│   ├── portfolio.py                # Holdings parser, market-value weights & weighted roll-ups
 │   └── ai_research.py              # Gemini AI batch narrative generation
 ├── experimental/          # Quant trading research (order flow, IV surface, backtesting)
 ├── graphics/
-│   └── visualizer.py      # Dark-mode benchmark & distribution charts
+│   └── visualizer.py      # Dark-mode benchmark, distribution & portfolio X-ray charts
 ├── social/
 │   ├── x_publisher.py     # Threaded X (Twitter) publisher
 │   └── threads_publisher.py # Threaded Threads (Meta) publisher
@@ -35,6 +36,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 
 ```bash
 python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --post
+python main.py --portfolio my_holdings.txt --research --plot --post
 ```
 
 | Flag | Description |
@@ -42,6 +44,7 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `--src` | Path to ticker file (default: `database/mag7.txt`) |
 | `--top N` | Limit output to top N stocks by valuation deviation; also runs income statement grading |
 | `--excl-bad` | Exclude risk-flagged (`*`) tickers, income grade < B, and credit rating < BBB |
+| `--portfolio FILE` | Portfolio mode: analyze every holding in `FILE` (`TICKER, SHARES` per line) and roll up weighted metrics. Not compatible with `--top`, `--excl-bad`, `--weekly` |
 | `--research` | Generate Gemini AI narratives per ticker |
 | `--plot` | Output dark-mode charts to `tmp/` |
 | `--post` | Publish full analysis thread to X |
@@ -60,6 +63,43 @@ python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --po
 | `THREADS_ACCESS_TOKEN` | `--post_threads` |
 | `THREADS_USER_ID` | `--post_threads` |
 | `GITHUB_IMAGE_PATH` | `--post_threads` (default: `https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images`) |
+
+## Portfolio Mode
+
+`--portfolio FILE` turns the screener into a portfolio X-ray. The holdings file lists one position per line as `TICKER, SHARES` (comma, semicolon, tab or space separated; `#` comments and blank lines are ignored). A ticker may appear multiple times (e.g. separate lots) — repeats are de-duplicated and their share counts summed:
+
+```
+# my_holdings.txt
+AAPL, 10
+MSFT, 5
+AAPL, 5      # second lot → AAPL = 15 shares
+NVDA, 20
+```
+
+Every position gets the full deep analysis (PEG statistics, ROI projections, income grade, credit rating, technicals, 6M edge — the same treatment `--top` picks receive), then everything is rolled up by **market-value weight**:
+
+```
+weight_i = shares_i × current_price_i / Σ(shares × price)
+```
+
+Only weights are ever printed or plotted — never dollar values.
+
+| Portfolio metric | Aggregation | Notes |
+|---|---|---|
+| **PE, Fwd PE, 2Y Fwd PE** | Harmonic weighted mean `1 / Σ(wᵢ / PEᵢ)` | Equals total value / total earnings (how index providers compute a fund's P/E). Unprofitable names (PE ≤ 0) are excluded and weights renormalised. |
+| **PEG, Mean PEG, PEG SD, Dev(SD), 5Y Growth, Bull/Base/Bear ROI** | Arithmetic weighted mean `Σ(wᵢ × xᵢ)` | Per-position PEG SD is recovered from `\|PEG − Mean\| / \|Dev_SD\|`. |
+| **Median PEG** | Weight-aware median | Smallest PEG whose cumulative weight reaches 50%. |
+| **Income Grade, Credit Rating** | Letter → ordinal score → weighted mean → nearest letter | `A++…D` and `AAA…D` scales; `N/A`/`NR` positions are skipped. |
+
+Positions whose GARP metrics cannot be computed (negative forward PE, no growth estimate) stay in the weight donut but are excluded from the roll-up; the summary reports the **coverage** (share of portfolio weight with valuation data).
+
+**Output differences vs. a normal scan:**
+
+- Terminal table gains a `Weight` column and is sorted by weight descending; a weighted summary block follows the grading/technicals tables.
+- `--plot` produces `tmp/portfolio_allocation.png` instead of the index benchmark bar chart: a weight donut (small positions folded into *Other*), the weighted PEG and its deviation in the centre, a stats box mirroring the per-ticker chart (`Portfolio:` instead of `Ticker:`, plus median PEG, no technicals), weighted income grade / credit rating, and **QQQ + S&P 500 5Y CAGR** next to the portfolio's weighted base ROI. Per-position `TICKER_valuation.png` charts are still generated.
+- `--post` publishes: a *Weekly Portfolio Update* main post carrying the X-ray chart, the AI's one-line portfolio verdict and a portfolio-level 🐂 Bull / 🐻 Bear thesis (weights live in the chart, so no position list); one reply per position in **descending weight order** (identical format to the daily scan, prefixed with `x% of portfolio`); and a closing post asking **@grok** whether the portfolio is well built and which positions are the best and worst.
+- Positions without GARP data (e.g. no forward earnings) keep their weight in the pie and in the position count, and are named in the main post as *weight only*; they simply get no reply of their own.
+- The Gemini prompt receives the weighted summary (including positions excluded for lack of GARP data) and each position's weight; it returns the portfolio verdict + Bull/Bear block in place of the sector sentiment. The per-ticker section of the prompt is unchanged from the index scan.
 
 ## 5Y EPS Growth Estimation
 
@@ -182,11 +222,21 @@ Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) usin
 
 **ROI Scenarios:**
 
-| Scenario | PEG Used | Interpretation |
+| Scenario | PEG Used (current PEG ≤ historical mean) | Interpretation |
 |---|---|---|
 | **Bull** | `terminal_peg + 0.5 × SD` | Market re-rates above mean — multiple expansion. |
 | **Base** | `terminal_peg` | Mean reversion — fair value at maturity. |
 | **Bear** | `max(0.5, min(curr_peg, terminal_peg - 0.5 × SD))` | No re-rating or compression — market stays skeptical. |
+
+When the stock already trades **above** its historical mean PEG, mean reversion would assume a *de-rating* — and for names whose reconstructed history is distorted (e.g. a memory cyclical whose trough EPS drags the 5Y mean PEG toward zero, MU) it produces absurd terminal multiples. In that case the scenarios anchor on **today's multiple holding** instead (the growth-regime cap on the terminal PEG still applies):
+
+| Scenario | PEG Used (current PEG > historical mean) | Interpretation |
+|---|---|---|
+| **Bull** | `min(curr_peg, cap)` | Today's multiple holds through maturity. |
+| **Base** | `bull − 0.5 × SD` (≥ 50% of bull) | Mild compression from today's level. |
+| **Bear** | `bull − 1.0 × SD` (≥ 25% of bull) | Meaningful compression — market cools on the story. |
+
+The AI prompt's "Base ROI math" line uses the same scenario logic, so the implied terminal PE it cites always matches the Base ROI shown.
 
 **Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`
 
@@ -209,11 +259,12 @@ Unit tests covering all modules:
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
 | `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels, 6M directional edge |
-| `engine/ai_research.py` | Prompt building, format helpers, ticker parsing |
-| `graphics/visualizer.py` | Benchmark resolution, output directory creation |
+| `engine/ai_research.py` | Prompt building (index & portfolio modes), format helpers, ticker parsing |
+| `engine/portfolio.py` | Holdings parsing (dedupe/sum, malformed lines), market-value weights, harmonic/arithmetic roll-ups, weighted median, weighted grades |
+| `graphics/visualizer.py` | Benchmark resolution, output directory creation, portfolio X-ray plot, slice grouping |
 | `social/x_publisher.py` | Media upload, retry logic, tweet creation |
 | `social/threads_publisher.py` | Truncation, container creation, threading, topic tags |
-| `main.py` | Sentiment parsing, ticker regex, cashtag removal, IDX mapping |
+| `main.py` | Sentiment parsing, ticker regex, cashtag removal, IDX mapping, portfolio helpers (price extraction, weight sort, flag exclusivity, Grok closer) |
 
 ## Dependencies
 
