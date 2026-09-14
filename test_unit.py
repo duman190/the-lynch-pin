@@ -253,6 +253,19 @@ class TestAIResearch(unittest.TestCase):
         prompt = LynchPinResearcher.build_prompt(data)
         self.assertIn('terminal PEG 1.00', prompt)
 
+    def test_build_prompt_base_math_follows_above_mean_scenario(self):
+        from engine.ai_research import LynchPinResearcher
+        # MU-like row: PEG 0.22 above mean 0.09 → base PEG anchors on current − 0.5 SD, not the 0.09 mean
+        data = [{
+            'Ticker': 'MU*', 'PE': 22.0, 'FwdPE': 6.2, '2YFwd': 4.9,
+            '5YGrowth': '28.7%', 'PEG': 0.22, 'Mean': 0.09, 'Dev_SD': 2.24,
+            'Bull': '24.9%', 'Base': '21.4%', 'Bear': '17.5%'
+        }]
+        prompt = LynchPinResearcher.build_prompt(data)
+        self.assertIn('terminal PEG 0.19', prompt)
+        self.assertNotIn('terminal PEG 0.09', prompt)
+        self.assertIn('= 5x implied PE', prompt)  # 0.19 × 24.3% ≈ 4.6x → not the absurd 2x
+
     @patch('engine.ai_research.genai')
     def test_get_fintwit_trending_parses_tickers(self, mock_genai):
         from engine.ai_research import LynchPinResearcher
@@ -692,6 +705,40 @@ class TestLynchPinCore(unittest.TestCase):
         from engine.lynch_pin_core import _terminal_peg
         # Growth 90%: 1.5 - 0.5*(90/30 - 1) = 1.5 - 1.0 = 0.5 -> floored at 0.8
         self.assertAlmostEqual(_terminal_peg(90, 2.0), 0.8)
+
+    def test_scenario_pegs_below_mean_is_mean_reversion(self):
+        from engine.lynch_pin_core import _scenario_pegs
+        # GOOG-like: PEG 1.20 vs mean 1.51, SD 0.295 → bull mean+0.5SD, base mean, bear = min(curr, mean-0.5SD)
+        bull, base, bear = _scenario_pegs(18.8, 1.51, 1.20, 0.295)
+        self.assertAlmostEqual(base, 1.51)
+        self.assertAlmostEqual(bull, 1.51 + 0.5 * 0.295)
+        self.assertAlmostEqual(bear, 1.20)  # current is below mean-0.5SD=1.36 → bear caps at current
+        self.assertTrue(bull > base > bear)
+
+    def test_scenario_pegs_above_mean_anchors_on_current(self):
+        from engine.lynch_pin_core import _scenario_pegs
+        # MU-like: broken history (mean 0.09) with PEG 0.22 → today's multiple holds; base −0.5SD, bear −1SD
+        std = abs(0.22 - 0.09) / 2.24
+        bull, base, bear = _scenario_pegs(28.7, 0.09, 0.22, std)
+        self.assertAlmostEqual(bull, 0.22)
+        self.assertAlmostEqual(base, 0.22 - 0.5 * std)
+        self.assertAlmostEqual(bear, 0.22 - 1.0 * std)
+        self.assertTrue(bull > base > bear > 0)
+
+    def test_scenario_pegs_above_mean_respects_growth_cap(self):
+        from engine.lynch_pin_core import _scenario_pegs, _terminal_peg
+        # PLTR-like: PEG 1.61 above mean 1.46, but 44.7% growth caps the anchor at 1.25
+        bull, base, bear = _scenario_pegs(44.7, 1.46, 1.61, 0.44)
+        self.assertAlmostEqual(bull, _terminal_peg(44.7, 1.61))
+        self.assertAlmostEqual(bull, 1.5 - 0.5 * (44.7 / 30 - 1))
+        self.assertTrue(bull > base > bear > 0)
+
+    def test_scenario_pegs_above_mean_floors_when_sd_is_huge(self):
+        from engine.lynch_pin_core import _scenario_pegs
+        # SD far larger than the PEG itself: floors keep base ≥ 50% and bear ≥ 25% of the anchor
+        bull, base, bear = _scenario_pegs(15, 1.0, 1.2, 5.0)
+        self.assertAlmostEqual(base, 0.6)
+        self.assertAlmostEqual(bear, 0.3)
 
     def test_terminal_peg_high_growth_uses_mean_when_lower(self):
         from engine.lynch_pin_core import _terminal_peg
@@ -1374,6 +1421,233 @@ class TestSimulator(unittest.TestCase):
         self.assertTrue(self.sim._maybe_breakeven(pos, 105.0))
         self.assertFalse(self.sim._maybe_breakeven(pos, 106.0))  # already at entry
         self.assertEqual(pos["stop"], 100.0)
+
+
+# ─── engine/portfolio.py ───
+
+class TestPortfolio(unittest.TestCase):
+    """Portfolio file parsing, weighting, weighted roll-ups and the X-ray plot."""
+
+    ROWS = [
+        {'Ticker': 'AAPL*', 'PE': 30.0, 'FwdPE': 25.0, '2YFwd': 22.0, '5YGrowth': '10%',
+         'PEG': 2.5, 'Mean': 2.0, 'Dev_SD': 1.0, 'Bull': '12%', 'Base': '8%', 'Bear': '2%'},
+        {'Ticker': 'MSFT', 'PE': 35.0, 'FwdPE': 30.0, '2YFwd': 26.0, '5YGrowth': '15%',
+         'PEG': 2.0, 'Mean': 2.2, 'Dev_SD': -0.5, 'Bull': '18%', 'Base': '12%', 'Bear': '6%'},
+        {'Ticker': 'NVDA', 'PE': 50.0, 'FwdPE': 30.0, '2YFwd': 22.0, '5YGrowth': '40%',
+         'PEG': 0.75, 'Mean': 1.2, 'Dev_SD': -1.5, 'Bull': '30%', 'Base': '20%', 'Bear': '10%'},
+    ]
+
+    def _write(self, content):
+        import tempfile
+        f = tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False)
+        f.write(content)
+        f.close()
+        self.addCleanup(os.remove, f.name)
+        return f.name
+
+    def test_parse_dedupes_and_sums_shares(self):
+        from engine.portfolio import parse_portfolio_file
+        path = self._write("# holdings\nAAPL, 10\nmsft 5\nAAPL, 5\nNVDA;20\nGOOGL\t3\n\n")
+        pos = parse_portfolio_file(path)
+        self.assertEqual(list(pos.keys()), ['AAPL', 'MSFT', 'NVDA', 'GOOGL'])  # first-seen order
+        self.assertEqual(pos['AAPL'], 15.0)
+        self.assertEqual(pos['MSFT'], 5.0)
+        self.assertEqual(pos['GOOGL'], 3.0)
+
+    def test_parse_fractional_and_thousands(self):
+        from engine.portfolio import parse_portfolio_file
+        pos = parse_portfolio_file(self._write("VTI, 1,250.5\nBRK.B, 2\n"))
+        self.assertEqual(pos['VTI'], 1250.5)
+        self.assertIn('BRK.B', pos)
+
+    def test_parse_rejects_bad_line(self):
+        from engine.portfolio import parse_portfolio_file
+        with self.assertRaises(ValueError):
+            parse_portfolio_file(self._write("AAPL, 10\nthis is not a position\n"))
+        with self.assertRaises(ValueError):
+            parse_portfolio_file(self._write("AAPL, 0\n"))
+        with self.assertRaises(ValueError):
+            parse_portfolio_file(self._write("# only comments\n"))
+        with self.assertRaises(FileNotFoundError):
+            parse_portfolio_file('/nonexistent/portfolio.txt')
+
+    def test_compute_weights_by_market_value_desc(self):
+        from engine.portfolio import compute_weights
+        pos = {'AAPL': 15, 'MSFT': 5, 'NVDA': 20, 'GOOGL': 3, 'NOPX': 100}
+        w = compute_weights(pos, {'AAPL': 200, 'MSFT': 420, 'NVDA': 120, 'GOOGL': 170, 'NOPX': None})
+        # 3000, 2100, 2400, 510 -> total 8010; unpriced NOPX dropped
+        self.assertEqual(list(w.keys()), ['AAPL', 'NVDA', 'MSFT', 'GOOGL'])
+        self.assertAlmostEqual(sum(w.values()), 1.0)
+        self.assertAlmostEqual(w['AAPL'], 3000 / 8010)
+        self.assertNotIn('NOPX', w)
+        self.assertEqual(compute_weights({'X': 1}, {}), {})
+
+    def test_weighted_metrics_arithmetic_and_harmonic(self):
+        from engine.portfolio import weighted_metrics
+        w = {'AAPL': 0.5, 'MSFT': 0.25, 'NVDA': 0.25}
+        wm = weighted_metrics(self.ROWS, w)
+        self.assertAlmostEqual(wm['PEG'], 0.5 * 2.5 + 0.25 * 2.0 + 0.25 * 0.75)
+        self.assertAlmostEqual(wm['Growth'], 0.5 * 10 + 0.25 * 15 + 0.25 * 40)
+        self.assertAlmostEqual(wm['Base'], 0.5 * 8 + 0.25 * 12 + 0.25 * 20)
+        self.assertAlmostEqual(wm['Dev_SD'], 0.5 * 1.0 + 0.25 * -0.5 + 0.25 * -1.5)
+        # Harmonic: 1 / Σ(w/PE)
+        self.assertAlmostEqual(wm['PE'], 1 / (0.5 / 30 + 0.25 / 35 + 0.25 / 50))
+        self.assertAlmostEqual(wm['FwdPE'], 1 / (0.5 / 25 + 0.25 / 30 + 0.25 / 30))
+        # Std recovered from |PEG-Mean|/|Dev|: 0.5, 0.4, 0.3
+        self.assertAlmostEqual(wm['Std'], 0.5 * 0.5 + 0.25 * 0.4 + 0.25 * 0.3)
+        self.assertEqual(wm['MedianPEG'], 2.0)  # sorted 0.75(.25) → 2.0(.50 cumulative) → 2.5
+        self.assertAlmostEqual(wm['Coverage'], 1.0)
+        self.assertEqual(wm['Positions'], 3)
+
+    def test_weighted_metrics_excludes_nonpositive_pe_and_uncovered_rows(self):
+        from engine.portfolio import weighted_metrics
+        rows = [dict(self.ROWS[0]), dict(self.ROWS[1])]
+        rows[0]['PE'] = 0  # unprofitable: engine reports 0
+        w = {'AAPL': 0.5, 'MSFT': 0.3, 'GOOGL': 0.2}  # GOOGL has no row
+        wm = weighted_metrics(rows, w)
+        self.assertAlmostEqual(wm['PE'], 35.0)  # only MSFT counts
+        self.assertAlmostEqual(wm['Coverage'], 0.8)
+        self.assertEqual(wm['Positions'], 2)
+        self.assertEqual(wm['TotalPositions'], 3)
+        from engine.portfolio import format_weighted_summary
+        self.assertIn('2 of 3 positions have GARP data', format_weighted_summary(wm))
+
+    def test_weighted_metrics_empty(self):
+        from engine.portfolio import weighted_metrics
+        wm = weighted_metrics([], {})
+        self.assertIsNone(wm['PEG'])
+        self.assertEqual(wm['IncomeGrade'], 'N/A')
+        self.assertEqual(wm['CreditRating'], 'NR')
+
+    def test_weighted_grades(self):
+        from engine.portfolio import weighted_income_grade, weighted_credit_rating
+        w = {'A': 0.5, 'B': 0.5}
+        grade, score = weighted_income_grade(w, {'A': {'grade': 'A++'}, 'B': {'grade': 'B'}})
+        self.assertEqual(grade, 'A')  # (8 + 4) / 2 = 6 -> A
+        rating, rscore = weighted_credit_rating(w, {'A': {'rating': 'AAA'}, 'B': {'rating': 'BBB'}})
+        self.assertEqual(rating, 'A+')  # (20 + 12) / 2 = 16 -> A+
+        self.assertEqual(rscore, 16)
+        # N/A grades and missing tickers are ignored
+        grade, _ = weighted_income_grade(w, {'A': {'grade': 'N/A'}})
+        self.assertEqual(grade, 'N/A')
+
+    def test_format_summary_handles_none(self):
+        from engine.portfolio import weighted_metrics, format_weighted_summary
+        text = format_weighted_summary(weighted_metrics([], {}))
+        self.assertIn('N/A', text)
+        self.assertIn('Weighted PEG', text)
+
+    def test_plot_portfolio_creates_image_without_network(self):
+        from graphics.visualizer import LynchPinVisualizer
+        from engine.portfolio import weighted_metrics
+        import tempfile
+        viz = LynchPinVisualizer(output_dir=tempfile.gettempdir())
+        w = {'AAPL': 0.5, 'MSFT': 0.25, 'NVDA': 0.25}
+        wm = weighted_metrics(self.ROWS, w, {'AAPL': {'grade': 'A'}}, {'AAPL': {'rating': 'AAA'}})
+        with patch('graphics.visualizer.yf.download') as dl:
+            path = viz.plot_portfolio(w, wm, benchmark_returns=[('QQQ (5.0Y)', 17.0), ('S&P 500 (5.0Y)', 13.0)])
+            dl.assert_not_called()
+        self.assertTrue(os.path.exists(path))
+        self.assertTrue(path.endswith('portfolio_allocation.png'))
+        os.remove(path)
+
+    def test_pie_slices_group_small_positions(self):
+        from graphics.visualizer import LynchPinVisualizer
+        import tempfile
+        viz = LynchPinVisualizer(output_dir=tempfile.gettempdir())
+        w = {'NVDA': 0.5, 'MSFT': 0.3, 'AAPL': 0.1, 'TSM': 0.03, 'AMD': 0.02,
+             'PLTR': 0.02, 'KO': 0.02, 'PEP': 0.01}
+        slices = viz._pie_slices(w)
+        labels = [t for t, _ in slices]
+        # Everything below the on-wedge label threshold is folded into one slice
+        self.assertEqual(labels, ['NVDA', 'MSFT', 'AAPL', 'Other (5)'])
+        self.assertAlmostEqual(dict(slices)['Other (5)'], 0.10)
+        self.assertAlmostEqual(sum(v for _, v in slices), 1.0)
+        # A single small position keeps its own name; nothing to group otherwise
+        self.assertEqual([t for t, _ in viz._pie_slices({'A': 0.98, 'B': 0.02})], ['A', 'B'])
+        self.assertEqual(len(viz._pie_slices({'A': 0.6, 'B': 0.4})), 2)
+
+
+# ─── main.py portfolio helpers ───
+
+class TestMainPortfolioHelpers(unittest.TestCase):
+
+    def test_extract_price_priority_and_none(self):
+        from main import _extract_price
+        self.assertEqual(_extract_price({'currentPrice': 101.5, 'regularMarketPrice': 99}), 101.5)
+        self.assertEqual(_extract_price({'regularMarketPrice': 99}), 99.0)
+        self.assertEqual(_extract_price({'currentPrice': 0, 'previousClose': 50}), 50.0)
+        self.assertIsNone(_extract_price({}))
+        self.assertIsNone(_extract_price(None))
+
+    def test_sort_positions_desc_by_weight(self):
+        from main import _sort_positions
+        df = pd.DataFrame([{'Ticker': 'AAPL*', 'PEG': 2.5}, {'Ticker': 'NVDA', 'PEG': 0.7},
+                           {'Ticker': 'ZZZ', 'PEG': 1.0}])
+        out = _sort_positions(df, {'AAPL': 0.3, 'NVDA': 0.6})
+        self.assertEqual(list(out['Ticker']), ['NVDA', 'AAPL*', 'ZZZ'])
+        self.assertEqual(out['Weight'].tolist(), [0.6, 0.3, 0.0])
+
+    def test_resolve_idx_name(self):
+        from main import _resolve_idx_name
+        import argparse
+        a = argparse.Namespace(weekly=False, portfolio='pf.txt', src='database/smh.txt')
+        self.assertEqual(_resolve_idx_name(a), 'SPY')
+        a = argparse.Namespace(weekly=False, portfolio=None, src='database/smh.txt')
+        self.assertEqual(_resolve_idx_name(a), 'SMH')
+        a = argparse.Namespace(weekly=True, portfolio=None, src='database/smh.txt')
+        self.assertEqual(_resolve_idx_name(a), 'SPY')
+
+    def test_grok_portfolio_question(self):
+        from main import _grok_portfolio_question
+        q = _grok_portfolio_question(7)
+        self.assertIn('@grok', q)
+        self.assertIn('BEST', q)
+        self.assertIn('WORST', q)
+        self.assertIn('7 positions', q)
+        self.assertIn('DISCLAIMER', q)
+
+    def test_portfolio_flag_rejects_top_and_excl_bad(self):
+        import sys
+        from unittest.mock import patch as _patch
+        import main as m
+        with _patch.object(sys, 'argv', ['main.py', '--portfolio', 'x.txt', '--top', '3']), \
+             _patch('builtins.print') as p:
+            m.main()
+        self.assertTrue(any('cannot be combined' in str(c) for c in p.call_args_list))
+
+    def test_extract_portfolio_narrative(self):
+        from main import _extract_portfolio_narrative
+        bulk = ("PORTFOLIO:\n🐂 Bull: Three AAA names and $NVDA carry it.\n\n🐻 Bear: $AAPL is 37%.\n\n"
+                "$AAPL:\n🤖: AAPL overview.\n📊 Reverse DCF: math.\n\n$NVDA:\n🤖: NVDA overview.")
+        narrative, rest = _extract_portfolio_narrative(bulk)
+        self.assertTrue(narrative.startswith('🐂 Bull:'))
+        self.assertIn('🐻 Bear: AAPL is 37%.', narrative)   # cashtags stripped
+        self.assertNotIn('$', narrative)
+        self.assertNotIn('PORTFOLIO:', rest)
+        self.assertTrue(rest.startswith('$AAPL:'))
+        # Per-ticker regex still finds each block in the remaining text
+        import re
+        m = re.search(r"^\$NVDA\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)", rest, re.DOTALL | re.MULTILINE)
+        self.assertIn('NVDA overview', m.group(1))
+        # Absent block → empty narrative, text untouched
+        self.assertEqual(_extract_portfolio_narrative("$AAPL:\nx"), ("", "$AAPL:\nx"))
+
+    def test_build_prompt_portfolio_mode(self):
+        from engine.ai_research import LynchPinResearcher
+        rows = [{'Ticker': 'AAPL', 'PE': 30, 'FwdPE': 25, '2YFwd': 22, '5YGrowth': '10%', 'PEG': 2.5,
+                 'Mean': 2.0, 'Dev_SD': 1.0, 'Bull': '12%', 'Base': '8%', 'Bear': '2%'}]
+        p = LynchPinResearcher.build_prompt(rows, portfolio_summary="  Weighted PEG: 1.7")
+        self.assertIn('PORTFOLIO', p)
+        self.assertIn('Weighted PEG: 1.7', p)
+        self.assertNotIn('INDEX: $', p)
+        self.assertIn('SENTIMENT:', p)
+        self.assertIn('PORTFOLIO:\n🐂 Bull:', p)          # portfolio-level bull/bear requested
+        self.assertIn('📊 Reverse DCF', p)                  # per-position format = daily scan format
+        self.assertIn('🧪 Stomach Test', p)
+        p2 = LynchPinResearcher.build_prompt(rows, idx_name='QQQ')
+        self.assertIn('INDEX: $QQQ', p2)
+        self.assertNotIn('PORTFOLIO', p2)
 
 
 if __name__ == '__main__':
