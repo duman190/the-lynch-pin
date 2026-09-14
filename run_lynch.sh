@@ -82,13 +82,12 @@ while ! ping -c 1 -t 1 8.8.8.8 &> /dev/null; do
     sleep 10
     ((COUNT++))
 done
-
+echo "  [✓] Network Online" | tee -a "$LOG_FILE"
 
 # Pull latest changes now that network is confirmed
 echo "📥 Pulling latest code..." | tee -a "$LOG_FILE"
 git pull >> "$LOG_FILE" 2>&1 || echo "  ⚠️ git pull failed, continuing with current version" | tee -a "$LOG_FILE"
 
-echo "  [✓] Network Online" | tee -a "$LOG_FILE"
 # Generates a random sleep between 60 and 180 seconds
 RAND_SLEEP=$((60 + RANDOM % 121))
 echo "  ⌛ Shifting start time by ${RAND_SLEEP}s to avoid the 1:00 PM API rush..." | tee -a "$LOG_FILE"
