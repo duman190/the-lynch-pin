@@ -282,3 +282,184 @@ class LynchPinVisualizer:
         plt.savefig(path, dpi=300, facecolor='#121212')
         plt.close()
         return path
+
+    # Any position too thin to carry its label on the wedge is folded into "Other".
+    _PIE_MIN_SLICE = 0.035
+
+    def _pie_slices(self, weights):
+        """Collapses positions below ``_PIE_MIN_SLICE`` into a single 'Other (n)' slice.
+
+        Every remaining slice is wide enough to be labelled on the wedge itself,
+        so no labels ever need to spill outside the donut.
+        """
+        items = sorted(weights.items(), key=lambda kv: kv[1], reverse=True)
+        keep = [(t, w) for t, w in items if w >= self._PIE_MIN_SLICE]
+        small = [(t, w) for t, w in items if w < self._PIE_MIN_SLICE]
+        if len(small) == 1:
+            # A lone small position is clearer named than hidden behind "Other"
+            keep.append(small[0])
+        elif small:
+            keep.append((f"Other ({len(small)})", sum(w for _, w in small)))
+        return keep
+
+    def plot_portfolio(self, weights, wm, benchmark_returns=None):
+        """Portfolio X-ray: market-value weight donut + weighted GARP stats.
+
+        Args:
+            weights: ticker → weight (fractions summing to ~1). No $ values.
+            wm: output of ``engine.portfolio.weighted_metrics``.
+            benchmark_returns: optional ``[(label, cagr_pct), ...]``; when
+                None, QQQ and S&P 500 5Y CAGRs are fetched via yfinance.
+        """
+        if benchmark_returns is None:
+            benchmark_returns = [self._get_benchmark_data("qqq"), self._get_benchmark_data("spy")]
+
+        sky_blue = '#5D9CEC'
+        pure_white = '#FFFFFF'
+        fig = plt.figure(figsize=(12, 7))
+        ax = fig.add_axes([0.01, 0.02, 0.52, 0.86])  # donut occupies the left half
+
+        slices = self._pie_slices(weights)
+        labels = [t for t, _ in slices]
+        vals = [w for _, w in slices]
+
+        # Blue-to-white gradient so the largest positions "pop" brightest
+        cmap = plt.get_cmap('Blues')
+        colors = [cmap(0.85 - 0.55 * (i / max(len(vals) - 1, 1))) for i in range(len(vals))]
+
+        wedges, _ = ax.pie(vals, startangle=90, counterclock=False, colors=colors,
+                           wedgeprops=dict(width=0.42, edgecolor='#121212', linewidth=2.5))
+        # Soft glow ring behind the donut
+        ax.add_patch(plt.Circle((0, 0), 1.03, color=sky_blue, alpha=0.10, zorder=0, lw=0))
+
+        # Labels: "TICKER  12%" on each wedge. Slices are pre-grouped so all are
+        # wide enough, except possibly a lone small position / thin "Other" —
+        # those get a compact label just outside the ring.
+        for wedge, lbl, w in zip(wedges, labels, vals):
+            ang = np.deg2rad((wedge.theta1 + wedge.theta2) / 2)
+            r = 0.79
+            x, y = r * np.cos(ang), r * np.sin(ang)
+            if w >= self._PIE_MIN_SLICE:
+                ax.text(x, y, f"{lbl}\n{w * 100:.1f}%", ha='center', va='center',
+                        fontsize=11 if w >= 0.08 else 9, fontweight='bold',
+                        color='#121212' if w >= 0.12 else pure_white, zorder=5)
+            else:
+                ax.text(1.14 * np.cos(ang), 1.14 * np.sin(ang), f"{lbl} {w * 100:.1f}%",
+                        ha='center', va='center', fontsize=8, color='#B0B0B0', zorder=5)
+
+        # Center: headline weighted PEG vs historical mean
+        peg = wm.get('PEG')
+        dev = wm.get('Dev_SD')
+        ax.text(0, 0.12, f"{peg:.2f}" if peg is not None else "N/A", ha='center', va='center',
+                fontsize=30, fontweight='black', color=pure_white)
+        ax.text(0, -0.16, "WEIGHTED PEG", ha='center', va='center',
+                fontsize=11, fontweight='bold', color='#B0B0B0')
+        if dev is not None:
+            ax.text(0, -0.36, f"{dev:+.2f} SD", ha='center', va='center', fontsize=12,
+                    fontweight='bold', color=pure_white, zorder=10,
+                    bbox=dict(facecolor='#FF4B2B' if dev > 0 else '#2ECC71',
+                              edgecolor='none', boxstyle='round,pad=0.3'))
+        ax.set_xlim(-1.08, 1.08)
+        ax.set_ylim(-1.08, 1.08)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        # Rendered vertical extent of the donut ring (figure coords) — the title and
+        # the right-hand boxes are laid out relative to it.
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        to_fig = fig.transFigure.inverted()
+        ring_top = to_fig.transform(ax.transData.transform((0, 1.0)))[1]
+        ring_bottom = to_fig.transform(ax.transData.transform((0, -1.0)))[1]
+
+        title = fig.text(0.03, ring_top + 0.035, 'PORTFOLIO X-RAY: WEIGHT & WEIGHTED GARP METRICS',
+                         fontsize=20, fontweight='bold', color=sky_blue, va='bottom')
+        title_bottom = to_fig.transform((0, title.get_window_extent(renderer).y0))[1]
+
+        box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.9', alpha=0.9)
+
+        def fmt(v, spec, suffix=''):
+            return (format(v, spec) + suffix) if v is not None else 'N/A'
+
+        # Stats box (right, top) — mirrors the per-ticker box, "Portfolio:" instead of "Ticker:"
+        n_pos = len(weights)
+        stats_text = (
+            f"Portfolio:{(str(n_pos) + ' positions'):>13}\n"
+            f"-----------------------\n"
+            f"- W. PE:       {fmt(wm.get('PE'), '.1f'):>8}\n"
+            f"- W. Fwd PE:   {fmt(wm.get('FwdPE'), '.1f'):>8}\n"
+            f"- W. 2YFwd PE: {fmt(wm.get('2YFwd'), '.1f'):>8}\n"
+            f"- W. PEG:      {fmt(wm.get('PEG'), '.2f'):>8}\n"
+            f"- Median PEG:  {fmt(wm.get('MedianPEG'), '.2f'):>8}\n"
+            f"- W. Growth:   {fmt(wm.get('Growth'), '.1f', '%'):>8}\n"
+            f"- W. Bull ROI: {fmt(wm.get('Bull'), '.1f', '%'):>8}\n"
+            f"- W. Base ROI: {fmt(wm.get('Base'), '.1f', '%'):>8}\n"
+            f"- W. Bear ROI: {fmt(wm.get('Bear'), '.1f', '%'):>8}"
+        )
+
+        # Quality + benchmark box (right, lower)
+        base = wm.get('Base')
+        q_lines = [
+            f"Quality (weighted)",
+            f"-----------------------",
+            f"- Income Grade: {wm.get('IncomeGrade', 'N/A'):>7}",
+            f"- Credit Rating:{wm.get('CreditRating', 'NR'):>7}",
+            "",
+            f"5Y Index Return vs Base",
+            f"-----------------------",
+        ]
+        for lbl, cagr in benchmark_returns:
+            short = lbl.split(' (')[0]
+            q_lines.append(f"- {short:<10}{cagr:>10.1f}%")
+        q_lines.append(f"- {'Portfolio':<10}{fmt(base, '.1f', '%'):>11}")
+        quality_text = "\n".join(q_lines)
+
+        # Lay the two boxes out in the span between the title's bottom and the ring's
+        # bottom: lower box stands on the ring's bottom edge, and the gap title→upper
+        # box equals the gap upper→lower box. Font steps down only if they can't fit.
+        def _patch_extent(t):
+            bb = t.get_bbox_patch().get_window_extent(renderer)
+            return to_fig.transform((0, bb.y0))[1], to_fig.transform((0, bb.y1))[1]
+
+        for fs in (14, 13, 12, 11):
+            top_box = fig.text(0.55, 0.5, stats_text, fontsize=fs, color='#E0E0E0',
+                               family='monospace', va='top', bbox=box_style, fontweight='bold')
+            low_box = fig.text(0.55, 0.5, quality_text, fontsize=fs, color='#E0E0E0',
+                               family='monospace', va='bottom', bbox=box_style, fontweight='bold')
+            fig.canvas.draw()
+            t_lo, t_hi = _patch_extent(top_box)
+            l_lo, l_hi = _patch_extent(low_box)
+            gap = (title_bottom - ring_bottom - (t_hi - t_lo) - (l_hi - l_lo)) / 2.0
+            if gap >= 0.015 or fs == 11:
+                break
+            top_box.remove()
+            low_box.remove()
+
+        # Shift each box so its frame (not just its text) lands on the target edge
+        top_box.set_position((0.55, 0.5 + (title_bottom - gap) - t_hi))
+        low_box.set_position((0.55, 0.5 + ring_bottom - l_lo))
+
+        # Crop to the visible content (ring, title, boxes) with an equal outer
+        # margin on every side = half the ring→box gap. Computed explicitly
+        # because bbox_inches='tight' would also include the invisible axes frame.
+        fig.canvas.draw()
+        from matplotlib.transforms import Bbox
+        fw, fh = fig.get_figwidth(), fig.get_figheight()
+        ring_left = to_fig.transform(ax.transData.transform((-1.03, 0)))[0]
+        ring_right = to_fig.transform(ax.transData.transform((1.03, 0)))[0]
+        ring_low = to_fig.transform(ax.transData.transform((0, -1.03)))[1]
+        box_exts = [t.get_bbox_patch().get_window_extent(renderer) for t in (top_box, low_box)]
+        box_left = min(to_fig.transform((b.x0, 0))[0] for b in box_exts)
+        box_right = max(to_fig.transform((b.x1, 0))[0] for b in box_exts)
+        title_top = to_fig.transform((0, title.get_window_extent(renderer).y1))[1]
+        pad_in = max((box_left - ring_right) * fw / 2.0, 0.05)
+
+        crop = Bbox.from_extents(min(ring_left, 0.03) * fw - pad_in,
+                                 ring_low * fh - pad_in,
+                                 max(box_right, ring_right) * fw + pad_in,
+                                 title_top * fh + pad_in)
+
+        path = os.path.join(self.output_dir, "portfolio_allocation.png")
+        plt.savefig(path, dpi=300, facecolor='#121212', bbox_inches=crop)
+        plt.close(fig)
+        return path
