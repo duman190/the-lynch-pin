@@ -97,6 +97,7 @@ case $DAY in
     4) ARGS="main.py --src database/smh.txt --top 8 --excl-bad --post --post_threads" ;;
     5) ARGS="main.py --src database/igv.txt --top 8 --excl-bad --post --post_threads" ;;
     6) ARGS="main.py --weekly --top 8 --excl-bad --post --post_threads" ;;
+    7) ARGS="main.py --portfolio database/just_for_fun.txt --post --post_threads" ;;
     *) echo "Sunday. No scan." | tee -a "$LOG_FILE" ; exit 0 ;;
 esac
 
