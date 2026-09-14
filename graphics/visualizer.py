@@ -314,67 +314,94 @@ class LynchPinVisualizer:
         if benchmark_returns is None:
             benchmark_returns = [self._get_benchmark_data("qqq"), self._get_benchmark_data("spy")]
 
+        from matplotlib.colors import to_rgba
+        from matplotlib.patches import Wedge
+
+        # Same palette as the benchmark bars / bell curve
         sky_blue = '#5D9CEC'
         pure_white = '#FFFFFF'
-        fig = plt.figure(figsize=(12, 7))
-        ax = fig.add_axes([0.01, 0.02, 0.52, 0.86])  # donut occupies the left half
+        ring_width = 0.42
+        r_in = 1.0 - ring_width
+
+        # Fixed 7in height like the other charts; the width is whatever the content
+        # needs (donut + boxes + equal outer margins), so there is no dead space.
+        # Because the image ends up narrower than the 12in canvas of the other
+        # charts, every font is scaled by ``s = width / 12`` so that, displayed at
+        # the same width (e.g. in an X thread), titles and box text look the same
+        # size as on the benchmark / per-ticker charts.
+        # Created at the output dpi: multi-line text is laid out with dpi-rounded
+        # line heights, so measuring at 100 dpi and saving at 300 would misplace
+        # the boxes by up to a line.
+        H, MARGIN, GAP = 7.0, 0.3, 0.45       # inches: canvas height, outer margin, donut→box gap
+        fig = plt.figure(figsize=(12, H), dpi=300)
+        ax = fig.add_axes([0.0, 0.0, 0.5, 0.5])  # donut; positioned once the layout is known
 
         slices = self._pie_slices(weights)
         labels = [t for t, _ in slices]
         vals = [w for _, w in slices]
 
-        # Blue-to-white gradient so the largest positions "pop" brightest
-        cmap = plt.get_cmap('Blues')
-        colors = [cmap(0.85 - 0.55 * (i / max(len(vals) - 1, 1))) for i in range(len(vals))]
+        # One hue (sky blue) fading towards the dark background, so the largest
+        # positions "pop" brightest — mirrors the bar chart's blue-on-dark look.
+        n = len(vals)
+        alphas = np.linspace(0.95, 0.40, n) if n > 1 else [0.95]
+        colors = [to_rgba(sky_blue, alpha=a) for a in alphas]
+
+        # 1. GLOWING RING: sharp white edges + soft blue/white halo on both rims
+        for radius in (1.0, r_in):
+            ax.add_patch(plt.Circle((0, 0), radius, fill=False, edgecolor=sky_blue,
+                                    lw=22, alpha=0.12, zorder=1))
+            ax.add_patch(plt.Circle((0, 0), radius, fill=False, edgecolor=pure_white,
+                                    lw=12, alpha=0.15, zorder=2))
 
         wedges, _ = ax.pie(vals, startangle=90, counterclock=False, colors=colors,
-                           wedgeprops=dict(width=0.42, edgecolor='#121212', linewidth=2.5))
-        # Soft glow ring behind the donut
-        ax.add_patch(plt.Circle((0, 0), 1.03, color=sky_blue, alpha=0.10, zorder=0, lw=0))
+                           wedgeprops=dict(width=ring_width, edgecolor=pure_white,
+                                           linewidth=2.5, zorder=3))
 
-        # Labels: "TICKER  12%" on each wedge. Slices are pre-grouped so all are
+        # 2. AIRY WHITE GLOW on the outer rim (same top-down fade as the bars)
+        glow_start = r_in + ring_width * 0.7
+        for level in np.linspace(glow_start, 1.0, 20, endpoint=False):
+            intensity = ((level - glow_start) / (1.0 - glow_start)) ** 2.0
+            ax.add_patch(Wedge((0, 0), 1.0, 0, 360, width=1.0 - level, facecolor=pure_white,
+                               edgecolor='none', alpha=intensity * 0.15, zorder=4))
+
+        # 3. LABELS: "TICKER  12%" on each wedge. Slices are pre-grouped so all are
         # wide enough, except possibly a lone small position / thin "Other" —
         # those get a compact label just outside the ring.
+        scaled = []  # (text artist, base fontsize) — rescaled once ``s`` is known
         for wedge, lbl, w in zip(wedges, labels, vals):
             ang = np.deg2rad((wedge.theta1 + wedge.theta2) / 2)
-            r = 0.79
+            r = r_in + ring_width / 2
             x, y = r * np.cos(ang), r * np.sin(ang)
             if w >= self._PIE_MIN_SLICE:
-                ax.text(x, y, f"{lbl}\n{w * 100:.1f}%", ha='center', va='center',
-                        fontsize=11 if w >= 0.08 else 9, fontweight='bold',
-                        color='#121212' if w >= 0.12 else pure_white, zorder=5)
+                fs = 12 if w >= 0.08 else 10
+                t = ax.text(x, y, f"{lbl}\n{w * 100:.1f}%", ha='center', va='center',
+                            fontsize=fs, fontweight='bold', color=pure_white, zorder=5)
             else:
-                ax.text(1.14 * np.cos(ang), 1.14 * np.sin(ang), f"{lbl} {w * 100:.1f}%",
-                        ha='center', va='center', fontsize=8, color='#B0B0B0', zorder=5)
+                fs = 9
+                t = ax.text(1.14 * np.cos(ang), 1.14 * np.sin(ang), f"{lbl} {w * 100:.1f}%",
+                            ha='center', va='center', fontsize=fs, color='#B0B0B0', zorder=5)
+            scaled.append((t, fs))
 
-        # Center: headline weighted PEG vs historical mean
+        # 4. CENTER: headline weighted PEG vs historical mean (badge styled like
+        # the per-ticker SD marker)
         peg = wm.get('PEG')
         dev = wm.get('Dev_SD')
-        ax.text(0, 0.12, f"{peg:.2f}" if peg is not None else "N/A", ha='center', va='center',
-                fontsize=30, fontweight='black', color=pure_white)
-        ax.text(0, -0.16, "WEIGHTED PEG", ha='center', va='center',
-                fontsize=11, fontweight='bold', color='#B0B0B0')
+        scaled.append((ax.text(0, 0.12, f"{peg:.2f}" if peg is not None else "N/A",
+                               ha='center', va='center', fontsize=30, fontweight='black',
+                               color=pure_white), 30))
+        scaled.append((ax.text(0, -0.16, "WEIGHTED PEG", ha='center', va='center',
+                               fontsize=11, fontweight='bold', color='#B0B0B0'), 11))
         if dev is not None:
-            ax.text(0, -0.36, f"{dev:+.2f} SD", ha='center', va='center', fontsize=12,
-                    fontweight='bold', color=pure_white, zorder=10,
-                    bbox=dict(facecolor='#FF4B2B' if dev > 0 else '#2ECC71',
-                              edgecolor='none', boxstyle='round,pad=0.3'))
-        ax.set_xlim(-1.08, 1.08)
-        ax.set_ylim(-1.08, 1.08)
+            scaled.append((ax.text(0, -0.38, f" {dev:+.2f} SD ", ha='center', va='center',
+                                   fontsize=14, fontweight='bold', color=pure_white, zorder=10,
+                                   bbox=dict(facecolor='#FF4B2B' if dev > 0 else '#2ECC71',
+                                             edgecolor='none', boxstyle='round,pad=0.4')), 14))
+        # Halo (lw 22pt) reaches r≈1.05; the axes frame is the ring's visible extent
+        R_AX = 1.06
+        ax.set_xlim(-R_AX, R_AX)
+        ax.set_ylim(-R_AX, R_AX)
         ax.set_aspect('equal')
         ax.axis('off')
-
-        # Rendered vertical extent of the donut ring (figure coords) — the title and
-        # the right-hand boxes are laid out relative to it.
-        fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()
-        to_fig = fig.transFigure.inverted()
-        ring_top = to_fig.transform(ax.transData.transform((0, 1.0)))[1]
-        ring_bottom = to_fig.transform(ax.transData.transform((0, -1.0)))[1]
-
-        title = fig.text(0.03, ring_top + 0.035, 'PORTFOLIO X-RAY: WEIGHT & WEIGHTED GARP METRICS',
-                         fontsize=20, fontweight='bold', color=sky_blue, va='bottom')
-        title_bottom = to_fig.transform((0, title.get_window_extent(renderer).y0))[1]
 
         box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.9', alpha=0.9)
 
@@ -414,52 +441,73 @@ class LynchPinVisualizer:
         q_lines.append(f"- {'Portfolio':<10}{fmt(base, '.1f', '%'):>11}")
         quality_text = "\n".join(q_lines)
 
-        # Lay the two boxes out in the span between the title's bottom and the ring's
-        # bottom: lower box stands on the ring's bottom edge, and the gap title→upper
-        # box equals the gap upper→lower box. Font steps down only if they can't fit.
-        def _patch_extent(t):
-            bb = t.get_bbox_patch().get_window_extent(renderer)
-            return to_fig.transform((0, bb.y0))[1], to_fig.transform((0, bb.y1))[1]
+        title = fig.text(0, 0, 'PORTFOLIO X-RAY: WEIGHT & WEIGHTED GARP METRICS',
+                         fontweight='bold', color=sky_blue, va='top')
+        top_box = fig.text(0, 0, stats_text, color='#E0E0E0', family='monospace', ha='right',
+                           va='top', multialignment='left', bbox=box_style, fontweight='bold')
+        low_box = fig.text(0, 0, quality_text, color='#E0E0E0', family='monospace', ha='right',
+                           va='bottom', multialignment='left', bbox=box_style, fontweight='bold')
 
-        for fs in (14, 13, 12, 11):
-            top_box = fig.text(0.55, 0.5, stats_text, fontsize=fs, color='#E0E0E0',
-                               family='monospace', va='top', bbox=box_style, fontweight='bold')
-            low_box = fig.text(0.55, 0.5, quality_text, fontsize=fs, color='#E0E0E0',
-                               family='monospace', va='bottom', bbox=box_style, fontweight='bold')
+        renderer = fig.canvas.get_renderer()
+        dpi = fig.dpi
+
+        def _extent_in(artist):
+            """(x0, y0, x1, y1) of the artist's frame in inches, at its current position."""
+            patch = artist.get_bbox_patch()
+            bb = patch.get_window_extent(renderer) if patch else artist.get_window_extent(renderer)
+            return bb.x0 / dpi, bb.y0 / dpi, bb.x1 / dpi, bb.y1 / dpi
+
+        # Layout (inches). The right-hand boxes fill the span between the title's
+        # bottom and the ring's bottom: lower box stands on the ring's bottom edge,
+        # gap title→upper box == gap upper→lower box. Their font steps down (from
+        # the per-ticker chart's 16pt) only if they can't fit. The canvas width
+        # follows from the box width, and the font scale ``s`` from the width —
+        # iterate the two until they agree.
+        s = 1.0
+        for _ in range(6):
+            title.set_fontsize(20 * s)
             fig.canvas.draw()
-            t_lo, t_hi = _patch_extent(top_box)
-            l_lo, l_hi = _patch_extent(low_box)
-            gap = (title_bottom - ring_bottom - (t_hi - t_lo) - (l_hi - l_lo)) / 2.0
-            if gap >= 0.015 or fs == 11:
+            _, t_y0, _, t_y1 = _extent_in(title)
+            title_h = t_y1 - t_y0
+            ring_top = H - MARGIN - title_h - 0.2       # 0.2in breathing room under the title
+            ring_bottom = MARGIN
+            D = ring_top - ring_bottom                  # visible donut diameter (axes size)
+            for fs in (16, 15, 14, 13, 12, 11):
+                top_box.set_fontsize(fs * s)
+                low_box.set_fontsize(fs * s)
+                fig.canvas.draw()
+                tb = _extent_in(top_box)
+                lb = _extent_in(low_box)
+                box_gap = ((H - MARGIN - title_h) - ring_bottom
+                           - (tb[3] - tb[1]) - (lb[3] - lb[1])) / 2.0
+                if box_gap >= 0.1 or fs == 11:
+                    break
+            B = max(tb[2] - tb[0], lb[2] - lb[0])
+            W = MARGIN + D + GAP + B + MARGIN
+            s_new = W / 12.0
+            if abs(s_new - s) < 0.005:
                 break
-            top_box.remove()
-            low_box.remove()
+            s = s_new
 
-        # Shift each box so its frame (not just its text) lands on the target edge
-        top_box.set_position((0.55, 0.5 + (title_bottom - gap) - t_hi))
-        low_box.set_position((0.55, 0.5 + ring_bottom - l_lo))
+        for t, base_fs in scaled:
+            t.set_fontsize(base_fs * s)
 
-        # Crop to the visible content (ring, title, boxes) with an equal outer
-        # margin on every side = half the ring→box gap. Computed explicitly
-        # because bbox_inches='tight' would also include the invisible axes frame.
+        fig.set_size_inches(W, H)
+        ax.set_position([MARGIN / W, ring_bottom / H, D / W, D / H])
+        title.set_position((MARGIN / W, (H - MARGIN) / H))
+
+        # Boxes: right-aligned to the margin; shift so the frame (not just the
+        # text) lands on the target edges. Frame offsets from the text anchor are
+        # size-invariant, so measure once at the origin.
         fig.canvas.draw()
-        from matplotlib.transforms import Bbox
-        fw, fh = fig.get_figwidth(), fig.get_figheight()
-        ring_left = to_fig.transform(ax.transData.transform((-1.03, 0)))[0]
-        ring_right = to_fig.transform(ax.transData.transform((1.03, 0)))[0]
-        ring_low = to_fig.transform(ax.transData.transform((0, -1.03)))[1]
-        box_exts = [t.get_bbox_patch().get_window_extent(renderer) for t in (top_box, low_box)]
-        box_left = min(to_fig.transform((b.x0, 0))[0] for b in box_exts)
-        box_right = max(to_fig.transform((b.x1, 0))[0] for b in box_exts)
-        title_top = to_fig.transform((0, title.get_window_extent(renderer).y1))[1]
-        pad_in = max((box_left - ring_right) * fw / 2.0, 0.05)
-
-        crop = Bbox.from_extents(min(ring_left, 0.03) * fw - pad_in,
-                                 ring_low * fh - pad_in,
-                                 max(box_right, ring_right) * fw + pad_in,
-                                 title_top * fh + pad_in)
+        title_bottom = _extent_in(title)[1]
+        for box, target_y, edge in ((top_box, title_bottom - box_gap, 3), (low_box, ring_bottom, 1)):
+            box.set_position((0, 0))
+            fig.canvas.draw()
+            e = _extent_in(box)
+            box.set_position(((W - MARGIN - e[2]) / W, (target_y - e[edge]) / H))
 
         path = os.path.join(self.output_dir, "portfolio_allocation.png")
-        plt.savefig(path, dpi=300, facecolor='#121212', bbox_inches=crop)
+        plt.savefig(path, dpi=300, facecolor='#121212')
         plt.close(fig)
         return path
