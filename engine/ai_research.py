@@ -87,23 +87,36 @@ class LynchPinResearcher:
         )
 
     @staticmethod
-    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None):
-        """Builds single combined prompt for sentiment + per-ticker narratives."""
-        from engine.lynch_pin_core import _growth_decay, _terminal_peg
+    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None,
+                     portfolio_summary=None):
+        """Builds single combined prompt for sentiment + per-ticker narratives.
+
+        When ``portfolio_summary`` (a pre-formatted weighted-metrics block) is
+        given, the dataset is treated as a holder's portfolio: the SENTIMENT
+        line becomes a one-line verdict on the portfolio as a whole and each
+        ticker is analysed as an existing position.
+        """
+        from engine.lynch_pin_core import _growth_decay, _scenario_pegs
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
             try:
                 growth_val = float(d['5YGrowth'].replace('%', ''))
                 mean_peg_val = float(d['Mean'])
+                curr_peg_val = float(d['PEG'])
+                dev_val = float(d['Dev_SD'])
+                std_val = abs(curr_peg_val - mean_peg_val) / abs(dev_val) if dev_val else 0.0
                 decay = _growth_decay(growth_val)
                 terminal_growth = growth_val ** decay
-                t_peg = _terminal_peg(growth_val, mean_peg_val)
+                # Same scenario logic as the engine, so the "Base ROI math" matches the Base ROI shown
+                _, t_peg, _ = _scenario_pegs(growth_val, mean_peg_val, curr_peg_val, std_val)
                 implied_pe = t_peg * terminal_growth
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, ZeroDivisionError):
                 growth_val, t_peg, terminal_growth, implied_pe = 0, 0, 0, 0
+            weight = d.get('Weight')
+            w_tag = f" [{float(weight) * 100:.1f}% of portfolio]" if weight is not None else ""
             line = (
-                f"- {d['Ticker']}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
+                f"- {d['Ticker']}{w_tag}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
                 f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
                 f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}. "
                 f"Base ROI math: EPS compounds at {d['5YGrowth']}/yr for 5 years, "
@@ -123,23 +136,7 @@ class LynchPinResearcher:
 
         context = "\n\n".join(context_lines)
 
-        prompt = f"""Act as Peter Lynch writing a high-signal Twitter thread for value investors.
-
-INDEX: ${idx_name}
-
-DATASET:
-{context}
-
-TASK:
-Produce the following output in EXACT format:
-
-SECTION 1 — SENTIMENT (one line, 100-150 characters):
-Describe current market sentiment for ${idx_name} sector this week.
-What's driving price action? Outperforming or underperforming? Dominant narrative?
-
-SENTIMENT: [your one-line summary here]
-
-SECTION 2 — PER-TICKER ANALYSIS:
+        daily_ticker_task = """SECTION 2 — PER-TICKER ANALYSIS:
 For EACH ticker provide three labeled paragraphs:
 
 $TICKER:
@@ -169,7 +166,50 @@ If ACCUMULATION signal is present, note the favorable entry timing.
 If 6M Directional Edge data is available, incorporate it:
   - If BULL edge (>60% accuracy): note this supports selling cash-secured puts on dips for income.
   - If BEAR edge (>60% accuracy): note this supports selling covered calls on bounces for income.
-  - If neither direction has >55% accuracy, flag as low-conviction for options income.]
+  - If neither direction has >55% accuracy, flag as low-conviction for options income.]"""
+
+        if portfolio_summary:
+            header = (f"PORTFOLIO (positions listed in descending order of market-value weight; "
+                      f"weights shown, no dollar amounts):\n{portfolio_summary}")
+            sentiment_task = (
+                "SECTION 1 — PORTFOLIO VERDICT:\n"
+                "First a one-line verdict (100-150 characters) on this PORTFOLIO as a whole: is it priced "
+                "for GARP, how concentrated/quality is it, and what is the single biggest thing the holder "
+                "should watch? Then a portfolio-level bull and bear thesis, each 3-5 sentences (roughly "
+                "500-700 characters), weighing positions by their weight — the top holdings drive the verdict. "
+                "Cover concentration, sector overlap, the weighted PEG vs its historical mean, weighted base ROI "
+                "vs what an index would give, and the weighted Income Grade / Credit Rating. Name tickers where "
+                "it helps, but do NOT prefix them with $ inside these paragraphs.\n\n"
+                "Use EXACTLY this layout for Section 1:\n\n"
+                "SENTIMENT: [your one-line verdict here]\n\n"
+                "PORTFOLIO:\n"
+                "🐂 Bull: [portfolio bull thesis]\n\n"
+                "🐻 Bear: [portfolio bear thesis]"
+            )
+            ticker_task = daily_ticker_task  # per-position replies use the same format as the index scan
+        else:
+            header = f"INDEX: ${idx_name}"
+            sentiment_task = (
+                "SECTION 1 — SENTIMENT (one line, 100-150 characters):\n"
+                f"Describe current market sentiment for ${idx_name} sector this week.\n"
+                "What's driving price action? Outperforming or underperforming? Dominant narrative?\n\n"
+                "SENTIMENT: [your one-line summary here]"
+            )
+            ticker_task = daily_ticker_task
+
+        prompt = f"""Act as Peter Lynch writing a high-signal Twitter thread for value investors.
+
+{header}
+
+DATASET:
+{context}
+
+TASK:
+Produce the following output in EXACT format:
+
+{sentiment_task}
+
+{ticker_task}
 
 Separate each ticker block with a double newline.
 Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
@@ -177,9 +217,11 @@ Do NOT use markdown formatting. Plain text only."""
 
         return prompt
 
-    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None):
+    def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None,
+                            edge_data=None, portfolio_summary=None):
         """Single API call: returns sentiment + all per-ticker narratives."""
-        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data)
+        prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
+                                   portfolio_summary=portfolio_summary)
         return self._call_gemini(prompt)
 
     def get_fintwit_trending(self):
