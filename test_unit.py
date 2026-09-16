@@ -283,6 +283,207 @@ class TestAIResearch(unittest.TestCase):
         self.assertEqual(len(tickers), 5)
 
 
+# ─── engine/ai_research.py — 3-tier fallback chain ───
+
+class TestAIFallbackChain(unittest.TestCase):
+    """best Gemini (2 tries) → backup Gemini (2 tries) → OpenRouter free router (2 tries)."""
+
+    def _make(self, mock_genai, openrouter_key="or-test-key"):
+        from engine.ai_research import LynchPinResearcher
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        env = {"GEMINI_API_KEY": "g-key"}
+        if openrouter_key:
+            env["OPENROUTER_API_KEY"] = openrouter_key
+        with patch.dict(os.environ, env, clear=True):
+            researcher = LynchPinResearcher()
+        researcher.client = mock_client
+        return researcher, mock_client
+
+    @staticmethod
+    def _gemini_response(text):
+        r = MagicMock()
+        r.text = text
+        return r
+
+    @staticmethod
+    def _openrouter_response(content=None, status=200, error=None):
+        """Mock a streaming OpenRouter response (SSE lines, as in the curl quick-start)."""
+        import json
+        r = MagicMock()
+        r.status_code = status
+        r.text = "body"
+        model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+        def chunk(delta, finish=None):
+            return "data: " + json.dumps({
+                "id": "gen-1", "object": "chat.completion.chunk", "model": model, "provider": "Nvidia",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            })
+
+        if error is not None:
+            lines = ["data: " + json.dumps({"error": error}), "", "data: [DONE]"]
+        else:
+            words = content.split(" ") if content else []
+            lines = [
+                # reasoning-only deltas first — must NOT end up in the returned text
+                chunk({"content": "", "role": "assistant", "reasoning": "We"}),
+                "",
+                chunk({"content": "", "role": "assistant", "reasoning": " need to greet."}),
+                "",
+            ]
+            for i, w in enumerate(words):
+                lines += [chunk({"content": (" " if i else "") + w, "role": "assistant"}), ""]
+            lines += [chunk({"content": "", "role": "assistant", "reasoning": None}, finish="stop"), "", "data: [DONE]"]
+        r.iter_lines.return_value = iter(lines)
+        return r
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_best_model_succeeds_first_try(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.return_value = self._gemini_response("ok")
+        self.assertEqual(researcher._call_ai("p"), "ok")
+        self.assertEqual(client.models.generate_content.call_count, 1)
+        self.assertEqual(client.models.generate_content.call_args.kwargs['model'], researcher.best_model)
+        mock_post.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_best_busy_twice_then_backup(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = [
+            Exception("503 UNAVAILABLE"), Exception("429 RESOURCE_EXHAUSTED"), self._gemini_response("backup ok")
+        ]
+        self.assertEqual(researcher._call_ai("p", delay=0), "backup ok")
+        models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models, [researcher.best_model, researcher.best_model, researcher.backup_model])
+        self.assertEqual(mock_sleep.call_count, 2)
+        mock_post.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_gemini_exhausted_falls_back_to_openrouter(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        mock_post.return_value = self._openrouter_response("openrouter ok")
+
+        self.assertEqual(researcher._call_ai("hello", delay=0), "openrouter ok")
+        self.assertEqual(client.models.generate_content.call_count, 4)  # 2 best + 2 backup
+        self.assertEqual(mock_post.call_count, 1)
+        kwargs = mock_post.call_args.kwargs
+        self.assertEqual(mock_post.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(kwargs['json']['model'], "openrouter/free")
+        self.assertTrue(kwargs['json']['stream'])
+        self.assertTrue(kwargs['stream'])
+        self.assertEqual(kwargs['json']['messages'], [{"role": "user", "content": "hello"}])
+        self.assertEqual(kwargs['headers']['Authorization'], "Bearer or-test-key")
+        self.assertEqual(mock_sleep.call_count, 4)
+
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_openrouter_stream_ignores_reasoning_deltas(self, mock_genai, mock_post):
+        researcher, _ = self._make(mock_genai)
+        mock_post.return_value = self._openrouter_response("Hello! How can I assist you today?")
+        text = researcher._call_openrouter_model("openrouter/free", "Hello")
+        self.assertEqual(text, "Hello! How can I assist you today?")
+        self.assertNotIn("need to greet", text)
+
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_openrouter_stream_empty_content_raises(self, mock_genai, mock_post):
+        researcher, _ = self._make(mock_genai)
+        mock_post.return_value = self._openrouter_response("")  # reasoning only, no answer
+        with self.assertRaises(RuntimeError):
+            researcher._call_openrouter_model("openrouter/free", "Hello")
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_all_tiers_exhausted_returns_error(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        mock_post.return_value = self._openrouter_response(status=429)
+
+        result = researcher._call_ai("p", delay=0)
+        self.assertTrue(result.startswith("AI Research Error:"))
+        self.assertIn("OpenRouter HTTP 429", result)
+        self.assertEqual(client.models.generate_content.call_count, 4)
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 5)  # 6 attempts, no sleep after the last
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_openrouter_200_with_error_envelope_is_retried(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        mock_post.side_effect = [
+            self._openrouter_response(error={"code": 429, "message": "Rate limited"}),
+            self._openrouter_response("second try ok"),
+        ]
+        self.assertEqual(researcher._call_ai("p", delay=0), "second try ok")
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_no_openrouter_key_skips_third_tier(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+
+        result = researcher._call_ai("p", delay=0)
+        self.assertTrue(result.startswith("AI Research Error:"))
+        self.assertEqual(client.models.generate_content.call_count, 4)
+        mock_post.assert_not_called()
+        self.assertEqual(mock_sleep.call_count, 3)
+        self.assertEqual([t[0] for t in researcher._tiers()], ["BEST", "BACKUP"])
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_non_transient_error_switches_tier_immediately(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = [
+            Exception("404 model not found"), self._gemini_response("backup ok")
+        ]
+        self.assertEqual(researcher._call_ai("p", delay=0), "backup ok")
+        models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models, [researcher.best_model, researcher.backup_model])  # no 2nd BEST attempt
+        mock_sleep.assert_not_called()
+
+    @patch('engine.ai_research.genai')
+    def test_call_gemini_alias_kept(self, mock_genai):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.return_value = self._gemini_response("ok")
+        self.assertEqual(researcher._call_gemini("p"), "ok")
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_no_gemini_key_runs_openrouter_only(self, mock_genai, mock_post, mock_sleep):
+        from engine.ai_research import LynchPinResearcher
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "or-test-key"}, clear=True):
+            researcher = LynchPinResearcher()
+        mock_genai.Client.assert_not_called()
+        self.assertIsNone(researcher.client)
+        self.assertEqual([t[0] for t in researcher._tiers()], ["OPENROUTER"])
+        mock_post.return_value = self._openrouter_response("openrouter ok")
+        self.assertEqual(researcher._call_ai("p", delay=0), "openrouter ok")
+
+    @patch('engine.ai_research.genai')
+    def test_no_keys_at_all_returns_error(self, mock_genai):
+        from engine.ai_research import LynchPinResearcher
+        with patch.dict(os.environ, {}, clear=True):
+            researcher = LynchPinResearcher()
+        self.assertEqual(researcher._tiers(), [])
+        self.assertTrue(researcher._call_ai("p").startswith("AI Research Error:"))
+
+
 # ─── social/threads_publisher.py ───
 
 class TestThreadsPublisher(unittest.TestCase):
@@ -1272,60 +1473,40 @@ class TestMainHelpers(unittest.TestCase):
 
 
 class TestSimulator(unittest.TestCase):
-    """Tests for experimental/simulator.py setup ranking and fill validation."""
+    """Tests for experimental/simulator.py: ATR stops, chandelier trail,
+    regime gate, cooldown, ranking, sizing, slippage and time stop."""
 
     @classmethod
     def setUpClass(cls):
         from experimental import simulator
         cls.sim = simulator
 
-    def _setup(self, sym, rr, score, edge=60):
+    def _setup(self, sym, score, dte=None, trend=0.0):
         return {"symbol": sym, "index": "QQQ", "direction": "bull",
-                "price": 100.0, "target": 110.0, "stop": 95.0,
-                "score": score, "edge": edge, "edge_pnl": 1.0, "rr": rr}
+                "price": 100.0, "atr": 2.0, "score": score,
+                "days_to_earnings": dte, "trend_strength": trend}
 
-    def test_rank_setups_rr_primary(self):
-        """Setups sorted by R/R descending regardless of edge/score."""
-        setups = [self._setup("A", rr=1.6, score=7, edge=75),
-                  self._setup("B", rr=3.0, score=3, edge=55),
-                  self._setup("C", rr=2.2, score=5, edge=65)]
+    # ── Ranking ───────────────────────────────────────────────────────────
+
+    def test_rank_setups_earnings_in_window_first(self):
+        """A setup whose earnings fall inside the hold window ranks first."""
+        setups = [self._setup("FAR", 4, dte=90), self._setup("SOON", 3, dte=10),
+                  self._setup("NONE", 4, dte=None)]
         ranked = self.sim._rank_setups(setups)
-        self.assertEqual([s["symbol"] for s in ranked], ["B", "C", "A"])
+        self.assertEqual(ranked[0]["symbol"], "SOON")
 
-    def test_rank_setups_score_tiebreaker(self):
-        """Equal R/R falls back to score."""
-        setups = [self._setup("LOW", rr=2.0, score=3),
-                  self._setup("HIGH", rr=2.0, score=6),
-                  self._setup("MID", rr=2.0, score=4)]
+    def test_rank_setups_prefers_score_3_4_over_5(self):
+        """Score-5 setups averaged +0.05R vs +0.21R for 3-4 → ranked lower."""
+        setups = [self._setup("FIVE", 5), self._setup("THREE", 3), self._setup("FOUR", 4)]
         ranked = self.sim._rank_setups(setups)
-        self.assertEqual([s["symbol"] for s in ranked], ["HIGH", "MID", "LOW"])
+        self.assertEqual(ranked[-1]["symbol"], "FIVE")
 
-    def test_fill_rr_valid_bull(self):
-        # reward = 110 - 100 = 10, risk = 100 - 95 = 5 -> rr 2.0
-        self.assertEqual(self.sim._fill_rr("bull", 100.0, 110.0, 95.0), 2.0)
+    def test_rank_setups_trend_strength_tiebreak(self):
+        setups = [self._setup("WEAK", 4, trend=0.5), self._setup("STRONG", 4, trend=2.5)]
+        ranked = self.sim._rank_setups(setups)
+        self.assertEqual([s["symbol"] for s in ranked], ["STRONG", "WEAK"])
 
-    def test_fill_rr_valid_bear(self):
-        # reward = 100 - 90 = 10, risk = 104 - 100 = 4 -> rr 2.5
-        self.assertEqual(self.sim._fill_rr("bear", 100.0, 90.0, 104.0), 2.5)
-
-    def test_fill_rr_rejects_price_through_stop(self):
-        """Bull whose fill price drifted below stop -> invalid geometry."""
-        self.assertIsNone(self.sim._fill_rr("bull", 94.0, 110.0, 95.0))
-
-    def test_fill_rr_rejects_price_through_target(self):
-        """Bull whose fill price drifted above target -> no reward left."""
-        self.assertIsNone(self.sim._fill_rr("bull", 111.0, 110.0, 95.0))
-
-    def test_fill_rr_rejects_compressed_ratio(self):
-        """Price drift compressed R/R below MIN_RR -> rejected.
-        reward = 110 - 108 = 2, risk = 108 - 95 = 13 -> rr 0.15 < MIN_RR."""
-        self.assertIsNone(self.sim._fill_rr("bull", 108.0, 110.0, 95.0))
-
-    def test_fill_rr_boundary_at_min_rr(self):
-        """R/R exactly at MIN_RR is accepted."""
-        # reward = MIN_RR * risk: risk = 5, reward = MIN_RR * 5
-        target = 100.0 + self.sim.MIN_RR * 5.0
-        self.assertEqual(self.sim._fill_rr("bull", 100.0, target, 95.0), self.sim.MIN_RR)
+    # ── Score band ────────────────────────────────────────────────────────
 
     def test_min_score_floor_is_three(self):
         self.assertEqual(self.sim.MIN_SCORE, 3)
@@ -1337,8 +1518,161 @@ class TestSimulator(unittest.TestCase):
             in_band = self.sim.MIN_SCORE <= score <= self.sim.MAX_SCORE
             self.assertEqual(in_band, expect_pass, f"score={score}")
 
-    def test_min_rr_floor(self):
-        self.assertEqual(self.sim.MIN_RR, 2.0)
+    # ── ATR & initial stop ────────────────────────────────────────────────
+
+    def _bars(self, n=30, close=100.0, rng=2.0):
+        idx = pd.bdate_range("2026-01-01", periods=n)
+        return pd.DataFrame({"Open": close, "High": close + rng / 2,
+                             "Low": close - rng / 2, "Close": close,
+                             "Volume": 1000}, index=idx)
+
+    def test_atr_constant_range(self):
+        """Flat closes with a constant 2.0 high-low range → ATR = 2.0."""
+        self.assertAlmostEqual(self.sim._atr(self._bars()), 2.0)
+
+    def test_atr_insufficient_data(self):
+        self.assertIsNone(self.sim._atr(self._bars(n=5)))
+        self.assertIsNone(self.sim._atr(None))
+
+    def test_initial_stop_is_stop_atr_multiple(self):
+        atr = 3.0
+        self.assertAlmostEqual(self.sim._initial_stop("bull", 100.0, atr), 100.0 - self.sim.STOP_ATR * atr)
+        self.assertAlmostEqual(self.sim._initial_stop("bear", 100.0, atr), 100.0 + self.sim.STOP_ATR * atr)
+
+    def test_stop_atr_is_wide(self):
+        """The whole point of v2: stop ≥ 2 ATR (old median was 0.36 ATR)."""
+        self.assertGreaterEqual(self.sim.STOP_ATR, 2.0)
+        self.assertGreater(self.sim.TRAIL_ATR, self.sim.STOP_ATR)
+
+    # ── Regime gate ───────────────────────────────────────────────────────
+
+    def test_direction_allowed_matches_regime(self):
+        self.assertTrue(self.sim._direction_allowed("bull", "UP"))
+        self.assertFalse(self.sim._direction_allowed("bull", "DOWN"))
+        self.assertTrue(self.sim._direction_allowed("bear", "DOWN"))
+        self.assertFalse(self.sim._direction_allowed("bear", "UP"))
+
+    def test_direction_blocked_without_regime(self):
+        self.assertFalse(self.sim._direction_allowed("bull", None))
+        self.assertFalse(self.sim._direction_allowed("bear", None))
+
+    def test_index_regime_uses_cache(self):
+        cache = {"QQQ": "DOWN"}
+        with patch.object(self.sim, "_completed_daily_bars") as m:
+            self.assertEqual(self.sim._index_regime("QQQ", cache), "DOWN")
+            m.assert_not_called()
+
+    def test_index_regime_from_bars(self):
+        n = self.sim.REGIME_SMA + 5
+        idx = pd.bdate_range("2026-01-01", periods=n)
+        up = pd.DataFrame({"Close": np.linspace(90, 110, n)}, index=idx)
+        down = pd.DataFrame({"Close": np.linspace(110, 90, n)}, index=idx)
+        with patch.object(self.sim, "_completed_daily_bars", return_value=up):
+            self.assertEqual(self.sim._index_regime("QQQ", {}), "UP")
+        with patch.object(self.sim, "_completed_daily_bars", return_value=down):
+            self.assertEqual(self.sim._index_regime("QQQ", {}), "DOWN")
+        with patch.object(self.sim, "_completed_daily_bars", return_value=None):
+            self.assertIsNone(self.sim._index_regime("QQQ", {}))
+
+    # ── Chandelier trail ──────────────────────────────────────────────────
+
+    def _pos(self, direction="bull", entry=100.0, stop=94.0):
+        return {"symbol": "X", "direction": direction, "entry_price": entry,
+                "stop": stop, "initial_stop": stop, "initial_risk": abs(entry - stop),
+                "size": 1000.0, "shares": 10.0, "opened_at": "2026-01-05T08:00:00"}
+
+    def test_trail_ratchets_up_for_long(self):
+        pos = self._pos()  # stop 94
+        # best close 110, ATR 3 → candidate 110 - 9 = 101 > 94 → moves
+        self.assertTrue(self.sim._ratchet_trail(pos, 110.0, 3.0))
+        self.assertEqual(pos["stop"], 101.0)
+
+    def test_trail_never_loosens(self):
+        pos = self._pos(stop=105.0)
+        self.assertFalse(self.sim._ratchet_trail(pos, 110.0, 3.0))  # 101 < 105
+        self.assertEqual(pos["stop"], 105.0)
+
+    def test_trail_ratchets_down_for_short(self):
+        pos = self._pos(direction="bear", entry=100.0, stop=106.0)
+        self.assertTrue(self.sim._ratchet_trail(pos, 90.0, 3.0))   # 90 + 9 = 99 < 106
+        self.assertEqual(pos["stop"], 99.0)
+        self.assertFalse(self.sim._ratchet_trail(pos, 95.0, 3.0))  # 104 > 99 → no loosen
+
+    def test_trail_ignores_bad_atr(self):
+        pos = self._pos()
+        self.assertFalse(self.sim._ratchet_trail(pos, 110.0, None))
+        self.assertFalse(self.sim._ratchet_trail(pos, 110.0, 0.0))
+
+    def test_update_trailing_stops_uses_completed_bars_since_entry(self):
+        """Best close is taken from bars on/after the entry date only, and the
+        ratchet runs at most once per day per position."""
+        idx = pd.bdate_range("2026-01-01", periods=30)
+        closes = np.full(30, 100.0)
+        closes[idx.get_indexer([pd.Timestamp("2026-01-20")])[0]] = 120.0  # spike after entry
+        closes[0] = 150.0  # spike BEFORE entry must be ignored
+        bars = pd.DataFrame({"Open": closes, "High": closes + 1, "Low": closes - 1,
+                             "Close": closes, "Volume": 1}, index=idx)
+        state = {"positions": [self._pos()], "history": [], "balance": 0}
+        with patch.object(self.sim, "_completed_daily_bars", return_value=bars), \
+             patch.object(self.sim, "_save_state"), patch.object(self.sim, "_log"):
+            moved = self.sim._update_trailing_stops(state, "2026-02-13")
+            self.assertEqual(moved, 1)
+            atr = self.sim._atr(bars)
+            self.assertAlmostEqual(state["positions"][0]["stop"],
+                                   round(120.0 - self.sim.TRAIL_ATR * atr, 2))
+            self.assertEqual(state["positions"][0]["trail_date"], "2026-02-13")
+            # second call same day is a no-op
+            self.assertEqual(self.sim._update_trailing_stops(state, "2026-02-13"), 0)
+
+    # ── Cooldown ──────────────────────────────────────────────────────────
+
+    def test_cooldown_after_recent_stop(self):
+        from datetime import datetime, timedelta
+        now = datetime(2026, 3, 10, 8, 0)
+        hist = [{"symbol": "X", "close_reason": "STOP",
+                 "closed_at": (now - timedelta(days=3)).isoformat()}]
+        self.assertTrue(self.sim._in_cooldown("X", hist, now))
+        self.assertFalse(self.sim._in_cooldown("Y", hist, now))
+
+    def test_cooldown_expires_and_ignores_non_stop_exits(self):
+        from datetime import datetime, timedelta
+        now = datetime(2026, 3, 10, 8, 0)
+        old = [{"symbol": "X", "close_reason": "STOP",
+                "closed_at": (now - timedelta(days=self.sim.COOLDOWN_DAYS + 1)).isoformat()}]
+        self.assertFalse(self.sim._in_cooldown("X", old, now))
+        trail = [{"symbol": "X", "close_reason": "TRAIL",
+                  "closed_at": (now - timedelta(days=1)).isoformat()}]
+        self.assertFalse(self.sim._in_cooldown("X", trail, now))
+
+    # ── check_positions ───────────────────────────────────────────────────
+
+    def test_check_positions_stop_vs_trail_reason(self):
+        """Exit at the untouched initial stop → STOP; at a ratcheted stop → TRAIL,
+        and the R-multiple is measured against the initial risk."""
+        st = {"positions": [self._pos(), self._pos()], "history": [], "balance": 0.0}
+        st["positions"][0]["symbol"] = "A"
+        st["positions"][1]["symbol"] = "B"; st["positions"][1]["stop"] = 108.0
+        prices = {"A": 93.0, "B": 107.0}
+        with patch.object(self.sim, "_get_price", side_effect=lambda s: prices[s]), \
+             patch.object(self.sim, "_save_state"), patch.object(self.sim, "_log"):
+            closed = self.sim.check_positions(st)
+        self.assertEqual(closed, 2)
+        by = {t["symbol"]: t for t in st["history"]}
+        self.assertEqual(by["A"]["close_reason"], "STOP")
+        self.assertEqual(by["B"]["close_reason"], "TRAIL")
+        self.assertLess(by["A"]["r_multiple"], 0)
+        self.assertGreater(by["B"]["r_multiple"], 1.0)
+
+    def test_check_positions_no_target_exit(self):
+        """A big favourable move alone does not close the trade (no fixed target)."""
+        from datetime import datetime
+        st = {"positions": [self._pos()], "history": [], "balance": 0.0}
+        st["positions"][0]["target"] = 105.0
+        st["positions"][0]["opened_at"] = datetime.now().isoformat()  # not time-stopped
+        with patch.object(self.sim, "_get_price", return_value=130.0), \
+             patch.object(self.sim, "_save_state"), patch.object(self.sim, "_log"):
+            self.assertEqual(self.sim.check_positions(st), 0)
+        self.assertEqual(len(st["positions"]), 1)
 
     # ── Slippage ──────────────────────────────────────────────────────────
 
@@ -1361,7 +1695,6 @@ class TestSimulator(unittest.TestCase):
         equity, cash = 10000.0, 10000.0
         tight = self.sim._position_size(equity, cash, 100.0, 96.0)   # 4% stop
         wide = self.sim._position_size(equity, cash, 100.0, 95.0)    # 5% stop
-        # dollar risk = size * stop_frac — must be equal (= equity * RISK_PCT)
         self.assertAlmostEqual(tight * 0.04, wide * 0.05, places=2)
         self.assertAlmostEqual(tight * 0.04, equity * self.sim.RISK_PCT, places=2)
 
@@ -1384,10 +1717,10 @@ class TestSimulator(unittest.TestCase):
         held = self.sim._trading_days_held("2026-08-07T07:45:00",
                                            now=datetime(2026, 8, 10, 8, 0))
         self.assertEqual(held, 1)
-        # Fri -> next Fri = 5 trading days (time stop fires)
+        # Fri -> 4 weeks later = 20 trading days (time stop fires)
         held = self.sim._trading_days_held("2026-08-07T07:45:00",
-                                           now=datetime(2026, 8, 14, 8, 0))
-        self.assertEqual(held, 5)
+                                           now=datetime(2026, 9, 4, 8, 0))
+        self.assertEqual(held, 20)
         self.assertGreaterEqual(held, self.sim.MAX_HOLD_DAYS)
 
     def test_trading_days_held_same_day(self):
@@ -1395,32 +1728,6 @@ class TestSimulator(unittest.TestCase):
         held = self.sim._trading_days_held("2026-08-10T07:45:00",
                                            now=datetime(2026, 8, 10, 12, 0))
         self.assertEqual(held, 0)
-
-    # ── Breakeven stop ────────────────────────────────────────────────────
-
-    def _pos(self, direction="bull", entry=100.0, stop=95.0, target=110.0):
-        return {"symbol": "X", "direction": direction, "entry_price": entry,
-                "stop": stop, "target": target, "initial_risk": abs(entry - stop),
-                "size": 1000.0, "shares": 10.0}
-
-    def test_breakeven_arms_at_one_r_bull(self):
-        pos = self._pos()  # risk = 5
-        self.assertFalse(self.sim._maybe_breakeven(pos, 104.9))  # < +1R
-        self.assertEqual(pos["stop"], 95.0)
-        self.assertTrue(self.sim._maybe_breakeven(pos, 105.0))   # = +1R
-        self.assertEqual(pos["stop"], 100.0)
-
-    def test_breakeven_arms_at_one_r_bear(self):
-        pos = self._pos(direction="bear", entry=100.0, stop=104.0, target=90.0)  # risk = 4
-        self.assertFalse(self.sim._maybe_breakeven(pos, 96.5))
-        self.assertTrue(self.sim._maybe_breakeven(pos, 96.0))
-        self.assertEqual(pos["stop"], 100.0)
-
-    def test_breakeven_only_fires_once(self):
-        pos = self._pos()
-        self.assertTrue(self.sim._maybe_breakeven(pos, 105.0))
-        self.assertFalse(self.sim._maybe_breakeven(pos, 106.0))  # already at entry
-        self.assertEqual(pos["stop"], 100.0)
 
 
 # ─── engine/portfolio.py ───
