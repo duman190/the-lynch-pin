@@ -71,8 +71,8 @@ Narrative generation (`--research` / `--post`) walks a 3-layer fallback, 2 attem
 
 | Tier | Model | Attempts |
 |---|---|---|
-| 1 | Best Gemini free model (`gemini-3.7-flash`) | 2 |
-| 2 | Backup Gemini free model (`gemini-3.6-flash`) | 2 |
+| 1 | Best Gemini free model (e.g., `gemini-3.8-flash`) | 2 |
+| 2 | Backup Gemini free model (e.g., `gemini-3.7-flash`) | 2 |
 | 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 2 |
 
 Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier after a 30s pause; any other error skips straight to the next tier. Tier 3 only joins the chain when `OPENROUTER_API_KEY` is set.
