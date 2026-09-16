@@ -71,11 +71,18 @@ def _extract_portfolio_narrative(bulk_text):
 
 
 def _grok_portfolio_question(n_positions):
-    """Closing X post: asks Grok for an opinion on the whole portfolio."""
+    """Closing X post: asks Grok for an opinion on the whole portfolio.
+
+    Two lenses on purpose: the thread (quant numbers, weights) and a live
+    search of X for FinTwit sentiment on the same tickers — otherwise Grok
+    just paraphrases the metrics already in the thread."""
     return (f"@grok Read every post in this thread (portfolio X-ray + {n_positions} positions, "
-            f"listed in descending weight). In your opinion: is this a well-built GARP portfolio? "
-            f"Which position is the BEST and which is the WORST right now, and why? "
-            f"What single change would you make?\n\n"
+            f"listed in descending weight), then search recent X posts about each of these tickers.\n\n"
+            f"1️⃣ On the numbers in the thread: is this a well-built GARP portfolio? "
+            f"Which position is the BEST and which is the WORST right now, and why?\n"
+            f"2️⃣ On FinTwit sentiment alone (ignore the numbers above): which of these positions "
+            f"does FinTwit love most and hate most right now, and why?\n"
+            f"3️⃣ Where do the quant view and the crowd disagree, and what single change would you make?\n\n"
             "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
             "Investing involves risk. Always DYOR. 🫶")
 
