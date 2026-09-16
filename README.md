@@ -56,6 +56,7 @@ python main.py --portfolio my_holdings.txt --research --plot --post
 |---|---|
 | `FMP_API_KEY` | Multi-source growth enrichment (free: [financialmodelingprep.com](https://site.financialmodelingprep.com/register)) |
 | `GEMINI_API_KEY` | `--research` / `--post` |
+| `OPENROUTER_API_KEY` | Optional 3rd AI fallback tier (free: [openrouter.ai](https://openrouter.ai/keys)) |
 | `X_API_KEY` | `--post` |
 | `X_API_SECRET` | `--post` |
 | `X_ACCESS_TOKEN` | `--post` |
@@ -63,6 +64,20 @@ python main.py --portfolio my_holdings.txt --research --plot --post
 | `THREADS_ACCESS_TOKEN` | `--post_threads` |
 | `THREADS_USER_ID` | `--post_threads` |
 | `GITHUB_IMAGE_PATH` | `--post_threads` (default: `https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images`) |
+
+## AI Fallback Chain
+
+Narrative generation (`--research` / `--post`) walks a 3-layer fallback, 2 attempts per layer, so a busy or rate-limited model never kills a scheduled run:
+
+| Tier | Model | Attempts |
+|---|---|---|
+| 1 | Best Gemini free model (`gemini-3.7-flash`) | 2 |
+| 2 | Backup Gemini free model (`gemini-3.6-flash`) | 2 |
+| 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 2 |
+
+Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier after a 30s pause; any other error skips straight to the next tier. Tier 3 only joins the chain when `OPENROUTER_API_KEY` is set.
+
+`openrouter/free` is OpenRouter's router that "selects free models at random from the models available on OpenRouter", smartly filtering for models that support the features the request needs. It costs nothing per token and has a 200K-token context window, so the full batch prompt fits comfortably. The request is streamed (`stream: true`) and only `delta.content` is collected — the `reasoning` deltas emitted by thinking models are discarded — and the model the router actually picked is logged.
 
 ## Portfolio Mode
 
@@ -259,7 +274,7 @@ Unit tests covering all modules:
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
 | `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels, 6M directional edge |
-| `engine/ai_research.py` | Prompt building (index & portfolio modes), format helpers, ticker parsing |
+| `engine/ai_research.py` | Prompt building (index & portfolio modes), format helpers, ticker parsing, 3-tier AI fallback chain (Gemini best → Gemini backup → OpenRouter free) |
 | `engine/portfolio.py` | Holdings parsing (dedupe/sum, malformed lines), market-value weights, harmonic/arithmetic roll-ups, weighted median, weighted grades |
 | `graphics/visualizer.py` | Benchmark resolution, output directory creation, portfolio X-ray plot, slice grouping |
 | `social/x_publisher.py` | Media upload, retry logic, tweet creation |
@@ -273,7 +288,7 @@ Unit tests covering all modules:
 - `matplotlib` — charting
 - `google-genai` — Gemini AI
 - `tweepy` — X API
-- `requests` — Threads API (Meta Graph API)
+- `requests` — Threads API (Meta Graph API), OpenRouter API
 - `pytest` — testing
 
 ## License
