@@ -1953,6 +1953,11 @@ class TestMainPortfolioHelpers(unittest.TestCase):
         self.assertIn('WORST', q)
         self.assertIn('7 positions', q)
         self.assertIn('DISCLAIMER', q)
+        # Asks for FinTwit sentiment via X search, not just the thread's numbers
+        self.assertIn('search recent X posts', q)
+        self.assertIn('FinTwit sentiment alone', q)
+        self.assertIn('love most and hate most', q)
+        self.assertLess(len(q), 4000)
 
     def test_portfolio_flag_rejects_top_and_excl_bad(self):
         import sys
