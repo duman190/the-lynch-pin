@@ -1,39 +1,143 @@
 import math
+import json
 import time
-from google import genai
 import os
+import requests
+from google import genai
+
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# OpenRouter "Free Models Router" (https://openrouter.ai/openrouter/free):
+# "The simplest way to get free inference. openrouter/free is a router that selects free
+# models at random from the models available on OpenRouter. The router smartly filters for
+# models that support features needed for your request such as image understanding, tool
+# calling, structured outputs and more." Zero cost per token, 200K-token context window,
+# text + image in / text out.
+OPENROUTER_FREE_MODEL = "openrouter/free"
+
+# Error signatures that mean "the model is busy / rate limited" → worth retrying the same tier.
+_TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "502", "504", "overloaded")
+
+
+def _is_transient(error_msg):
+    return any(marker in error_msg for marker in _TRANSIENT_MARKERS)
 
 
 class LynchPinResearcher:
+    ATTEMPTS_PER_TIER = 2
+
     def __init__(self):
-        self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        # Gemini tiers are skipped when no key is set (the chain then runs on OpenRouter only)
+        self.client = genai.Client(api_key=gemini_key) if gemini_key else None
         self.best_model = "gemini-3.8-flash"
         self.backup_model = "gemini-3.7-flash"
+        self.openrouter_model = OPENROUTER_FREE_MODEL
+        self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not self.client and not self.openrouter_api_key:
+            print("⚠️  Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set — AI research will be unavailable.")
 
-    def _call_gemini(self, prompt, retries=5, delay=30):
-        """Calls Gemini with retry logic for 503s/429s, cascading through models."""
-        for attempt in range(retries):
-            if attempt < 2:
-                current_model = self.best_model
-                tier_label = "BEST"
-            else:
-                current_model = self.backup_model
-                tier_label = "BACKUP"
+    # ── provider adapters ────────────────────────────────────────────────────────
+    def _call_gemini_model(self, model, prompt):
+        response = self.client.models.generate_content(model=model, contents=prompt)
+        return response.text
 
+    def _call_openrouter_model(self, model, prompt):
+        """OpenAI-compatible streaming chat completion against OpenRouter.
+
+        Streams SSE chunks and concatenates ``choices[0].delta.content``. Reasoning
+        models served by the router also emit ``delta.reasoning`` — that is ignored,
+        only the final answer text is returned.
+        """
+        resp = requests.post(
+            OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {self.openrouter_api_key}",
+                "Content-Type": "application/json",
+                # Optional attribution headers recommended by OpenRouter
+                "HTTP-Referer": "https://github.com/duman190/the-lynch-pin",
+                "X-Title": "The Lynch Pin",
+            },
+            json={"model": model, "stream": True, "messages": [{"role": "user", "content": prompt}]},
+            stream=True,
+            timeout=(30, 300),
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"OpenRouter HTTP {resp.status_code}: {resp.text[:300]}")
+
+        parts = []
+        served_by = None
+        resp.encoding = "utf-8"  # SSE has no charset header → requests would default to ISO-8859-1 (mojibake on emoji)
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line or not raw_line.startswith("data:"):
+                continue  # keep-alive comments / blank separators
+            payload = raw_line[len("data:"):].strip()
+            if payload == "[DONE]":
+                break
             try:
-                response = self.client.models.generate_content(
-                    model=current_model,
-                    contents=prompt
-                )
-                return response.text
-            except Exception as e:
-                error_msg = str(e)
-                if "503" in error_msg or "UNAVAILABLE" in error_msg or "429" in error_msg:
-                    if attempt < retries - 1:
-                        print(f"⚠️  {tier_label} AI Busy ({current_model}). Retrying in {delay}s... (Attempt {attempt + 1}/{retries})")
+                chunk = json.loads(payload)
+            except ValueError:
+                continue
+            # OpenRouter may send an error envelope mid-stream (e.g. upstream provider 429/503)
+            if "error" in chunk:
+                err = chunk["error"]
+                code = err.get("code", "") if isinstance(err, dict) else ""
+                msg = err.get("message", err) if isinstance(err, dict) else err
+                raise RuntimeError(f"OpenRouter error {code}: {msg}")
+            served_by = served_by or chunk.get("model")
+            for choice in chunk.get("choices") or []:
+                content = (choice.get("delta") or {}).get("content")
+                if content:
+                    parts.append(content)
+
+        text = "".join(parts).strip()
+        if not text:
+            raise RuntimeError(f"OpenRouter returned empty content (model: {served_by})")
+        print(f"ℹ️  OpenRouter routed to {served_by}")
+        return text
+
+    # ── fallback chain ───────────────────────────────────────────────────────────
+    def _tiers(self):
+        """Ordered (label, model, caller) tiers. A tier only joins when its API key is set."""
+        tiers = []
+        if self.client:
+            tiers += [
+                ("BEST", self.best_model, self._call_gemini_model),
+                ("BACKUP", self.backup_model, self._call_gemini_model),
+            ]
+        if self.openrouter_api_key:
+            tiers.append(("OPENROUTER", self.openrouter_model, self._call_openrouter_model))
+        return tiers
+
+    def _call_ai(self, prompt, delay=30):
+        """3-layer fallback: best Gemini → backup Gemini → OpenRouter free router.
+
+        Each tier gets ``ATTEMPTS_PER_TIER`` tries. Transient errors (503/429/...) are
+        retried on the same tier after ``delay`` seconds; any other error skips straight
+        to the next tier. Returns the model text, or an ``AI Research Error: ...`` string
+        once every tier is exhausted.
+        """
+        tiers = self._tiers()
+        total = self.ATTEMPTS_PER_TIER * len(tiers)
+        last_error = "no AI tier available"
+        for tier_idx, (tier_label, model, call) in enumerate(tiers):
+            for i in range(self.ATTEMPTS_PER_TIER):
+                attempt = tier_idx * self.ATTEMPTS_PER_TIER + i + 1
+                try:
+                    return call(model, prompt)
+                except Exception as e:
+                    last_error = str(e)
+                    if not _is_transient(last_error):
+                        print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} — switching tier.")
+                        break
+                    if attempt < total:
+                        print(f"⚠️  {tier_label} AI Busy ({model}). Retrying in {delay}s... (Attempt {attempt}/{total})")
                         time.sleep(delay)
-                        continue
-                return f"AI Research Error: {error_msg}"
+        return f"AI Research Error: {last_error}"
+
+    # Backwards-compatible alias
+    _call_gemini = _call_ai
 
     @staticmethod
     def _format_grader(grade_result):
@@ -222,7 +326,7 @@ Do NOT use markdown formatting. Plain text only."""
         """Single API call: returns sentiment + all per-ticker narratives."""
         prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
                                    portfolio_summary=portfolio_summary)
-        return self._call_gemini(prompt)
+        return self._call_ai(prompt)
 
     def get_fintwit_trending(self):
         """Fetches top 100 most discussed stocks on FinTwit this week via Gemini."""
@@ -231,7 +335,7 @@ Do NOT use markdown formatting. Plain text only."""
             'most frequently discussed, trending, and highly active stocks of companies commonly '
             'discussed on "FinTwit" (Financial X.com) THIS WEEK (no ETF / index funds or other assets)'
         )
-        raw = self._call_gemini(prompt)
+        raw = self._call_ai(prompt)
         if not raw or "Error" in raw:
             return []
         # Parse tickers: handle comma/space/tab separated or one-per-line, strip numbering
