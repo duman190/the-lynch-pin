@@ -53,12 +53,26 @@ def _growth_decay(growth_pct):
     return 0.85
 
 
+# Ceiling on the terminal (year-5 forward) PE for mature (<20% growth)
+# names. Their terminal growth is undecayed, so PE = PEG × growth; a stock
+# whose reconstructed history is inflated by depressed earnings years
+# (AMZN's capex build-out, ISRG, NTNX) would otherwise be assigned a
+# 40–50x maturity multiple. 28x is where the high-growth formula lands at
+# exactly 20% growth (1.67 PEG × 17.2% decayed growth), so the cap makes
+# the terminal PE continuous across the regime boundary, and sits at the
+# ~90th percentile of terminal PEs across Nasdaq 100 + IGV + SMH + SCHD.
+_MATURE_TERMINAL_PE_CAP = 28.0
+
+
 def _terminal_peg(growth_pct, mean_peg):
     """Terminal PEG for ROI projection.
-    Mature companies (<20% growth): use min(2.5, mean_peg).
+    Mature companies (<20% growth): use min(2.5, mean_peg), further capped
+    so the implied terminal PE (PEG × growth) never exceeds
+    _MATURE_TERMINAL_PE_CAP.
     High-growth companies: reversed formula that penalizes extreme growth."""
     if growth_pct < 20:
-        return min(2.5, mean_peg)
+        pe_cap_peg = _MATURE_TERMINAL_PE_CAP / growth_pct if growth_pct > 0 else 2.5
+        return min(2.5, pe_cap_peg, mean_peg)
     return min(mean_peg, max(0.8, 1.5 - 0.5 * (growth_pct / 30 - 1)))
 
 
