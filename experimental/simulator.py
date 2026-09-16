@@ -1,19 +1,43 @@
 """Paper Trading Simulator — 24/7 daemon mode.
 
-Runs continuously in background. Swing-style: positions are held until
-target, stop, or a time stop — NOT force-closed at end of day (targets are
-multi-day levels; an intraday horizon made the R/R fictional).
+Runs continuously in background. Swing/trend-following style: positions are
+held until the volatility-scaled stop, the trailing stop, or a time stop.
 
 Each trading day:
   1. 7:30 AM PDT: Scan for setups, open positions (risk-based sizing)
-  2. Market hours: Monitor positions — target / stop / breakeven / time stop
+  2. Market hours: Monitor positions — stop / trailing stop / time stop
   3. After close: Log daily summary, sleep until next trading day
+
+Exit / entry model (v2 — see experimental/strategy_backtest.py and
+experimental/STRATEGY_POSTMORTEM.md; numbers below are from 6,498 signals /
+60 tickers / 250 days (seed 42).  A second sample (seed 7) reproduced the
+diagnosis of the old rules but NOT the +0.17R of the new ones (+0.02R): v2
+stops the bleeding, it is not a proven edge.):
+  - Initial stop = STOP_ATR × ATR(14) from the fill.  The previous
+    level-based stop sat a median 0.36 ATR away; under a zero-drift random
+    walk such a stop is touched ~82% of the time within 5 days — exactly the
+    live stop-out rate.  The signal was indistinguishable from a coin flip
+    with that geometry (avg −0.22R vs −0.23R random direction).
+  - No fixed price target.  A chandelier trail (TRAIL_ATR × ATR below the
+    highest prior close for longs / above the lowest for shorts) is ratcheted
+    once per day from *completed* daily bars, never loosened.  Target-based
+    variants earned +0.04..+0.06R; the trail earned +0.17R (CI > 0).
+  - Time stop after MAX_HOLD_DAYS trading days (20).  10-day holds cut the
+    edge by more than half.
+  - No breakeven arm (it lowered avg R from 0.173 to 0.157).
+  - Market-regime gate: longs only when the ticker's reference index closes
+    above its 50-day SMA, shorts only when below.  Removing the gate cut avg
+    R to +0.10 and doubled drawdown.
+  - The old MIN_EDGE gate (180-day "bias accuracy" backtest) is gone: its
+    correlation with executed-trade R was 0.008 and gating on it did WORSE
+    than random.  Removing it also makes the daily scan ~10x faster.
+  - COOLDOWN_DAYS: a symbol that just stopped out is not re-entered for a
+    while (22 live re-entries lost $165 combined).
+  - Direction from the scoring engine's bias; score band 3-5 kept.
 
 Risk model:
   - Each position risks RISK_PCT of total equity (entry-to-stop distance),
     capped at MAX_NOTIONAL_PCT of equity per position
-  - Stop moves to breakeven once the trade reaches +1R
-  - Time stop closes any position held MAX_HOLD_DAYS trading days
   - SLIPPAGE_BPS applied per side so fills aren't fantasy mid-quotes
 
 State persisted to tmp/simulator.json every cycle — survives restarts.
@@ -43,8 +67,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from experimental.trade_assistant import scan, _calc_rr
-from experimental.back_test import backtest
+from experimental.trade_assistant import scan
 
 warnings.filterwarnings("ignore")
 
@@ -54,13 +77,15 @@ LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 MAX_POSITIONS = 10
 RISK_PCT = 0.005          # 0.5% of total equity risked per trade (entry-to-stop)
 MAX_NOTIONAL_PCT = 0.15   # cap on any single position's notional vs equity
-MAX_HOLD_DAYS = 5         # trading-day time stop for swing positions
+MAX_HOLD_DAYS = 20        # trading-day time stop (10d halved the edge in backtest)
 SLIPPAGE_BPS = 5.0        # slippage per side, in basis points
 MIN_SCORE = 3
 MAX_SCORE = 5  # History: score 6+ setups underperformed (-$139 on 15 trades) — likely over-extended moves
-MIN_RR = 2.0   # Minimum risk:reward — filter applied at scan AND re-checked at fill
-MIN_EDGE = 55.0
-TARGET_PROXIMITY_PCT = 0.0  # Exact target hit, no proximity buffer
+STOP_ATR = 2.0            # initial stop distance in ATR(14); 1.5 ATR -> avg R 0.11, 2.0 -> 0.17, 2.5 -> 0.15
+TRAIL_ATR = 3.0           # chandelier trail distance in ATR(14) from best prior close
+ATR_PERIOD = 14
+REGIME_SMA = 50           # longs need index close > SMA50, shorts need < SMA50
+COOLDOWN_DAYS = 10        # calendar days before re-entering a symbol after a stop-out
 SCAN_HOUR = 7       # 7:30 AM PDT
 SCAN_MINUTE = 30
 CLOSE_HOUR = 12     # 12:00 PM PDT (1hr before market close) — used for daily summary
@@ -189,26 +214,83 @@ def _log(msg):
 
 # ─── Core Logic ───────────────────────────────────────────────────────────────
 
-def _rank_setups(setups):
-    """Rank setups: risk/reward first, score as tiebreaker (score >= MIN_SCORE
-    is already enforced upstream). History showed edge*score ranking was
-    counterproductive — high-edge/high-score setups underperformed, while
-    R/R was the honest selector once recomputed at fill time."""
-    return sorted(setups, key=lambda x: (x["rr"], x["score"]), reverse=True)
-
-
-def _fill_rr(direction, price, target, stop):
-    """Recompute risk:reward at the ACTUAL fill price.
-
-    Scan-time R/R goes stale — the fill happens minutes after the scan and
-    the price may have drifted through the stop/target, or compressed the
-    ratio below MIN_RR. Returns the true R/R, or None if the setup is no
-    longer valid (geometry broken or R/R below floor)."""
-    bias = "BULLISH" if direction == "bull" else "BEARISH"
-    rr = _calc_rr(bias, price, price, target, stop)
-    if rr is None or rr < MIN_RR:
+def _atr(hist, period=ATR_PERIOD):
+    """ATR over completed daily bars (simple mean of true range)."""
+    if hist is None or len(hist) < period + 1:
         return None
-    return rr
+    prev_close = hist["Close"].shift()
+    tr = pd.concat([
+        hist["High"] - hist["Low"],
+        (hist["High"] - prev_close).abs(),
+        (hist["Low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    val = tr.tail(period).mean()
+    return float(val) if val and val > 0 else None
+
+
+def _completed_daily_bars(symbol, period="6mo"):
+    """Daily OHLCV excluding today's partial bar — the trail and ATR must only
+    use information that was final at the prior close."""
+    try:
+        hist = yf.Ticker(symbol).history(period=period, interval="1d")
+    except Exception:
+        return None
+    if hist is None or hist.empty:
+        return None
+    hist = hist.dropna(subset=["Close"])
+    today = _now_pdt().date()
+    return hist[hist.index.date < today]
+
+
+def _index_regime(index_symbol, cache=None):
+    """'UP' if the index's last completed close is above its SMA(REGIME_SMA),
+    'DOWN' if below, None if unavailable. Cached per scan."""
+    if cache is not None and index_symbol in cache:
+        return cache[index_symbol]
+    hist = _completed_daily_bars(index_symbol, period="1y")
+    regime = None
+    if hist is not None and len(hist) >= REGIME_SMA:
+        close = hist["Close"]
+        regime = "UP" if close.iloc[-1] > close.rolling(REGIME_SMA).mean().iloc[-1] else "DOWN"
+    if cache is not None:
+        cache[index_symbol] = regime
+    return regime
+
+
+def _direction_allowed(direction, regime):
+    """Regime gate: longs only in an UP index regime, shorts only in DOWN.
+    Backtest: gate lifted avg R from +0.10 to +0.17 and halved drawdown."""
+    if regime is None:
+        return False
+    return (direction == "bull") == (regime == "UP")
+
+
+def _days_to_earnings(symbol):
+    """Calendar days until the next earnings date via yf calendar (free, no
+    lxml). None if unknown. Used only as a ranking tiebreak — trades that
+    carried through a report averaged +0.71R vs +0.00R otherwise, mostly
+    from trail convexity across the gap."""
+    try:
+        cal = yf.Ticker(symbol).calendar
+        dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
+        if not dates:
+            return None
+        today = _now_pdt().date()
+        future = [(d - today).days for d in dates if hasattr(d, "year") and d >= today]
+        return min(future) if future else None
+    except Exception:
+        return None
+
+
+def _rank_setups(setups):
+    """Rank: earnings inside the hold window first (structural convexity
+    edge), then score 3-4 over 5 (score-5 setups averaged +0.05R vs +0.21R),
+    then stronger ATR-normalised trend distance."""
+    def key(s):
+        dte = s.get("days_to_earnings")
+        soon = dte is not None and dte <= MAX_HOLD_DAYS * 7 // 5
+        return (soon, s["score"] <= 4, s.get("trend_strength", 0.0))
+    return sorted(setups, key=key, reverse=True)
 
 
 def _slip(price, direction, side):
@@ -220,6 +302,11 @@ def _slip(price, direction, side):
     if (direction == "bull") == (side == "entry"):
         return price * (1 + s)
     return price * (1 - s)
+
+
+def _initial_stop(direction, fill, atr):
+    """Volatility-scaled initial stop: STOP_ATR × ATR from the fill."""
+    return round(fill - STOP_ATR * atr, 2) if direction == "bull" else round(fill + STOP_ATR * atr, 2)
 
 
 def _position_size(equity, cash, entry, stop):
@@ -248,22 +335,61 @@ def _trading_days_held(opened_iso, now=None):
     return days
 
 
-def _maybe_breakeven(pos, price):
-    """Move stop to entry once the trade reaches +1R unrealized.
-    Converts intraday winners that round-trip into scratches instead of
-    losers. Returns True if the stop was moved."""
-    entry = pos["entry_price"]
-    risk = pos.get("initial_risk") or abs(entry - pos["stop"])
-    if risk <= 0:
+def _ratchet_trail(pos, best_close, atr):
+    """Chandelier trail: for a long, stop = max(stop, best_close − TRAIL_ATR×ATR);
+    for a short, stop = min(stop, best_close + TRAIL_ATR×ATR). Never loosens.
+    Returns True if the stop moved."""
+    if atr is None or atr <= 0 or best_close is None:
         return False
     if pos["direction"] == "bull":
-        if price >= entry + risk and pos["stop"] < entry:
-            pos["stop"] = entry
+        candidate = round(best_close - TRAIL_ATR * atr, 2)
+        if candidate > pos["stop"]:
+            pos["stop"] = candidate
             return True
     else:
-        if price <= entry - risk and pos["stop"] > entry:
-            pos["stop"] = entry
+        candidate = round(best_close + TRAIL_ATR * atr, 2)
+        if candidate < pos["stop"]:
+            pos["stop"] = candidate
             return True
+    return False
+
+
+def _update_trailing_stops(state, today_str):
+    """Once per trading day (before monitoring) ratchet every position's trail
+    from *completed* daily bars since entry. Mirrors the backtest, which
+    updates the trail on each bar close and applies it from the next bar."""
+    moved = 0
+    for pos in state["positions"]:
+        if pos.get("trail_date") == today_str:
+            continue
+        hist = _completed_daily_bars(pos["symbol"])
+        if hist is None or hist.empty:
+            continue
+        opened = datetime.fromisoformat(pos["opened_at"]).date()
+        since = hist[hist.index.date >= opened]
+        if since.empty:
+            pos["trail_date"] = today_str
+            continue
+        best = float(since["Close"].max() if pos["direction"] == "bull" else since["Close"].min())
+        atr = _atr(hist)
+        if _ratchet_trail(pos, best, atr):
+            moved += 1
+            _log(f"  [~] {pos['symbol']} trail ratcheted to ${pos['stop']:.2f} "
+                 f"(best close ${best:.2f}, ATR ${atr:.2f})")
+        pos["trail_date"] = today_str
+    if moved:
+        _save_state(state)
+    return moved
+
+
+def _in_cooldown(symbol, history, now=None):
+    """True if `symbol` stopped out within COOLDOWN_DAYS calendar days."""
+    now = now or datetime.now()
+    for t in reversed(history):
+        if t["symbol"] != symbol or t.get("close_reason") != "STOP":
+            continue
+        closed = datetime.fromisoformat(t["closed_at"])
+        return (now - closed).days < COOLDOWN_DAYS
     return False
 
 
@@ -273,33 +399,23 @@ def scan_and_open(state):
     total = len(tickers)
     setups = []
     open_symbols = {p["symbol"] for p in state["positions"]}
+    regime_cache = {}
 
-    _log(f"Scanning {total} tickers (score {MIN_SCORE}-{MAX_SCORE}, R/R >= {MIN_RR}, edge >= {MIN_EDGE}%)...")
+    _log(f"Scanning {total} tickers (score {MIN_SCORE}-{MAX_SCORE}, stop {STOP_ATR}xATR, "
+         f"trail {TRAIL_ATR}xATR, index>SMA{REGIME_SMA} gate)...")
 
     for i, (sym, idx) in enumerate(tickers):
-        if sym in open_symbols:
+        if sym in open_symbols or _in_cooldown(sym, state["history"]):
             continue
         if (i + 1) % 20 == 0:
             _log(f"  [{i+1}/{total}]...")
 
         try:
-            bt = backtest(sym, idx, days=180)
-            if "error" in bt:
+            regime = _index_regime(idx, regime_cache)
+            if regime is None:
                 continue
 
-            bull = bt["breakdown"].get("BULLISH", {})
-            bear = bt["breakdown"].get("BEARISH", {})
-            bull_acc = bull.get("accuracy", 0)
-            bear_acc = bear.get("accuracy", 0)
-
-            if bull_acc >= MIN_EDGE and bull_acc > bear_acc:
-                direction, edge, edge_pnl = "bull", bull_acc, bull.get("avg_dir_pnl", 0)
-            elif bear_acc >= MIN_EDGE and bear_acc > bull_acc:
-                direction, edge, edge_pnl = "bear", bear_acc, bear.get("avg_dir_pnl", 0)
-            else:
-                continue
-
-            result = scan(sym, idx, direction)
+            result = scan(sym, idx)
             if "error" in result:
                 continue
 
@@ -307,27 +423,36 @@ def scan_and_open(state):
             score = abs(idea["score"])
             if score < MIN_SCORE or score > MAX_SCORE:
                 continue
-            if direction == "bull" and idea["bias"] != "BULLISH":
+            if idea["bias"] == "BULLISH":
+                direction = "bull"
+            elif idea["bias"] == "BEARISH":
+                direction = "bear"
+            else:
                 continue
-            if direction == "bear" and idea["bias"] != "BEARISH":
+            if not _direction_allowed(direction, regime):
                 continue
 
-            rr = idea.get("risk_reward")
-            if not rr or rr < MIN_RR:
+            hist = _completed_daily_bars(sym)
+            atr = _atr(hist)
+            if atr is None:
                 continue
+            price = result["price"]
+            trend_strength = (price - hist["Close"].rolling(50).mean().iloc[-1]) / atr
+            if direction == "bear":
+                trend_strength = -trend_strength
 
             setups.append({
                 "symbol": sym, "index": idx, "direction": direction,
-                "price": result["price"], "target": idea["target"],
-                "stop": idea["stop"], "score": score, "edge": edge,
-                "edge_pnl": edge_pnl, "rr": rr,
+                "price": price, "atr": round(atr, 4), "score": score,
+                "regime": regime, "trend_strength": round(float(trend_strength), 2),
+                "days_to_earnings": _days_to_earnings(sym),
+                "ref_level": idea["target"],
             })
         except Exception:
             continue
 
     _log(f"Scan complete. Found {len(setups)} setups.")
 
-    # Rank: R/R first, score tiebreaker (min score/RR enforced during scan)
     setups = _rank_setups(setups)
     max_to_open = MAX_POSITIONS - len(state["positions"])
 
@@ -342,24 +467,19 @@ def scan_and_open(state):
         if not quote:
             continue
         fill = round(_slip(quote, setup["direction"], "entry"), 4)
-        # Re-validate R/R at the actual (slipped) fill price — the quote may
-        # have drifted since the scan, breaking the geometry or the ratio.
-        fill_rr = _fill_rr(setup["direction"], fill, setup["target"], setup["stop"])
-        if fill_rr is None:
-            _log(f"  SKIP {setup['symbol']} @ ${fill:.2f} | stale setup "
-                 f"(scan R/R {setup['rr']:.2f} no longer valid at fill)")
-            continue
-        size = _position_size(equity, balance, fill, setup["stop"])
+        stop = _initial_stop(setup["direction"], fill, setup["atr"])
+        size = _position_size(equity, balance, fill, stop)
         if size < equity * 0.01:  # too small to matter / out of cash
             continue
         shares = size / fill
         position = {
             "symbol": setup["symbol"], "index": setup["index"],
             "direction": setup["direction"], "entry_price": round(fill, 2),
-            "shares": round(shares, 4), "target": round(setup["target"], 2),
-            "stop": round(setup["stop"], 2),
-            "initial_risk": round(abs(fill - setup["stop"]), 4),
-            "score": setup["score"], "edge": setup["edge"], "rr": fill_rr,
+            "shares": round(shares, 4), "target": setup["ref_level"],
+            "stop": stop, "initial_stop": stop,
+            "initial_risk": round(abs(fill - stop), 4), "atr": setup["atr"],
+            "score": setup["score"], "regime": setup["regime"],
+            "days_to_earnings": setup["days_to_earnings"],
             "size": size,
             "opened_at": datetime.now().isoformat(),
         }
@@ -367,9 +487,11 @@ def scan_and_open(state):
         balance -= size
         opened += 1
         arrow = "LONG" if setup["direction"] == "bull" else "SHORT"
+        dte = setup["days_to_earnings"]
         _log(f"  OPEN {arrow} {setup['symbol']} @ ${fill:.2f} (${size:,.0f}) | "
-             f"T: ${setup['target']:.2f} S: ${setup['stop']:.2f} | "
-             f"R/R: {fill_rr:.2f} Edge: {setup['edge']:.0f}% Score: {setup['score']}")
+             f"S: ${stop:.2f} ({STOP_ATR:.0f}xATR ${setup['atr']:.2f}) | "
+             f"Score: {setup['score']} Idx: {setup['regime']} "
+             f"Earn: {f'{dte}d' if dte is not None else 'n/a'}")
 
     state["balance"] = round(balance, 2)
     state["last_scan_date"] = _now_pdt().strftime("%Y-%m-%d")
@@ -378,8 +500,8 @@ def scan_and_open(state):
 
 
 def check_positions(state):
-    """Check all positions for target/stop/time-stop triggers, arming
-    breakeven stops along the way. Returns number closed."""
+    """Check all positions for stop / trailing-stop / time-stop triggers.
+    Returns number closed."""
     closed_indices = []
     now = datetime.now()
 
@@ -388,28 +510,15 @@ def check_positions(state):
         if not price:
             continue
 
-        # Move stop to entry once trade reaches +1R
-        if _maybe_breakeven(pos, price):
-            _log(f"  [=] {pos['symbol']} reached +1R — stop moved to breakeven "
-                 f"(${pos['stop']:.2f})")
-
         entry = pos["entry_price"]
-        target = pos["target"]
         stop = pos["stop"]
         direction = pos["direction"]
 
-        if direction == "bull":
-            hit_target = price >= target
-            hit_stop = price <= stop
-        else:
-            hit_target = price <= target
-            hit_stop = price >= stop
+        hit_stop = price <= stop if direction == "bull" else price >= stop
 
         close_reason = None
-        if hit_target:
-            close_reason = "TARGET"
-        elif hit_stop:
-            close_reason = "STOP"
+        if hit_stop:
+            close_reason = "TRAIL" if stop != pos.get("initial_stop", stop) else "STOP"
         elif _trading_days_held(pos["opened_at"], now) >= MAX_HOLD_DAYS:
             close_reason = "TIME_STOP"
 
@@ -420,18 +529,21 @@ def check_positions(state):
             else:
                 pnl_pct = (entry - exit_price) / entry * 100
             pnl_dollars = pos["size"] * pnl_pct / 100
+            risk = pos.get("initial_risk") or abs(entry - pos.get("initial_stop", stop))
+            r_mult = (pnl_pct / 100 * entry) / risk if risk else 0.0
             state["balance"] += pos["size"] + pnl_dollars
             state["history"].append({
                 **pos, "exit_price": round(exit_price, 2),
                 "pnl_pct": round(pnl_pct, 2),
                 "pnl_dollars": round(pnl_dollars, 2),
+                "r_multiple": round(r_mult, 2),
                 "close_reason": close_reason,
                 "closed_at": now.isoformat(),
             })
             closed_indices.append(i)
             icon = "+" if pnl_pct >= 0 else "-"
             _log(f"  [{icon}] CLOSED {pos['symbol']} ({close_reason}) | "
-                 f"P&L: {pnl_pct:+.2f}% (${pnl_dollars:+.2f})")
+                 f"P&L: {pnl_pct:+.2f}% (${pnl_dollars:+.2f}) = {r_mult:+.2f}R")
 
     for i in sorted(closed_indices, reverse=True):
         state["positions"].pop(i)
@@ -457,17 +569,21 @@ def print_status(state):
         total_pnl = sum(t["pnl_dollars"] for t in state["history"])
         print(f"  Win Rate:  {len(wins)}/{len(state['history'])} ({len(wins)/len(state['history'])*100:.0f}%)")
         print(f"  Total P&L: ${total_pnl:+,.2f}")
+        rs = [t["r_multiple"] for t in state["history"] if "r_multiple" in t]
+        if rs:
+            print(f"  Avg R:     {sum(rs)/len(rs):+.2f}R over {len(rs)} trades")
         ret = (state["balance"] + total_invested - state["starting_balance"]) / state["starting_balance"] * 100
         print(f"  Return:    {ret:+.2f}%")
     print(f"  Last Scan: {state.get('last_scan_date', 'never')}")
 
     if state["positions"]:
-        print(f"\n  {'Symbol':<6} {'Dir':<6} {'Entry':>7} {'Target':>7} {'Stop':>7} {'Edge':>5} {'Score':>5}")
+        print(f"\n  {'Symbol':<6} {'Dir':<6} {'Entry':>7} {'Stop':>7} {'Init':>7} {'ATR':>6} {'Score':>5}")
         print(f"  {'-' * 50}")
         for pos in state["positions"]:
             d = "LONG" if pos["direction"] == "bull" else "SHORT"
             print(f"  {pos['symbol']:<6} {d:<6} ${pos['entry_price']:>6.2f} "
-                  f"${pos['target']:>6.2f} ${pos['stop']:>6.2f} {pos['edge']:>4.0f}% {pos['score']:>4}")
+                  f"${pos['stop']:>6.2f} ${pos.get('initial_stop', pos['stop']):>6.2f} "
+                  f"${pos.get('atr', 0):>5.2f} {pos['score']:>4}")
     print()
 
 
@@ -478,16 +594,17 @@ def print_history(state):
     print(f"\n{'=' * 80}")
     print(f"  TRADE HISTORY ({len(state['history'])} trades)")
     print(f"{'=' * 80}")
-    print(f"  {'Date':<12} {'Sym':<6} {'Dir':<6} {'Entry':>7} {'Exit':>7} {'P&L':>7} {'$':>8} {'Reason':<10}")
-    print(f"  {'-' * 72}")
+    print(f"  {'Date':<12} {'Sym':<6} {'Dir':<6} {'Entry':>7} {'Exit':>7} {'P&L':>7} {'$':>8} {'R':>6} {'Reason':<10}")
+    print(f"  {'-' * 79}")
     for t in state["history"]:
         d = "LONG" if t["direction"] == "bull" else "SHORT"
+        r = f"{t['r_multiple']:+.2f}" if "r_multiple" in t else "   -"
         print(f"  {t['closed_at'][:10]:<12} {t['symbol']:<6} {d:<6} "
               f"${t['entry_price']:>6.2f} ${t['exit_price']:>6.2f} "
-              f"{t['pnl_pct']:>+6.2f}% ${t['pnl_dollars']:>+7.2f} {t['close_reason']:<10}")
+              f"{t['pnl_pct']:>+6.2f}% ${t['pnl_dollars']:>+7.2f} {r:>6} {t['close_reason']:<10}")
     total_pnl = sum(t["pnl_dollars"] for t in state["history"])
     wins = len([t for t in state["history"] if t["pnl_pct"] > 0])
-    print(f"  {'-' * 72}")
+    print(f"  {'-' * 79}")
     print(f"  Total: ${total_pnl:+,.2f} | Win Rate: {wins}/{len(state['history'])}")
 
 
@@ -503,9 +620,9 @@ def run_daemon(state):
     _log(f"Daemon started. Balance: ${state['balance']:,.2f} | "
          f"{len(state['positions'])} open positions")
     _log(f"Will scan at {SCAN_HOUR}:{SCAN_MINUTE:02d} AM PDT on trading days")
-    _log(f"Swing mode: positions close at target/stop/breakeven or after "
+    _log(f"Trend mode: stop {STOP_ATR:.1f}xATR, trail {TRAIL_ATR:.1f}xATR, time stop "
          f"{MAX_HOLD_DAYS} trading days | risk {RISK_PCT*100:.1f}%/trade | "
-         f"slippage {SLIPPAGE_BPS:.0f}bps/side")
+         f"slippage {SLIPPAGE_BPS:.0f}bps/side | index>SMA{REGIME_SMA} gate")
     _log(f"State saved to: {STATE_FILE}")
     print()
 
@@ -522,6 +639,8 @@ def run_daemon(state):
 
             # --- Phase 2: Monitor positions during market hours ---
             if state["positions"] and _is_market_open():
+                # Ratchet chandelier trails once per day from completed bars
+                _update_trailing_stops(state, today_str)
                 closed = check_positions(state)
                 if closed:
                     _log(f"Balance: ${state['balance']:,.2f} | "
