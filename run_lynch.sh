@@ -40,6 +40,7 @@ check_token() {
 }
 
 check_token "GEMINI_API_KEY"
+check_token "OPENROUTER_API_KEY"
 check_token "FMP_API_KEY"
 check_token "X_API_KEY"
 check_token "X_API_SECRET"
