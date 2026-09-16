@@ -232,8 +232,10 @@ Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) usin
 
 | Growth Regime | Terminal PEG Formula |
 |---|---|
-| Mature (< 20%) | `min(2.5, mean_peg)` |
+| Mature (< 20%) | `min(2.5, 28 / growth, mean_peg)` — i.e. mean PEG capped at 2.5 **and** at a 28x terminal PE |
 | High-growth (20%+) | `min(mean_peg, max(0.8, 1.5 - 0.5 × (growth/30 - 1)))` |
+
+The **28x mature terminal PE cap** exists because mature names get no growth decay, so terminal PE = PEG × growth, and a stock whose reconstructed PEG history is inflated by years of depressed earnings (AMZN's capex build-out: mean PEG 2.9 → 40x; ISRG, NTNX, WSO: 45–48x) would otherwise be assigned a maturity multiple far above peers with the same growth (MSFT 22x, GOOG 28x). 28x is where the high-growth formula lands at exactly 20% growth (1.67 PEG × 17.2% decayed growth ≈ 28.7x), so the terminal PE is now continuous across the regime boundary, and it sits at roughly the 90th percentile of terminal PEs across Nasdaq 100 + IGV + SMH + SCHD. The cap only binds when `growth > 11.2%` (below that `28 / growth > 2.5`), so low-growth compounders whose PEG is structurally high (AAPL, COST, KO) are unaffected, and names whose own history already implies < 28x (MSFT, GOOG) are unchanged. In a 267-ticker scan it re-rated 32 names, all mature stocks previously assigned 30–50x.
 
 **ROI Scenarios:**
 
