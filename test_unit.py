@@ -894,8 +894,47 @@ class TestLynchPinCore(unittest.TestCase):
 
     def test_terminal_peg_mature_capped_at_2_5(self):
         from engine.lynch_pin_core import _terminal_peg
-        # Growth < 20, mean_peg 3.0 > 2.5 cap
-        self.assertAlmostEqual(_terminal_peg(15, 3.0), 2.5)
+        # Growth 10%, mean_peg 3.0 > 2.5 cap; PE cap (28/10 = 2.8) is not binding
+        self.assertAlmostEqual(_terminal_peg(10, 3.0), 2.5)
+
+    def test_terminal_peg_mature_capped_by_terminal_pe(self):
+        from engine.lynch_pin_core import _terminal_peg, _MATURE_TERMINAL_PE_CAP
+        # AMZN-like: 16% growth, mean PEG 2.9 (capex-depressed EPS history).
+        # 2.5 × 16 = 40x terminal PE → capped at 28x → PEG 1.75
+        peg = _terminal_peg(16.0, 2.9)
+        self.assertAlmostEqual(peg, _MATURE_TERMINAL_PE_CAP / 16.0)
+        self.assertAlmostEqual(peg * 16.0, 28.0)
+        # ISRG-like: 18% growth, mean 2.96 → 28/18 = 1.56
+        self.assertAlmostEqual(_terminal_peg(18.0, 2.96), 28.0 / 18.0)
+
+    def test_terminal_peg_pe_cap_leaves_low_growth_and_cheap_history_alone(self):
+        from engine.lynch_pin_core import _terminal_peg
+        # AAPL/KO-like: growth < 11.2% → 28/g > 2.5, so the 2.5 PEG cap still binds
+        self.assertAlmostEqual(_terminal_peg(9.7, 3.49), 2.5)
+        self.assertAlmostEqual(_terminal_peg(6.1, 4.38), 2.5)
+        # MSFT/GOOG-like: mean PEG already implies < 28x → unchanged
+        self.assertAlmostEqual(_terminal_peg(12.9, 1.73), 1.73)
+        self.assertAlmostEqual(_terminal_peg(17.0, 1.54), 1.54)
+
+    def test_terminal_pe_is_continuous_across_growth_regimes(self):
+        from engine.lynch_pin_core import _terminal_peg, _growth_decay
+        # Just below 20%: PE cap → 28x. Just above: 1.67 PEG × 17.2% decayed growth ≈ 28.7x
+        below = _terminal_peg(19.99, 5.0) * 19.99 ** _growth_decay(19.99)
+        above = _terminal_peg(20.0, 5.0) * 20.0 ** _growth_decay(20.0)
+        self.assertAlmostEqual(below, 28.0, places=1)
+        self.assertLess(abs(above - below), 1.0)
+
+    def test_scenario_pegs_mature_pe_cap_applies_to_both_branches(self):
+        from engine.lynch_pin_core import _scenario_pegs
+        # Below mean (AMZN-like): base is the capped terminal PEG
+        bull, base, bear = _scenario_pegs(16.0, 2.90, 1.48, 1.07)
+        self.assertAlmostEqual(base, 28.0 / 16.0)
+        self.assertAlmostEqual(bull, base + 0.5 * 1.07)
+        self.assertAlmostEqual(bear, base - 0.5 * 1.07)  # 1.215 < today's 1.48
+        # Above mean (VRNS-like: PEG 7.38 = mean): today's multiple would imply 114x → bull capped at 28x
+        bull, base, bear = _scenario_pegs(15.5, 7.0, 7.38, 1.48)
+        self.assertAlmostEqual(bull, 28.0 / 15.5)
+        self.assertTrue(bull > base > bear > 0)
 
     def test_terminal_peg_high_growth_reversed(self):
         from engine.lynch_pin_core import _terminal_peg
@@ -910,7 +949,8 @@ class TestLynchPinCore(unittest.TestCase):
     def test_scenario_pegs_below_mean_is_mean_reversion(self):
         from engine.lynch_pin_core import _scenario_pegs
         # GOOG-like: PEG 1.20 vs mean 1.51, SD 0.295 → bull mean+0.5SD, base mean, bear = min(curr, mean-0.5SD)
-        bull, base, bear = _scenario_pegs(18.8, 1.51, 1.20, 0.295)
+        # (18% growth × 1.51 = 27.2x, under the 28x mature terminal PE cap)
+        bull, base, bear = _scenario_pegs(18.0, 1.51, 1.20, 0.295)
         self.assertAlmostEqual(base, 1.51)
         self.assertAlmostEqual(bull, 1.51 + 0.5 * 0.295)
         self.assertAlmostEqual(bear, 1.20)  # current is below mean-0.5SD=1.36 → bear caps at current
