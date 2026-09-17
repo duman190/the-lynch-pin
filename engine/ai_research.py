@@ -1,5 +1,6 @@
 import math
 import json
+import re
 import time
 import os
 import requests
@@ -25,14 +26,14 @@ def _is_transient(error_msg):
 
 
 class LynchPinResearcher:
-    ATTEMPTS_PER_TIER = 2
+    ATTEMPTS_PER_TIER = 3
 
     def __init__(self):
         gemini_key = os.environ.get("GEMINI_API_KEY")
         # Gemini tiers are skipped when no key is set (the chain then runs on OpenRouter only)
         self.client = genai.Client(api_key=gemini_key) if gemini_key else None
-        self.best_model = "gemini-3.8-flash"
-        self.backup_model = "gemini-3.7-flash"
+        self.best_model = "gemini-3.7-flash"
+        self.backup_model = "gemini-3.6-flash"
         self.openrouter_model = OPENROUTER_FREE_MODEL
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
         if not self.client and not self.openrouter_api_key:
@@ -241,9 +242,11 @@ class LynchPinResearcher:
         context = "\n\n".join(context_lines)
 
         daily_ticker_task = """SECTION 2 — PER-TICKER ANALYSIS:
-For EACH ticker provide three labeled paragraphs:
+For EACH ticker provide three labeled paragraphs. Start each block with a header line that is
+ONLY the cashtag of that ticker followed by a colon — e.g. "$AAPL:" for AAPL. Never write the
+literal word TICKER in the header.
 
-$TICKER:
+$<cashtag>:
 🤖: [Overview: STRICT MAX 250 characters. This is the tweet preview before "show more".
 2-3 SHORT sentences. Conviction vs Risk. Use valuation + Income Grade.
 If waterfall accelerating (A/A+) = "sleep well" compounder.
@@ -321,12 +324,45 @@ Do NOT use markdown formatting. Plain text only."""
 
         return prompt
 
+    @staticmethod
+    def normalize_narrative(text, tickers):
+        """Coerces loosely formatted model output into the layout ``main.py`` parses.
+
+        ``main.py`` anchors on a line-start ``$TICKER`` header per block and a
+        ``SENTIMENT:`` label. Gemini follows the template; the small free models
+        served by ``openrouter/free`` sometimes copy it literally (``$TICKER: ARM``),
+        use bare ``ARM:`` headers, wrap the header in markdown bold, or drop the
+        ``SENTIMENT:`` label entirely. Each of those is rewritten here so a fallback
+        run still produces per-ticker replies instead of the generic placeholder.
+        """
+        if not text or text.startswith("AI Research Error"):
+            return text
+        syms = sorted({t.replace('*', '') for t in tickers if t}, key=len, reverse=True)
+        if syms:
+            alt = "|".join(re.escape(s) for s in syms)
+            # "$TICKER: ARM" / "TICKER: ARM" / "Ticker - ARM" / "**$TICKER: ARM**"  →  "$ARM:"
+            text = re.sub(rf"^[ \t*#]*\$?TICKER[ \t]*[:\-—]?[ \t]*\$?({alt})\b[ \t*:]*$",
+                          r"$\1:", text, flags=re.MULTILINE | re.IGNORECASE)
+            # bare "ARM:" / "ARM" / "**$ARM**" header line (case-sensitive: ON must not match prose)
+            text = re.sub(rf"^[ \t*#]*\$?({alt})[ \t*:]*$", r"$\1:", text, flags=re.MULTILINE)
+        if not re.search(r"SENTIMENT:", text):
+            # Label the first prose line before the first ticker block as the sentiment
+            first_hdr = re.search(r"^\$[A-Z]", text, re.MULTILINE)
+            preamble = text[:first_hdr.start()] if first_hdr else text
+            for line in preamble.splitlines():
+                s = line.strip()
+                if s and not re.match(r"^(PORTFOLIO|SECTION|INDEX|🐂|🐻)", s):
+                    text = text.replace(line, f"SENTIMENT: {s}", 1)
+                    break
+        return text
+
     def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None,
                             edge_data=None, portfolio_summary=None):
         """Single API call: returns sentiment + all per-ticker narratives."""
         prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
                                    portfolio_summary=portfolio_summary)
-        return self._call_ai(prompt)
+        raw = self._call_ai(prompt)
+        return self.normalize_narrative(raw, [d['Ticker'] for d in tickers_data])
 
     def get_fintwit_trending(self):
         """Fetches top 100 most discussed stocks on FinTwit this week via Gemini."""
