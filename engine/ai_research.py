@@ -133,7 +133,8 @@ class LynchPinResearcher:
                         print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} — switching tier.")
                         break
                     if attempt < total:
-                        print(f"⚠️  {tier_label} AI Busy ({model}). Retrying in {delay}s... (Attempt {attempt}/{total})")
+                        print(f"⚠️  {tier_label} AI Busy ({model}): {last_error[:160]} "
+                              f"— retrying in {delay}s... (Attempt {attempt}/{total})")
                         time.sleep(delay)
         return f"AI Research Error: {last_error}"
 
