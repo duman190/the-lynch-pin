@@ -282,6 +282,97 @@ class TestAIResearch(unittest.TestCase):
         self.assertIn('NVDA', tickers)
         self.assertEqual(len(tickers), 5)
 
+    # ── normalize_narrative: coerce sloppy free-model output into main.py's layout ──
+
+    def _main_py_parse(self, text, tickers):
+        """Mirrors main.py's sentiment + per-ticker regexes."""
+        import re
+        sent = re.search(r'SENTIMENT:\s*(.+)', text)
+        sentiment = sent.group(1).strip() if sent else ""
+        bulk = text[sent.end():].strip() if sent else text
+        found = {}
+        for t in tickers:
+            m = re.search(rf"^\${re.escape(t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)", bulk, re.DOTALL | re.MULTILINE)
+            if m:
+                found[t] = m.group(1).strip()
+        return sentiment, found
+
+    def test_normalize_literal_ticker_template_and_missing_sentiment(self):
+        """Reproduces the 2026-09-17 liquid/lfm-2.5 output: '$TICKER: ARM' headers, no SENTIMENT label."""
+        from engine.ai_research import LynchPinResearcher
+        raw = ("Market sentiment for SMH is mixed but leaning bullish on AI-driven tech.\n\n"
+               "$TICKER: ARM\n🤖: ARM trades at a premium.\n📊 Reverse DCF: math.\n🧪 Stomach Test: risk.\n\n"
+               "$TICKER: NVDA\n🤖: NVDA leads.\n")
+        out = LynchPinResearcher.normalize_narrative(raw, ["ARM", "NVDA"])
+        sentiment, found = self._main_py_parse(out, ["ARM", "NVDA"])
+        self.assertEqual(sentiment, "Market sentiment for SMH is mixed but leaning bullish on AI-driven tech.")
+        self.assertTrue(found["ARM"].startswith("🤖: ARM trades at a premium."))
+        self.assertIn("🧪 Stomach Test: risk.", found["ARM"])
+        self.assertEqual(found["NVDA"], "🤖: NVDA leads.")
+
+    def test_normalize_bare_and_markdown_headers(self):
+        from engine.ai_research import LynchPinResearcher
+        raw = ("SENTIMENT: fine.\n\nASML:\n🤖: a\n\n**TICKER: TSM**\n🤖: b\n\n**$ADI**\n🤖: c\n\n"
+               "Ticker - NXPI\n🤖: d\n")
+        out = LynchPinResearcher.normalize_narrative(raw, ["ASML*", "TSM", "ADI", "NXPI"])
+        _, found = self._main_py_parse(out, ["ASML", "TSM", "ADI", "NXPI"])
+        self.assertEqual(found, {"ASML": "🤖: a", "TSM": "🤖: b", "ADI": "🤖: c", "NXPI": "🤖: d"})
+
+    def test_normalize_short_ticker_word_in_prose_untouched(self):
+        """'ON' inside a sentence must not become a block header (case-sensitive, whole-line only)."""
+        from engine.ai_research import LynchPinResearcher
+        raw = "SENTIMENT: s.\n\n$AAPL:\n🤖: Keep an eye ON this one.\nON\n🤖: ON Semi narrative.\n"
+        out = LynchPinResearcher.normalize_narrative(raw, ["AAPL", "ON"])
+        self.assertIn("Keep an eye ON this one.", out)
+        _, found = self._main_py_parse(out, ["AAPL", "ON"])
+        self.assertEqual(found["AAPL"], "🤖: Keep an eye ON this one.")
+        self.assertEqual(found["ON"], "🤖: ON Semi narrative.")
+
+    def test_normalize_well_formed_gemini_output_is_unchanged(self):
+        from engine.ai_research import LynchPinResearcher
+        good = ("SENTIMENT: $SMH is riding high.\n\n$ARM:\n🤖: x\n📊 Reverse DCF: y\n🧪 Stomach Test: z\n\n"
+                "$NVDA:\n🤖: q\n")
+        self.assertEqual(LynchPinResearcher.normalize_narrative(good, ["ARM", "NVDA"]), good)
+
+    def test_normalize_portfolio_preamble_skips_portfolio_block_for_sentiment(self):
+        from engine.ai_research import LynchPinResearcher
+        raw = ("Well built but concentrated.\n\nPORTFOLIO:\n🐂 Bull: good.\n\n🐻 Bear: bad.\n\n"
+               "$TICKER: AAPL\n🤖: a\n")
+        out = LynchPinResearcher.normalize_narrative(raw, ["AAPL"])
+        self.assertTrue(out.startswith("SENTIMENT: Well built but concentrated."))
+        self.assertIn("\nPORTFOLIO:\n🐂 Bull: good.", out)
+
+    def test_normalize_passes_through_error_and_empty(self):
+        from engine.ai_research import LynchPinResearcher
+        self.assertEqual(LynchPinResearcher.normalize_narrative("AI Research Error: boom", ["ARM"]),
+                         "AI Research Error: boom")
+        self.assertEqual(LynchPinResearcher.normalize_narrative("", ["ARM"]), "")
+
+    @patch('engine.ai_research.genai')
+    def test_get_batch_narrative_normalizes_model_output(self, mock_genai):
+        from engine.ai_research import LynchPinResearcher
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        resp = MagicMock()
+        resp.text = "Bullish week.\n\n$TICKER: AAPL\n🤖: a\n"
+        mock_client.models.generate_content.return_value = resp
+        researcher = LynchPinResearcher()
+        researcher.client = mock_client
+        data = [{'Ticker': 'AAPL', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '10.0%',
+                 'PEG': 2.0, 'Mean': 2.5, 'Dev_SD': -1.0, 'Bull': '1%', 'Base': '1%', 'Bear': '1%'}]
+        out = researcher.get_batch_narrative(data)
+        self.assertEqual(out, "SENTIMENT: Bullish week.\n\n$AAPL:\n🤖: a\n")
+
+    def test_build_prompt_header_template_is_not_literal_ticker(self):
+        """The header placeholder must not be copy-able as '$TICKER:' by small models."""
+        from engine.ai_research import LynchPinResearcher
+        data = [{'Ticker': 'AAPL', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '10.0%',
+                 'PEG': 2.0, 'Mean': 2.5, 'Dev_SD': -1.0, 'Bull': '1%', 'Base': '1%', 'Bear': '1%'}]
+        prompt = LynchPinResearcher.build_prompt(data)
+        self.assertNotIn('\n$TICKER:', prompt)
+        self.assertIn('$<cashtag>:', prompt)
+        self.assertIn('"$AAPL:"', prompt)
+
 
 # ─── engine/ai_research.py — 3-tier fallback chain ───
 
