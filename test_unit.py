@@ -377,7 +377,16 @@ class TestAIResearch(unittest.TestCase):
 # ─── engine/ai_research.py — 3-tier fallback chain ───
 
 class TestAIFallbackChain(unittest.TestCase):
-    """best Gemini (2 tries) → backup Gemini (2 tries) → OpenRouter free router (2 tries)."""
+    """best Gemini → backup Gemini → OpenRouter free router, ATTEMPTS_PER_TIER tries each.
+
+    Attempt counts are read from ``LynchPinResearcher.ATTEMPTS_PER_TIER`` so the tests track
+    the engine when it is tuned.
+    """
+
+    @property
+    def n(self):
+        from engine.ai_research import LynchPinResearcher
+        return LynchPinResearcher.ATTEMPTS_PER_TIER
 
     def _make(self, mock_genai, openrouter_key="or-test-key"):
         from engine.ai_research import LynchPinResearcher
@@ -444,15 +453,15 @@ class TestAIFallbackChain(unittest.TestCase):
     @patch('engine.ai_research.time.sleep')
     @patch('engine.ai_research.requests.post')
     @patch('engine.ai_research.genai')
-    def test_best_busy_twice_then_backup(self, mock_genai, mock_post, mock_sleep):
+    def test_best_busy_every_attempt_then_backup(self, mock_genai, mock_post, mock_sleep):
         researcher, client = self._make(mock_genai)
-        client.models.generate_content.side_effect = [
-            Exception("503 UNAVAILABLE"), Exception("429 RESOURCE_EXHAUSTED"), self._gemini_response("backup ok")
-        ]
+        busy = [Exception("503 UNAVAILABLE"), Exception("429 RESOURCE_EXHAUSTED")]
+        client.models.generate_content.side_effect = \
+            [busy[i % 2] for i in range(self.n)] + [self._gemini_response("backup ok")]
         self.assertEqual(researcher._call_ai("p", delay=0), "backup ok")
         models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
-        self.assertEqual(models, [researcher.best_model, researcher.best_model, researcher.backup_model])
-        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(models, [researcher.best_model] * self.n + [researcher.backup_model])
+        self.assertEqual(mock_sleep.call_count, self.n)
         mock_post.assert_not_called()
 
     @patch('engine.ai_research.time.sleep')
@@ -464,7 +473,7 @@ class TestAIFallbackChain(unittest.TestCase):
         mock_post.return_value = self._openrouter_response("openrouter ok")
 
         self.assertEqual(researcher._call_ai("hello", delay=0), "openrouter ok")
-        self.assertEqual(client.models.generate_content.call_count, 4)  # 2 best + 2 backup
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)  # best + backup
         self.assertEqual(mock_post.call_count, 1)
         kwargs = mock_post.call_args.kwargs
         self.assertEqual(mock_post.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
@@ -473,7 +482,7 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertTrue(kwargs['stream'])
         self.assertEqual(kwargs['json']['messages'], [{"role": "user", "content": "hello"}])
         self.assertEqual(kwargs['headers']['Authorization'], "Bearer or-test-key")
-        self.assertEqual(mock_sleep.call_count, 4)
+        self.assertEqual(mock_sleep.call_count, 2 * self.n)
 
     @patch('engine.ai_research.requests.post')
     @patch('engine.ai_research.genai')
@@ -503,9 +512,9 @@ class TestAIFallbackChain(unittest.TestCase):
         result = researcher._call_ai("p", delay=0)
         self.assertTrue(result.startswith("AI Research Error:"))
         self.assertIn("OpenRouter HTTP 429", result)
-        self.assertEqual(client.models.generate_content.call_count, 4)
-        self.assertEqual(mock_post.call_count, 2)
-        self.assertEqual(mock_sleep.call_count, 5)  # 6 attempts, no sleep after the last
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
+        self.assertEqual(mock_post.call_count, self.n)
+        self.assertEqual(mock_sleep.call_count, 3 * self.n - 1)  # 3 tiers, no sleep after the last
 
     @patch('engine.ai_research.time.sleep')
     @patch('engine.ai_research.requests.post')
@@ -529,9 +538,9 @@ class TestAIFallbackChain(unittest.TestCase):
 
         result = researcher._call_ai("p", delay=0)
         self.assertTrue(result.startswith("AI Research Error:"))
-        self.assertEqual(client.models.generate_content.call_count, 4)
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
         mock_post.assert_not_called()
-        self.assertEqual(mock_sleep.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2 * self.n - 1)
         self.assertEqual([t[0] for t in researcher._tiers()], ["BEST", "BACKUP"])
 
     @patch('engine.ai_research.time.sleep')
