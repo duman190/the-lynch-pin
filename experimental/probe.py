@@ -8,6 +8,7 @@ Run from the project root:
     python tmp/openrouter_probe.py --model qwen/qwen3-8b:free   # pin a specific free model
     python tmp/openrouter_probe.py --raw tmp/openrouter_raw.txt # re-parse a saved reply, no API call
     python tmp/openrouter_probe.py --no-normalize               # how main.py fares on the untouched reply
+    python tmp/openrouter_probe.py --single                     # one raw draw, skip the retry loop
 
 The raw reply is always saved to tmp/openrouter_raw.txt so a bad one can be replayed.
 """
@@ -142,6 +143,7 @@ def main():
     ap.add_argument("--raw", help="Skip the API call; parse a saved raw reply instead")
     ap.add_argument("--idx", default="SMH")
     ap.add_argument("--no-normalize", action="store_true", help="Show how main.py fares on the untouched reply")
+    ap.add_argument("--single", action="store_true", help="One raw draw from the router, no validation/retry")
     args = ap.parse_args()
 
     tickers = [d['Ticker'] for d in SAMPLE]
@@ -156,8 +158,15 @@ def main():
             sys.exit("OPENROUTER_API_KEY not set")
         os.environ.pop("GEMINI_API_KEY", None)  # force the OpenRouter-only path
         researcher = LynchPinResearcher()
-        print(f"📤 Prompt: {len(prompt)} chars → {args.model}")
-        raw = researcher._call_openrouter_model(args.model, prompt)
+        researcher.openrouter_model = args.model
+        print(f"📤 Prompt: {len(prompt)} chars → {args.model} "
+              f"(via _call_ai: up to {researcher.ATTEMPTS_PER_TIER} attempts, garbage replies retried)")
+        if args.single:
+            raw = researcher._call_openrouter_model(args.model, prompt)
+        else:
+            raw = researcher._call_ai(
+                prompt, check=lambda t: LynchPinResearcher.narrative_gaps(
+                    LynchPinResearcher.normalize_narrative(t, tickers), tickers))
         os.makedirs("tmp", exist_ok=True)
         with open("tmp/openrouter_raw.txt", "w", encoding="utf-8") as f:
             f.write(raw)
