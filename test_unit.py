@@ -353,6 +353,25 @@ class TestAIResearch(unittest.TestCase):
         from engine.ai_research import LynchPinResearcher
         self.assertEqual(LynchPinResearcher.normalize_narrative("User Safety: safe", ["ARM"]), "User Safety: safe")
 
+    def test_normalize_strips_template_brackets(self):
+        """cohere/north-mini-code copied the template's [brackets] and 'Overview:' placeholder literally."""
+        from engine.ai_research import LynchPinResearcher
+        raw = ("SENTIMENT: ok.\n\n$ARM:\n"
+               "🤖: [Overview: ARM's EPS surges 108% but trades at 86.7x FwdPE; B-grade income hints cost risk.]\n"
+               "📊 Reverse DCF: [Arm's ecosystem leadership needs a 12.3% base ROI, forcing EPS to compound\n"
+               "at 34.8%/yr for 5 years [see dataset].]\n"
+               "🧪 Stomach Test: [AAA credit and Cash/Debt 6.6x cushion the balance sheet.]\n\n"
+               "$NVDA:\n🤖: plain text with [an aside] stays.\n📊 Reverse DCF: [unclosed bracket\n\n"
+               "🧪 Stomach Test: [closed.]\n")
+        out = LynchPinResearcher.normalize_narrative(raw, ["ARM", "NVDA"])
+        self.assertIn("🤖: ARM's EPS surges 108% but trades at 86.7x FwdPE; B-grade income hints cost risk.\n", out)
+        self.assertIn("📊 Reverse DCF: Arm's ecosystem leadership needs a 12.3% base ROI, forcing EPS to compound\n"
+                      "at 34.8%/yr for 5 years [see dataset].\n", out)  # multi-line, inner brackets kept
+        self.assertIn("🧪 Stomach Test: AAA credit and Cash/Debt 6.6x cushion the balance sheet.\n", out)
+        self.assertIn("🤖: plain text with [an aside] stays.", out)  # no leading bracket → untouched
+        self.assertIn("📊 Reverse DCF: [unclosed bracket\n\n🧪 Stomach Test: closed.\n", out)  # unclosed can't swallow next section
+        self.assertNotIn("Overview:", out)
+
     @patch('engine.ai_research.genai')
     def test_get_batch_narrative_normalizes_model_output(self, mock_genai):
         from engine.ai_research import LynchPinResearcher
