@@ -348,6 +348,11 @@ class TestAIResearch(unittest.TestCase):
                          "AI Research Error: boom")
         self.assertEqual(LynchPinResearcher.normalize_narrative("", ["ARM"]), "")
 
+    def test_normalize_does_not_invent_sentiment_without_ticker_blocks(self):
+        """A safety-classifier verdict must not be promoted to the main-tweet headline."""
+        from engine.ai_research import LynchPinResearcher
+        self.assertEqual(LynchPinResearcher.normalize_narrative("User Safety: safe", ["ARM"]), "User Safety: safe")
+
     @patch('engine.ai_research.genai')
     def test_get_batch_narrative_normalizes_model_output(self, mock_genai):
         from engine.ai_research import LynchPinResearcher
@@ -555,6 +560,87 @@ class TestAIFallbackChain(unittest.TestCase):
         models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
         self.assertEqual(models, [researcher.best_model, researcher.backup_model])  # no 2nd BEST attempt
         mock_sleep.assert_not_called()
+
+    # ── reply validation: garbage replies burn an attempt and are retried without sleeping ──
+
+    GOOD = "SENTIMENT: fine.\n\n$ARM:\n🤖: a\n\n$NVDA:\n🤖: b\n"
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_unusable_reply_is_retried_immediately_on_same_tier(self, mock_genai, mock_post, mock_sleep):
+        """Reproduces openrouter/free routing to a safety classifier: 'User Safety: safe'."""
+        from engine.ai_research import LynchPinResearcher
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = [
+            self._gemini_response("User Safety: safe"), self._gemini_response(self.GOOD)
+        ]
+        tickers = ["ARM", "NVDA"]
+        check = lambda t: LynchPinResearcher.narrative_gaps(LynchPinResearcher.normalize_narrative(t, tickers), tickers)
+        self.assertEqual(researcher._call_ai("p", delay=0, check=check), self.GOOD)
+        models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
+        self.assertEqual(models, [researcher.best_model, researcher.best_model])  # same tier, 2nd attempt
+        mock_sleep.assert_not_called()  # not a capacity problem → no 30s pause
+        mock_post.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_all_replies_unusable_returns_most_complete(self, mock_genai, mock_post, mock_sleep):
+        from engine.ai_research import LynchPinResearcher
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        partial = "SENTIMENT: ok.\n\n$ARM:\n🤖: a\n"  # NVDA missing
+        replies = ["User Safety: safe"] * (2 * self.n)
+        replies[self.n] = partial  # first BACKUP attempt is the least-bad one
+        client.models.generate_content.side_effect = [self._gemini_response(r) for r in replies]
+        tickers = ["ARM", "NVDA"]
+        check = lambda t: LynchPinResearcher.narrative_gaps(LynchPinResearcher.normalize_narrative(t, tickers), tickers)
+        out = researcher._call_ai("p", delay=0, check=check)
+        self.assertEqual(out, partial)  # degraded but real content, not the error string
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
+        mock_sleep.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_check_not_applied_without_validator(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.return_value = self._gemini_response("User Safety: safe")
+        self.assertEqual(researcher._call_ai("p", delay=0), "User Safety: safe")
+        self.assertEqual(client.models.generate_content.call_count, 1)
+
+    def test_narrative_gaps(self):
+        from engine.ai_research import LynchPinResearcher as R
+        t = ["ARM", "NVDA*"]
+        self.assertIsNone(R.narrative_gaps(self.GOOD, t))
+        self.assertEqual(R.narrative_gaps("", t), "empty reply")
+        self.assertEqual(R.narrative_gaps("AI Research Error: x", t), "empty reply")
+        # safety classifier output: no sentiment, no blocks
+        self.assertEqual(R.narrative_gaps("User Safety: safe", t),
+                         "no SENTIMENT line; 0/2 ticker blocks (missing: ARM, NVDA)")
+        # header present but block has no 🤖 overview (truncated) → counts as missing
+        self.assertEqual(R.narrative_gaps("SENTIMENT: s.\n\n$ARM:\n🤖: a\n\n$NVDA:\n", t),
+                         "1/2 ticker blocks (missing: NVDA)")
+        # empty SENTIMENT label is not a sentiment
+        self.assertEqual(R.narrative_gaps("SENTIMENT:\n\n$ARM:\n🤖: a\n\n$NVDA:\n🤖: b\n", t), "no SENTIMENT line")
+        # relaxed ratio tolerates one missing name
+        self.assertIsNone(R.narrative_gaps("SENTIMENT: s.\n\n$ARM:\n🤖: a\n", t, min_ticker_ratio=0.5))
+
+    @patch('engine.ai_research.genai')
+    def test_get_batch_narrative_retries_garbage_then_normalizes(self, mock_genai):
+        from engine.ai_research import LynchPinResearcher
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = [
+            self._gemini_response("User Safety: safe"),
+            self._gemini_response("Bullish week.\n\n$TICKER: AAPL\n🤖: a\n"),
+        ]
+        data = [{'Ticker': 'AAPL', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '10.0%',
+                 'PEG': 2.0, 'Mean': 2.5, 'Dev_SD': -1.0, 'Bull': '1%', 'Base': '1%', 'Bear': '1%'}]
+        with patch('engine.ai_research.time.sleep') as mock_sleep:
+            out = researcher.get_batch_narrative(data)
+            mock_sleep.assert_not_called()
+        self.assertEqual(out, "SENTIMENT: Bullish week.\n\n$AAPL:\n🤖: a\n")
+        self.assertEqual(client.models.generate_content.call_count, 2)
 
     @patch('engine.ai_research.genai')
     def test_call_gemini_alias_kept(self, mock_genai):
