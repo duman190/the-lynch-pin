@@ -111,22 +111,29 @@ class LynchPinResearcher:
             tiers.append(("OPENROUTER", self.openrouter_model, self._call_openrouter_model))
         return tiers
 
-    def _call_ai(self, prompt, delay=30):
+    def _call_ai(self, prompt, delay=30, check=None):
         """3-layer fallback: best Gemini → backup Gemini → OpenRouter free router.
 
         Each tier gets ``ATTEMPTS_PER_TIER`` tries. Transient errors (503/429/...) are
         retried on the same tier after ``delay`` seconds; any other error skips straight
-        to the next tier. Returns the model text, or an ``AI Research Error: ...`` string
-        once every tier is exhausted.
+        to the next tier.
+
+        ``check(text)`` optionally validates a reply: it returns ``None`` when the reply is
+        usable, else a short reason. A rejected reply burns the attempt and is retried
+        immediately (no sleep — it is not a capacity problem; on the free router the retry
+        lands on a different model). If every attempt is rejected, the least-bad reply seen
+        is returned rather than nothing. Returns an ``AI Research Error: ...`` string only
+        when no tier produced any text at all.
         """
         tiers = self._tiers()
         total = self.ATTEMPTS_PER_TIER * len(tiers)
         last_error = "no AI tier available"
+        best_rejected = None  # (score, text) of the most complete rejected reply
         for tier_idx, (tier_label, model, call) in enumerate(tiers):
             for i in range(self.ATTEMPTS_PER_TIER):
                 attempt = tier_idx * self.ATTEMPTS_PER_TIER + i + 1
                 try:
-                    return call(model, prompt)
+                    text = call(model, prompt)
                 except Exception as e:
                     last_error = str(e)
                     if not _is_transient(last_error):
@@ -136,6 +143,18 @@ class LynchPinResearcher:
                         print(f"⚠️  {tier_label} AI Busy ({model}): {last_error[:160]} "
                               f"— retrying in {delay}s... (Attempt {attempt}/{total})")
                         time.sleep(delay)
+                    continue
+                reason = check(text) if check else None
+                if reason is None:
+                    return text
+                score = -len(reason)  # crude: shorter gap list = more complete reply
+                if best_rejected is None or score > best_rejected[0]:
+                    best_rejected = (score, text)
+                print(f"⚠️  {tier_label} AI reply unusable ({model}): {reason} "
+                      f"— retrying... (Attempt {attempt}/{total})")
+        if best_rejected is not None:
+            print("⚠️  No fully usable AI reply; using the most complete one.")
+            return best_rejected[1]
         return f"AI Research Error: {last_error}"
 
     # Backwards-compatible alias
@@ -347,23 +366,56 @@ Do NOT use markdown formatting. Plain text only."""
             # bare "ARM:" / "ARM" / "**$ARM**" header line (case-sensitive: ON must not match prose)
             text = re.sub(rf"^[ \t*#]*\$?({alt})[ \t*:]*$", r"$\1:", text, flags=re.MULTILINE)
         if not re.search(r"SENTIMENT:", text):
-            # Label the first prose line before the first ticker block as the sentiment
+            # Label the first prose line before the first ticker block as the sentiment.
+            # Only when ticker blocks exist — a reply with none is garbage (e.g. a safety
+            # classifier answering "User Safety: safe") and must not become the headline.
             first_hdr = re.search(r"^\$[A-Z]", text, re.MULTILINE)
-            preamble = text[:first_hdr.start()] if first_hdr else text
-            for line in preamble.splitlines():
-                s = line.strip()
-                if s and not re.match(r"^(PORTFOLIO|SECTION|INDEX|🐂|🐻)", s):
-                    text = text.replace(line, f"SENTIMENT: {s}", 1)
-                    break
+            if first_hdr:
+                for line in text[:first_hdr.start()].splitlines():
+                    s = line.strip()
+                    if s and not re.match(r"^(PORTFOLIO|SECTION|INDEX|🐂|🐻)", s):
+                        text = text.replace(line, f"SENTIMENT: {s}", 1)
+                        break
         return text
+
+    @staticmethod
+    def narrative_gaps(text, tickers, min_ticker_ratio=1.0):
+        """Returns ``None`` if ``text`` is a usable batch narrative, else a short reason.
+
+        A usable reply has a ``SENTIMENT:`` line and, for at least ``min_ticker_ratio`` of
+        the tickers, a ``$TICKER`` block that contains the 🤖 overview. Anything else —
+        a safety-classifier verdict, a truncated reply, a model that skipped half the
+        names — is rejected so ``_call_ai`` can spend another attempt instead of letting
+        ``main.py`` post placeholders. Expects normalized text.
+        """
+        if not text or text.startswith("AI Research Error"):
+            return "empty reply"
+        syms = [t.replace('*', '') for t in tickers if t]
+        missing = []
+        for s in syms:
+            m = re.search(rf"^\${re.escape(s)}\b:?[ \t]*\n?(.*?)(?=\n\$[A-Z]|\Z)", text, re.DOTALL | re.MULTILINE)
+            if not m or "🤖" not in m.group(1):
+                missing.append(s)
+        reasons = []
+        if not re.search(r"^SENTIMENT:[ \t]*\S", text, re.MULTILINE):
+            reasons.append("no SENTIMENT line")
+        covered = len(syms) - len(missing)
+        if syms and covered < math.ceil(min_ticker_ratio * len(syms)):
+            reasons.append(f"{covered}/{len(syms)} ticker blocks (missing: {', '.join(missing)})")
+        return "; ".join(reasons) or None
 
     def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None,
                             edge_data=None, portfolio_summary=None):
-        """Single API call: returns sentiment + all per-ticker narratives."""
+        """Single API call: returns sentiment + all per-ticker narratives.
+
+        Replies that fail ``narrative_gaps`` after normalization are treated as failed
+        attempts by ``_call_ai`` and retried.
+        """
         prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
                                    portfolio_summary=portfolio_summary)
-        raw = self._call_ai(prompt)
-        return self.normalize_narrative(raw, [d['Ticker'] for d in tickers_data])
+        tickers = [d['Ticker'] for d in tickers_data]
+        raw = self._call_ai(prompt, check=lambda t: self.narrative_gaps(self.normalize_narrative(t, tickers), tickers))
+        return self.normalize_narrative(raw, tickers)
 
     def get_fintwit_trending(self):
         """Fetches top 100 most discussed stocks on FinTwit this week via Gemini."""
