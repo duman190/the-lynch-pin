@@ -171,6 +171,8 @@ def main():
         print("\n🔧 normalize_narrative rewrote the reply (headers / SENTIMENT label were off-template)")
 
     sentiment, replies = parse_like_main(text, tickers)
+    gaps = LynchPinResearcher.narrative_gaps(text, tickers)
+    print(f"\n🔎 narrative_gaps → {'usable ✅' if gaps is None else 'REJECTED ❌ (' + gaps + ') — main.py would retry, not post this'}")
 
     # ── Same thread main.py would hand to XPublisher.post_thread (preview only, nothing is posted) ──
     idx_display = IDX_DISPLAY.get(args.idx, args.idx)
