@@ -79,6 +79,8 @@ Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried 
 
 The small models the free router can land on sometimes copy the response template literally (`$TICKER: ARM` instead of `$ARM:`), use bare `ARM:` / markdown-bold headers, or drop the `SENTIMENT:` label. `LynchPinResearcher.normalize_narrative` rewrites those into the exact layout `main.py` parses, so a Tier 3 run still yields per-ticker replies instead of the generic placeholder. Well-formed Gemini output passes through unchanged.
 
+The router can also hand the prompt to a model that is simply not up to it — a safety classifier answering `User Safety: safe`, a model that truncates or skips half the names. Every reply is therefore validated with `LynchPinResearcher.narrative_gaps` (a non-empty `SENTIMENT:` line plus a `$TICKER` block containing the 🤖 overview for every ticker). An unusable reply burns the attempt and is retried immediately — no 30s pause, since it is not a capacity problem, and on the free router the retry lands on a different model. If every attempt is rejected, the most complete reply seen is used rather than nothing.
+
 `openrouter/free` is OpenRouter's router that "selects free models at random from the models available on OpenRouter", smartly filtering for models that support the features the request needs. It costs nothing per token and has a 200K-token context window, so the full batch prompt fits comfortably. The request is streamed (`stream: true`) and only `delta.content` is collected — the `reasoning` deltas emitted by thinking models are discarded — and the model the router actually picked is logged.
 
 ## Portfolio Mode
