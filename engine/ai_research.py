@@ -365,6 +365,14 @@ Do NOT use markdown formatting. Plain text only."""
                           r"$\1:", text, flags=re.MULTILINE | re.IGNORECASE)
             # bare "ARM:" / "ARM" / "**$ARM**" header line (case-sensitive: ON must not match prose)
             text = re.sub(rf"^[ \t*#]*\$?({alt})[ \t*:]*$", r"$\1:", text, flags=re.MULTILINE)
+        # Template brackets copied literally: "🤖: [Overview: text]" / "📊 Reverse DCF: [text]" → drop the
+        # brackets and the placeholder label. Content may wrap lines but never crosses a blank line,
+        # a ticker header or another section label (so an unclosed bracket can't swallow the next section).
+        text = re.sub(
+            r"^(🤖:|📊 Reverse DCF:|🧪 Stomach Test:)[ \t]*\[(?:Overview:[ \t]*)?"
+            r"((?:[^\n]|\n(?![\n$🤖📊🧪]))*?)\][ \t]*$",
+            r"\1 \2", text, flags=re.MULTILINE,
+        )
         if not re.search(r"SENTIMENT:", text):
             # Label the first prose line before the first ticker block as the sentiment.
             # Only when ticker blocks exist — a reply with none is garbage (e.g. a safety
