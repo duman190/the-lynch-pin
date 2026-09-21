@@ -17,6 +17,13 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # text + image in / text out.
 OPENROUTER_FREE_MODEL = "openrouter/free"
 
+# Meta AI developer API (https://dev.meta.ai) — OpenAI Responses-style endpoint. Paid last resort:
+# "Muse Spark 1.3 Contributor" is the same model as Muse Spark 1.3 at up to 95% off ($0.10/M in,
+# $0.20/M out) in exchange for inputs/outputs being used to train Meta's models; 1M context,
+# rate-limited by tokens. A full batch prompt (~3K in / ~4K out) costs well under a cent.
+META_URL = "https://api.meta.ai/v1/responses"
+META_MODEL = "muse-spark-1.3-contributor"
+
 # Error signatures that mean "the model is busy / rate limited" → worth retrying the same tier.
 _TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "502", "504", "overloaded")
 
@@ -27,6 +34,7 @@ def _is_transient(error_msg):
 
 class LynchPinResearcher:
     ATTEMPTS_PER_TIER = 3
+    MAX_DELAY = 120  # seconds; cap for exponential backoff between busy retries
 
     def __init__(self):
         gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -36,13 +44,59 @@ class LynchPinResearcher:
         self.backup_model = "gemini-3.6-flash"
         self.openrouter_model = OPENROUTER_FREE_MODEL
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-        if not self.client and not self.openrouter_api_key:
-            print("⚠️  Neither GEMINI_API_KEY nor OPENROUTER_API_KEY is set — AI research will be unavailable.")
+        # Paid 4th tier; dev.meta.ai's quick-start names the variable MODEL_API_KEY, accept both
+        self.meta_model = META_MODEL
+        self.meta_api_key = os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY")
+        if not self.client and not self.openrouter_api_key and not self.meta_api_key:
+            print("⚠️  None of GEMINI_API_KEY / OPENROUTER_API_KEY / META_API_KEY is set — AI research will be unavailable.")
 
     # ── provider adapters ────────────────────────────────────────────────────────
     def _call_gemini_model(self, model, prompt):
         response = self.client.models.generate_content(model=model, contents=prompt)
         return response.text
+
+    def _call_meta_model(self, model, prompt):
+        """Non-streaming call to Meta's Responses API; returns the concatenated output text.
+
+        Response shape (OpenAI Responses convention): ``output`` is a list of items; the
+        assistant text lives in items of ``type == "message"`` as ``content[].text`` parts of
+        ``type == "output_text"``. ``reasoning`` items and any other part types are ignored.
+        Some servers also expose a convenience ``output_text`` string — used when present.
+        """
+        resp = requests.post(
+            META_URL,
+            headers={"Authorization": f"Bearer {self.meta_api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                "stream": False,
+            },
+            timeout=(30, 300),
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Meta HTTP {resp.status_code}: {resp.text[:300]}")
+        body = resp.json()
+        if body.get("error"):
+            err = body["error"]
+            raise RuntimeError(f"Meta error {err.get('code', '') if isinstance(err, dict) else ''}: "
+                               f"{err.get('message', err) if isinstance(err, dict) else err}")
+        text = body.get("output_text")
+        if not isinstance(text, str) or not text.strip():
+            parts = []
+            for item in body.get("output") or []:
+                if item.get("type") != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if part.get("type") == "output_text" and part.get("text"):
+                        parts.append(part["text"])
+            text = "".join(parts)
+        text = text.strip()
+        if not text:
+            raise RuntimeError(f"Meta returned empty content (status: {body.get('status')})")
+        usage = body.get("usage") or {}
+        if usage:
+            print(f"ℹ️  Meta {model}: {usage.get('input_tokens', '?')} in / {usage.get('output_tokens', '?')} out tokens")
+        return text
 
     def _call_openrouter_model(self, model, prompt):
         """OpenAI-compatible streaming chat completion against OpenRouter.
@@ -100,61 +154,82 @@ class LynchPinResearcher:
 
     # ── fallback chain ───────────────────────────────────────────────────────────
     def _tiers(self):
-        """Ordered (label, model, caller) tiers. A tier only joins when its API key is set."""
+        """Ordered (label, model, caller, reroll) tiers. A tier only joins when its API key is set.
+
+        ``reroll`` marks a tier whose model is a random router: every call may land on a
+        different model, so a non-transient error from one draw says nothing about the next
+        and the tier is retried instead of abandoned.
+        """
         tiers = []
         if self.client:
             tiers += [
-                ("BEST", self.best_model, self._call_gemini_model),
-                ("BACKUP", self.backup_model, self._call_gemini_model),
+                ("BEST", self.best_model, self._call_gemini_model, False),
+                ("BACKUP", self.backup_model, self._call_gemini_model, False),
             ]
         if self.openrouter_api_key:
-            tiers.append(("OPENROUTER", self.openrouter_model, self._call_openrouter_model))
+            tiers.append(("OPENROUTER", self.openrouter_model, self._call_openrouter_model, True))
+        if self.meta_api_key:
+            tiers.append(("META (paid)", self.meta_model, self._call_meta_model, False))
         return tiers
 
-    def _call_ai(self, prompt, delay=30, check=None):
-        """3-layer fallback: best Gemini → backup Gemini → OpenRouter free router.
+    def _backoff(self, delay, i):
+        """Exponential backoff for the i-th (0-based) retry within a tier: delay, 2×, 4×… capped."""
+        return min(delay * (2 ** i), self.MAX_DELAY)
+
+    def _call_ai(self, prompt, delay=30, check=None, score=None):
+        """4-layer fallback: best Gemini → backup Gemini → OpenRouter free router → Meta Muse (paid).
 
         Each tier gets ``ATTEMPTS_PER_TIER`` tries. Transient errors (503/429/...) are
-        retried on the same tier after ``delay`` seconds; any other error skips straight
-        to the next tier.
+        retried on the same tier with exponential backoff (``delay``, 2×, 4×… capped at
+        ``MAX_DELAY`` seconds); any other error skips straight to the next tier — except on a
+        ``reroll`` tier (the OpenRouter random router), where the next draw is a different
+        model, so the tier is retried immediately.
 
         ``check(text)`` optionally validates a reply: it returns ``None`` when the reply is
         usable, else a short reason. A rejected reply burns the attempt and is retried
-        immediately (no sleep — it is not a capacity problem; on the free router the retry
-        lands on a different model). If every attempt is rejected, the least-bad reply seen
-        is returned rather than nothing. Returns an ``AI Research Error: ...`` string only
-        when no tier produced any text at all.
+        immediately (no sleep — it is not a capacity problem). If every attempt is rejected,
+        the rejected reply with the highest ``score(text)`` (default: length) is returned —
+        but only if that score is positive, so a reply with nothing usable in it (e.g. a
+        safety classifier's ``User Safety: safe``) is never used. Otherwise returns an
+        ``AI Research Error: ...`` string.
         """
         tiers = self._tiers()
         total = self.ATTEMPTS_PER_TIER * len(tiers)
         last_error = "no AI tier available"
         best_rejected = None  # (score, text) of the most complete rejected reply
-        for tier_idx, (tier_label, model, call) in enumerate(tiers):
+        for tier_idx, (tier_label, model, call, reroll) in enumerate(tiers):
             for i in range(self.ATTEMPTS_PER_TIER):
                 attempt = tier_idx * self.ATTEMPTS_PER_TIER + i + 1
                 try:
                     text = call(model, prompt)
                 except Exception as e:
                     last_error = str(e)
-                    if not _is_transient(last_error):
-                        print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} — switching tier.")
-                        break
-                    if attempt < total:
-                        print(f"⚠️  {tier_label} AI Busy ({model}): {last_error[:160]} "
-                              f"— retrying in {delay}s... (Attempt {attempt}/{total})")
-                        time.sleep(delay)
-                    continue
+                    if _is_transient(last_error):
+                        if attempt < total:
+                            wait = self._backoff(delay, i)
+                            print(f"⚠️  {tier_label} AI Busy ({model}): {last_error[:160]} "
+                                  f"— retrying in {wait}s... (Attempt {attempt}/{total})")
+                            time.sleep(wait)
+                        continue
+                    if reroll:
+                        print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} "
+                              f"— re-rolling... (Attempt {attempt}/{total})")
+                        continue
+                    print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} — switching tier.")
+                    break
                 reason = check(text) if check else None
                 if reason is None:
                     return text
-                score = -len(reason)  # crude: shorter gap list = more complete reply
-                if best_rejected is None or score > best_rejected[0]:
-                    best_rejected = (score, text)
+                s = score(text) if score else len(text)
+                if best_rejected is None or s > best_rejected[0]:
+                    best_rejected = (s, text)
                 print(f"⚠️  {tier_label} AI reply unusable ({model}): {reason} "
                       f"— retrying... (Attempt {attempt}/{total})")
-        if best_rejected is not None:
+        if best_rejected is not None and best_rejected[0] > 0:
             print("⚠️  No fully usable AI reply; using the most complete one.")
             return best_rejected[1]
+        if best_rejected is not None:
+            last_error = "every AI reply was unusable"
         return f"AI Research Error: {last_error}"
 
     # Backwards-compatible alias
@@ -387,6 +462,27 @@ Do NOT use markdown formatting. Plain text only."""
         return text
 
     @staticmethod
+    def _covered_tickers(text, tickers):
+        """Tickers that have a ``$TICKER`` block containing the 🤖 overview in (normalized) ``text``."""
+        covered = []
+        for s in (t.replace('*', '') for t in tickers if t):
+            m = re.search(rf"^\${re.escape(s)}\b:?[ \t]*\n?(.*?)(?=\n\$[A-Z]|\Z)", text, re.DOTALL | re.MULTILINE)
+            if m and "🤖" in m.group(1):
+                covered.append(s)
+        return covered
+
+    @staticmethod
+    def narrative_coverage(text, tickers):
+        """Number of tickers with a usable block — the score ``_call_ai`` ranks rejected replies by.
+
+        Zero for a reply with no ticker blocks at all (safety-classifier verdicts, empty
+        text), so such a reply is never chosen as the "most complete" fallback.
+        """
+        if not text or text.startswith("AI Research Error"):
+            return 0
+        return len(LynchPinResearcher._covered_tickers(text, tickers))
+
+    @staticmethod
     def narrative_gaps(text, tickers, min_ticker_ratio=1.0):
         """Returns ``None`` if ``text`` is a usable batch narrative, else a short reason.
 
@@ -399,11 +495,8 @@ Do NOT use markdown formatting. Plain text only."""
         if not text or text.startswith("AI Research Error"):
             return "empty reply"
         syms = [t.replace('*', '') for t in tickers if t]
-        missing = []
-        for s in syms:
-            m = re.search(rf"^\${re.escape(s)}\b:?[ \t]*\n?(.*?)(?=\n\$[A-Z]|\Z)", text, re.DOTALL | re.MULTILINE)
-            if not m or "🤖" not in m.group(1):
-                missing.append(s)
+        covered_set = set(LynchPinResearcher._covered_tickers(text, syms))
+        missing = [s for s in syms if s not in covered_set]
         reasons = []
         if not re.search(r"^SENTIMENT:[ \t]*\S", text, re.MULTILINE):
             reasons.append("no SENTIMENT line")
@@ -422,7 +515,10 @@ Do NOT use markdown formatting. Plain text only."""
         prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
                                    portfolio_summary=portfolio_summary)
         tickers = [d['Ticker'] for d in tickers_data]
-        raw = self._call_ai(prompt, check=lambda t: self.narrative_gaps(self.normalize_narrative(t, tickers), tickers))
+        norm = lambda t: self.normalize_narrative(t, tickers)
+        raw = self._call_ai(prompt,
+                            check=lambda t: self.narrative_gaps(norm(t), tickers),
+                            score=lambda t: self.narrative_coverage(norm(t), tickers))
         return self.normalize_narrative(raw, tickers)
 
     def get_fintwit_trending(self):
