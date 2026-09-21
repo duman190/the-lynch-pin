@@ -412,17 +412,41 @@ class TestAIFallbackChain(unittest.TestCase):
         from engine.ai_research import LynchPinResearcher
         return LynchPinResearcher.ATTEMPTS_PER_TIER
 
-    def _make(self, mock_genai, openrouter_key="or-test-key"):
+    def _make(self, mock_genai, openrouter_key="or-test-key", meta_key=None):
         from engine.ai_research import LynchPinResearcher
         mock_client = MagicMock()
         mock_genai.Client.return_value = mock_client
         env = {"GEMINI_API_KEY": "g-key"}
         if openrouter_key:
             env["OPENROUTER_API_KEY"] = openrouter_key
+        if meta_key:
+            env["META_API_KEY"] = meta_key
         with patch.dict(os.environ, env, clear=True):
             researcher = LynchPinResearcher()
         researcher.client = mock_client
         return researcher, mock_client
+
+    @staticmethod
+    def _meta_response(text=None, status=200, error=None, reasoning=True, output_text_field=False):
+        """Mock a non-streaming Meta Responses API reply (OpenAI Responses item layout)."""
+        r = MagicMock()
+        r.status_code = status
+        r.text = "body"
+        if error is not None:
+            r.json.return_value = {"error": error}
+            return r
+        output = []
+        if reasoning:
+            output.append({"type": "reasoning", "id": "rs_1", "summary": []})
+        if text is not None:
+            output.append({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": text, "annotations": []}]})
+        body = {"id": "resp_1", "model": "muse-spark-1.3-contributor", "status": "completed", "output": output,
+                "usage": {"input_tokens": 2500, "output_tokens": 3100}}
+        if output_text_field:
+            body["output_text"] = text
+        r.json.return_value = body
+        return r
 
     @staticmethod
     def _gemini_response(text):
@@ -660,6 +684,210 @@ class TestAIFallbackChain(unittest.TestCase):
             mock_sleep.assert_not_called()
         self.assertEqual(out, "SENTIMENT: Bullish week.\n\n$AAPL:\n🤖: a\n")
         self.assertEqual(client.models.generate_content.call_count, 2)
+
+    # ── 2026-09-20 run: exponential backoff, router re-roll, zero-coverage fallback ──
+
+    ROW = {'Ticker': 'AAPL', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '10.0%',
+           'PEG': 2.0, 'Mean': 2.5, 'Dev_SD': -1.0, 'Bull': '1%', 'Base': '1%', 'Bear': '1%'}
+
+    def _gaps_and_score(self, tickers):
+        from engine.ai_research import LynchPinResearcher as R
+        norm = lambda t: R.normalize_narrative(t, tickers)
+        return (lambda t: R.narrative_gaps(norm(t), tickers)), (lambda t: R.narrative_coverage(norm(t), tickers))
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_busy_retries_use_exponential_backoff_30_60_120(self, mock_genai, mock_post, mock_sleep):
+        """Within a tier the waits double: 30s, 60s, 120s — then the next tier starts again at 30s."""
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        researcher._call_ai("p")  # default delay=30
+        waits = [c.args[0] for c in mock_sleep.call_args_list]
+        expected_tier = [min(30 * 2 ** i, researcher.MAX_DELAY) for i in range(self.n)]
+        # BEST: full schedule; BACKUP: same schedule minus the sleep after the very last attempt
+        self.assertEqual(waits, expected_tier + expected_tier[:-1])
+        if self.n == 3:
+            self.assertEqual(waits, [30, 60, 120, 30, 60])
+
+    def test_backoff_is_capped_at_max_delay(self):
+        from engine.ai_research import LynchPinResearcher
+        r = LynchPinResearcher.__new__(LynchPinResearcher)
+        self.assertEqual([r._backoff(30, i) for i in range(5)], [30, 60, 120, 120, 120])
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_openrouter_non_transient_error_rerolls_instead_of_switching_tier(self, mock_genai, mock_post, mock_sleep):
+        """Sept 20: 'OpenRouter returned empty content (liquid/lfm-2.5-2.6b)' abandoned the tier with an
+        attempt unused. On the random router a bad draw must just be re-rolled."""
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = Exception("404 model not found")  # skip both Gemini tiers fast
+        bad = [self._openrouter_response("User Safety: safe"),   # safety classifier → rejected by check
+               self._openrouter_response("")]                     # empty content → RuntimeError (non-transient)
+        mock_post.side_effect = [bad[i % 2] for i in range(self.n - 1)] + \
+            [self._openrouter_response("SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n")]  # last attempt: good
+        check, score = self._gaps_and_score(["AAPL"])
+        out = researcher._call_ai("p", check=check, score=score)
+        self.assertEqual(out.strip(), "SENTIMENT: ok.\n\n$AAPL:\n🤖: a")
+        self.assertEqual(mock_post.call_count, self.n)  # every OpenRouter attempt was used, tier not abandoned
+        mock_sleep.assert_not_called()               # none of those failures is a capacity problem
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_gemini_non_transient_error_still_switches_tier(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        client.models.generate_content.side_effect = Exception("404 model not found")
+        researcher._call_ai("p")
+        self.assertEqual(client.models.generate_content.call_count, 2)  # one try per Gemini tier, no re-roll
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_zero_coverage_reply_is_never_used_as_fallback(self, mock_genai, mock_post, mock_sleep):
+        """Sept 20: with every attempt failed, 'User Safety: safe' was returned as the 'most complete' reply
+        and 17 placeholders got posted. A reply with no ticker blocks must not win the fallback."""
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        client.models.generate_content.return_value = self._gemini_response("User Safety: safe")
+        check, score = self._gaps_and_score(["AAPL", "MSFT"])
+        out = researcher._call_ai("p", delay=0, check=check, score=score)
+        self.assertTrue(out.startswith("AI Research Error:"), out)
+        self.assertIn("every AI reply was unusable", out)
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_partial_coverage_beats_longer_garbage_in_fallback(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        partial = "SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n"  # MSFT missing → rejected, but coverage 1
+        garbage = "User Safety: safe. " * 20             # much longer, coverage 0
+        replies = [garbage] * (2 * self.n)
+        replies[0] = partial
+        client.models.generate_content.side_effect = [self._gemini_response(r) for r in replies]
+        check, score = self._gaps_and_score(["AAPL", "MSFT"])
+        self.assertEqual(researcher._call_ai("p", delay=0, check=check, score=score), partial)
+
+    def test_narrative_coverage(self):
+        from engine.ai_research import LynchPinResearcher as R
+        t = ["AAPL", "MSFT*"]
+        self.assertEqual(R.narrative_coverage("User Safety: safe", t), 0)
+        self.assertEqual(R.narrative_coverage("", t), 0)
+        self.assertEqual(R.narrative_coverage("AI Research Error: x", t), 0)
+        self.assertEqual(R.narrative_coverage("SENTIMENT: s.\n\n$AAPL:\n🤖: a\n\n$MSFT:\n", t), 1)  # MSFT has no 🤖
+        self.assertEqual(R.narrative_coverage(self.GOOD.replace("ARM", "AAPL").replace("NVDA", "MSFT"), t), 2)
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_get_batch_narrative_sept20_scenario_ends_in_error_not_safety_text(self, mock_genai, mock_post, mock_sleep):
+        """Full replay: Gemini 503 ×6, OpenRouter → safety classifier, empty content, safety classifier."""
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        bad = [self._openrouter_response("User Safety: safe"), self._openrouter_response("")]
+        mock_post.side_effect = [bad[i % 2] for i in range(self.n)]  # safety, empty, safety, ...
+        out = researcher.get_batch_narrative([self.ROW])
+        self.assertTrue(out.startswith("AI Research Error:"), out)
+        self.assertNotIn("User Safety", out)
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
+        self.assertEqual(mock_post.call_count, self.n)  # the tier was NOT abandoned after the empty reply
+        # Gemini busy retries used backoff: 30,60,120 per tier; OpenRouter failures never slept
+        waits = [c.args[0] for c in mock_sleep.call_args_list]
+        self.assertEqual(waits, [30, 60, 120] * 2 if self.n == 3 else waits)
+        self.assertEqual(len(waits), 2 * self.n)
+
+    # ── Tier 4: Meta Muse Spark 1.3 Contributor (paid) — used only after Gemini ×2 and OpenRouter fail ──
+
+    @patch('engine.ai_research.genai')
+    def test_meta_tier_joins_last_only_with_key(self, mock_genai):
+        researcher, _ = self._make(mock_genai)
+        self.assertEqual([t[0] for t in researcher._tiers()], ["BEST", "BACKUP", "OPENROUTER"])
+        researcher, _ = self._make(mock_genai, meta_key="meta-test-key")
+        tiers = researcher._tiers()
+        self.assertEqual([t[0] for t in tiers], ["BEST", "BACKUP", "OPENROUTER", "META (paid)"])
+        self.assertEqual(tiers[-1][1], "muse-spark-1.3-contributor")
+        self.assertFalse(tiers[-1][3])  # single fixed model → no re-roll semantics
+        # dev.meta.ai quick-start uses MODEL_API_KEY — accepted as an alias
+        with patch.dict(os.environ, {"MODEL_API_KEY": "alias-key"}, clear=True):
+            from engine.ai_research import LynchPinResearcher
+            self.assertEqual(LynchPinResearcher().meta_api_key, "alias-key")
+
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_call_request_shape_and_text_extraction(self, mock_genai, mock_post):
+        researcher, _ = self._make(mock_genai, meta_key="meta-test-key")
+        mock_post.return_value = self._meta_response("SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n")
+        text = researcher._call_meta_model("muse-spark-1.3-contributor", "hello")
+        self.assertEqual(text, "SENTIMENT: ok.\n\n$AAPL:\n🤖: a")
+        self.assertEqual(mock_post.call_args.args[0], "https://api.meta.ai/v1/responses")
+        kw = mock_post.call_args.kwargs
+        self.assertEqual(kw['headers']['Authorization'], "Bearer meta-test-key")
+        self.assertEqual(kw['json']['model'], "muse-spark-1.3-contributor")
+        self.assertFalse(kw['json']['stream'])
+        self.assertEqual(kw['json']['input'],
+                         [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}])
+
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_call_prefers_output_text_field_and_ignores_reasoning(self, mock_genai, mock_post):
+        researcher, _ = self._make(mock_genai, meta_key="k")
+        mock_post.return_value = self._meta_response("via field", output_text_field=True)
+        self.assertEqual(researcher._call_meta_model("m", "p"), "via field")
+        # reasoning-only output (no message item) → empty → error, not silently ""
+        mock_post.return_value = self._meta_response(None)
+        with self.assertRaisesRegex(RuntimeError, "Meta returned empty content"):
+            researcher._call_meta_model("m", "p")
+
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_call_http_and_envelope_errors(self, mock_genai, mock_post):
+        researcher, _ = self._make(mock_genai, meta_key="k")
+        mock_post.return_value = self._meta_response(status=429)
+        with self.assertRaisesRegex(RuntimeError, "Meta HTTP 429"):
+            researcher._call_meta_model("m", "p")
+        mock_post.return_value = self._meta_response(error={"code": "invalid_api_key", "message": "bad key"})
+        with self.assertRaisesRegex(RuntimeError, "Meta error invalid_api_key: bad key"):
+            researcher._call_meta_model("m", "p")
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_is_reached_only_after_gemini_and_openrouter_exhausted(self, mock_genai, mock_post, mock_sleep):
+        """Sept 20 scenario with the paid tier present: Gemini 503 ×2n, OpenRouter garbage ×n → Meta answers."""
+        researcher, client = self._make(mock_genai, meta_key="k")
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        good = "SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n"
+        mock_post.side_effect = [self._openrouter_response("User Safety: safe")] * self.n + [self._meta_response(good)]
+        out = researcher.get_batch_narrative([self.ROW])
+        self.assertEqual(out.strip(), good.strip())
+        self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
+        self.assertEqual(mock_post.call_count, self.n + 1)  # n OpenRouter draws, then exactly 1 paid call
+        self.assertEqual(mock_post.call_args.args[0], "https://api.meta.ai/v1/responses")
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_not_called_when_free_tier_succeeds(self, mock_genai, mock_post, mock_sleep):
+        researcher, client = self._make(mock_genai, meta_key="k")
+        client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        mock_post.return_value = self._openrouter_response("SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n")
+        researcher.get_batch_narrative([self.ROW])
+        urls = [c.args[0] for c in mock_post.call_args_list]
+        self.assertEqual(urls, ["https://openrouter.ai/api/v1/chat/completions"])  # never paid
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_meta_rate_limit_uses_backoff_then_gives_up(self, mock_genai, mock_post, mock_sleep):
+        """Meta is 'rate-limited by tokens' → 429 is transient: retried with 30/60/120 backoff on the same tier."""
+        researcher, client = self._make(mock_genai, openrouter_key=None, meta_key="k")
+        client.models.generate_content.side_effect = Exception("404 model not found")  # both Gemini tiers skip
+        mock_post.return_value = self._meta_response(status=429)
+        out = researcher._call_ai("p")
+        self.assertTrue(out.startswith("AI Research Error: Meta HTTP 429"))
+        self.assertEqual(mock_post.call_count, self.n)
+        waits = [c.args[0] for c in mock_sleep.call_args_list]
+        self.assertEqual(waits, [min(30 * 2 ** i, researcher.MAX_DELAY) for i in range(self.n - 1)])
 
     @patch('engine.ai_research.genai')
     def test_call_gemini_alias_kept(self, mock_genai):
