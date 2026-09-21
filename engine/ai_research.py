@@ -71,7 +71,8 @@ class LynchPinResearcher:
                 "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
                 "stream": False,
             },
-            timeout=(30, 300),
+            # Non-streaming + reasoning model: ~100s for 8 tickers, ~200s for a 16-position portfolio
+            timeout=(30, 600),
         )
         if resp.status_code != 200:
             raise RuntimeError(f"Meta HTTP {resp.status_code}: {resp.text[:300]}")
