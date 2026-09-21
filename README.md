@@ -57,6 +57,7 @@ python main.py --portfolio my_holdings.txt --research --plot --post
 | `FMP_API_KEY` | Multi-source growth enrichment (free: [financialmodelingprep.com](https://site.financialmodelingprep.com/register)) |
 | `GEMINI_API_KEY` | `--research` / `--post` |
 | `OPENROUTER_API_KEY` | Optional 3rd AI fallback tier (free: [openrouter.ai](https://openrouter.ai/keys)) |
+| `META_API_KEY` (or `MODEL_API_KEY`) | Optional 4th, paid, last-resort AI tier ([dev.meta.ai](https://dev.meta.ai) pay-as-you-go key) |
 | `X_API_KEY` | `--post` |
 | `X_API_SECRET` | `--post` |
 | `X_ACCESS_TOKEN` | `--post` |
@@ -67,19 +68,22 @@ python main.py --portfolio my_holdings.txt --research --plot --post
 
 ## AI Fallback Chain
 
-Narrative generation (`--research` / `--post`) walks a 3-layer fallback, 2 attempts per layer, so a busy or rate-limited model never kills a scheduled run:
+Narrative generation (`--research` / `--post`) walks a 4-layer fallback, 3 attempts per layer (`ATTEMPTS_PER_TIER`), so a busy or rate-limited model never kills a scheduled run:
 
 | Tier | Model | Attempts |
 |---|---|---|
-| 1 | Best Gemini free model (`gemini-3.7-flash`) | 2 |
-| 2 | Backup Gemini free model (`gemini-3.6-flash`) | 2 |
-| 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 2 |
+| 1 | Best Gemini free model (`gemini-3.7-flash`) | 3 |
+| 2 | Backup Gemini free model (`gemini-3.6-flash`) | 3 |
+| 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 3 |
+| 4 | Meta [Muse Spark 1.3 Contributor](https://dev.meta.ai) (`muse-spark-1.3-contributor`, **paid**) | 3 |
 
-Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier after a 30s pause; any other error skips straight to the next tier. Tier 3 only joins the chain when `OPENROUTER_API_KEY` is set.
+Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier with exponential backoff — 30s, then 60s, then 120s (`MAX_DELAY`) — so the three attempts span 3.5 minutes rather than sitting inside one congestion window; any other error skips straight to the next tier. The OpenRouter tier is the exception: `openrouter/free` is a random router, so a non-transient error from one draw (e.g. a model returning empty content) says nothing about the next, and the tier is simply re-rolled instead of abandoned. Tier 3 only joins the chain when `OPENROUTER_API_KEY` is set, Tier 4 only when `META_API_KEY` is set.
+
+Tier 4 is the paid safety net and is reached only after both Gemini tiers and the free router have failed or produced unusable replies. *Muse Spark 1.3 Contributor* is the same model as Muse Spark 1.3 at up to 95% off ($0.10 / M input tokens, $0.20 / M output) in exchange for Meta using the inputs and outputs to train its models — so nothing sensitive goes into the prompt (it only ever contains public market data). One batch narrative is roughly 3K tokens in and 4K out, i.e. about a tenth of a cent. The tier is rate-limited by tokens; a 429 is treated as transient and retried with the same backoff. The call is a non-streaming POST to Meta's OpenAI-Responses-style endpoint (`https://api.meta.ai/v1/responses`), and only `output_text` parts of `message` items are read — `reasoning` items are discarded. Token usage is logged per call.
 
 The small models the free router can land on sometimes copy the response template literally (`$TICKER: ARM` instead of `$ARM:`), use bare `ARM:` / markdown-bold headers, or drop the `SENTIMENT:` label. `LynchPinResearcher.normalize_narrative` rewrites those into the exact layout `main.py` parses, so a Tier 3 run still yields per-ticker replies instead of the generic placeholder. Well-formed Gemini output passes through unchanged.
 
-The router can also hand the prompt to a model that is simply not up to it — a safety classifier answering `User Safety: safe`, a model that truncates or skips half the names. Every reply is therefore validated with `LynchPinResearcher.narrative_gaps` (a non-empty `SENTIMENT:` line plus a `$TICKER` block containing the 🤖 overview for every ticker). An unusable reply burns the attempt and is retried immediately — no 30s pause, since it is not a capacity problem, and on the free router the retry lands on a different model. If every attempt is rejected, the most complete reply seen is used rather than nothing.
+The router can also hand the prompt to a model that is simply not up to it — a safety classifier answering `User Safety: safe`, a model that truncates or skips half the names. Every reply is therefore validated with `LynchPinResearcher.narrative_gaps` (a non-empty `SENTIMENT:` line plus a `$TICKER` block containing the 🤖 overview for every ticker). An unusable reply burns the attempt and is retried immediately — no backoff, since it is not a capacity problem, and on the free router the retry lands on a different model. If every attempt is rejected, the rejected reply covering the most tickers (`narrative_coverage`) is used — but only if it covers at least one; a reply with no ticker blocks at all is never posted, and the run falls through to the generic placeholders instead.
 
 `openrouter/free` is OpenRouter's router that "selects free models at random from the models available on OpenRouter", smartly filtering for models that support the features the request needs. It costs nothing per token and has a 200K-token context window, so the full batch prompt fits comfortably. The request is streamed (`stream: true`) and only `delta.content` is collected — the `reasoning` deltas emitted by thinking models are discarded — and the model the router actually picked is logged.
 
