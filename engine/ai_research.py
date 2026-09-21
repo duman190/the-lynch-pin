@@ -20,7 +20,8 @@ OPENROUTER_FREE_MODEL = "openrouter/free"
 # Meta AI developer API (https://dev.meta.ai) — OpenAI Responses-style endpoint. Paid last resort:
 # "Muse Spark 1.3 Contributor" is the same model as Muse Spark 1.3 at up to 95% off ($0.10/M in,
 # $0.20/M out) in exchange for inputs/outputs being used to train Meta's models; 1M context,
-# rate-limited by tokens. A full batch prompt (~3K in / ~4K out) costs well under a cent.
+# rate-limited by tokens. Measured: an 8-ticker batch is ~3.7K tokens in / ~10.7K out (output includes
+# billed reasoning tokens) ≈ $0.0025; a 16-position portfolio roughly double that.
 META_URL = "https://api.meta.ai/v1/responses"
 META_MODEL = "muse-spark-1.3-contributor"
 
@@ -30,6 +31,16 @@ _TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "502", 
 
 def _is_transient(error_msg):
     return any(marker in error_msg for marker in _TRANSIENT_MARKERS)
+
+
+# Error signatures that are account-level (bad key, no credits, forbidden) → re-rolling the
+# random router cannot help; skip straight to the next tier.
+_FATAL_MARKERS = ("401", "402", "403", "Unauthorized", "invalid_api_key", "No auth credentials",
+                  "insufficient credits", "Insufficient credits")
+
+
+def _is_fatal(error_msg):
+    return any(marker in error_msg for marker in _FATAL_MARKERS)
 
 
 class LynchPinResearcher:
@@ -181,10 +192,12 @@ class LynchPinResearcher:
         """4-layer fallback: best Gemini → backup Gemini → OpenRouter free router → Meta Muse (paid).
 
         Each tier gets ``ATTEMPTS_PER_TIER`` tries. Transient errors (503/429/...) are
-        retried on the same tier with exponential backoff (``delay``, 2×, 4×… capped at
-        ``MAX_DELAY`` seconds); any other error skips straight to the next tier — except on a
-        ``reroll`` tier (the OpenRouter random router), where the next draw is a different
-        model, so the tier is retried immediately.
+        retried on the same tier with exponential backoff between attempts (``delay``, 2×, 4×…
+        capped at ``MAX_DELAY`` seconds); no sleep follows a tier's final attempt, since the
+        next call goes to a different model. Any other error skips straight to the next tier —
+        except on a ``reroll`` tier (the OpenRouter random router), where the next draw is a
+        different model, so the tier is retried immediately unless the error is account-level
+        (401/402/403 — a different model cannot fix a bad key).
 
         ``check(text)`` optionally validates a reply: it returns ``None`` when the reply is
         usable, else a short reason. A rejected reply burns the attempt and is retried
@@ -204,19 +217,25 @@ class LynchPinResearcher:
                 try:
                     text = call(model, prompt)
                 except Exception as e:
-                    last_error = str(e)
-                    if _is_transient(last_error):
-                        if attempt < total:
-                            wait = self._backoff(delay, i)
-                            print(f"⚠️  {tier_label} AI Busy ({model}): {last_error[:160]} "
-                                  f"— retrying in {wait}s... (Attempt {attempt}/{total})")
-                            time.sleep(wait)
+                    err = str(e)
+                    last_error = err
+                    last_in_tier = i == self.ATTEMPTS_PER_TIER - 1
+                    if _is_transient(err):
+                        if last_in_tier:
+                            # Nothing to wait for: the next call goes to a different model / provider
+                            print(f"⚠️  {tier_label} AI Busy ({model}): {err[:160]} — tier exhausted. "
+                                  f"(Attempt {attempt}/{total})")
+                            continue
+                        wait = self._backoff(delay, i)
+                        print(f"⚠️  {tier_label} AI Busy ({model}): {err[:160]} "
+                              f"— retrying in {wait}s... (Attempt {attempt}/{total})")
+                        time.sleep(wait)
                         continue
-                    if reroll:
-                        print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} "
+                    if reroll and not _is_fatal(err):
+                        print(f"⚠️  {tier_label} AI Error ({model}): {err[:120]} "
                               f"— re-rolling... (Attempt {attempt}/{total})")
                         continue
-                    print(f"⚠️  {tier_label} AI Error ({model}): {last_error[:120]} — switching tier.")
+                    print(f"⚠️  {tier_label} AI Error ({model}): {err[:120]} — switching tier.")
                     break
                 reason = check(text) if check else None
                 if reason is None:
@@ -533,7 +552,6 @@ Do NOT use markdown formatting. Plain text only."""
         if not raw or "Error" in raw:
             return []
         # Parse tickers: handle comma/space/tab separated or one-per-line, strip numbering
-        import re
         tokens = re.split(r'[,\s]+', raw.strip())
         seen = set()
         tickers = []
