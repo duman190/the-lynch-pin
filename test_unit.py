@@ -509,7 +509,7 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertEqual(researcher._call_ai("p", delay=0), "backup ok")
         models = [c.kwargs['model'] for c in client.models.generate_content.call_args_list]
         self.assertEqual(models, [researcher.best_model] * self.n + [researcher.backup_model])
-        self.assertEqual(mock_sleep.call_count, self.n)
+        self.assertEqual(mock_sleep.call_count, self.n - 1)  # no sleep after BEST's last attempt
         mock_post.assert_not_called()
 
     @patch('engine.ai_research.time.sleep')
@@ -530,7 +530,7 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertTrue(kwargs['stream'])
         self.assertEqual(kwargs['json']['messages'], [{"role": "user", "content": "hello"}])
         self.assertEqual(kwargs['headers']['Authorization'], "Bearer or-test-key")
-        self.assertEqual(mock_sleep.call_count, 2 * self.n)
+        self.assertEqual(mock_sleep.call_count, 2 * (self.n - 1))  # between attempts only, never before a tier switch
 
     @patch('engine.ai_research.requests.post')
     @patch('engine.ai_research.genai')
@@ -562,7 +562,7 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertIn("OpenRouter HTTP 429", result)
         self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
         self.assertEqual(mock_post.call_count, self.n)
-        self.assertEqual(mock_sleep.call_count, 3 * self.n - 1)  # 3 tiers, no sleep after the last
+        self.assertEqual(mock_sleep.call_count, 3 * (self.n - 1))  # 3 tiers × gaps between attempts
 
     @patch('engine.ai_research.time.sleep')
     @patch('engine.ai_research.requests.post')
@@ -588,7 +588,7 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertTrue(result.startswith("AI Research Error:"))
         self.assertEqual(client.models.generate_content.call_count, 2 * self.n)
         mock_post.assert_not_called()
-        self.assertEqual(mock_sleep.call_count, 2 * self.n - 1)
+        self.assertEqual(mock_sleep.call_count, 2 * (self.n - 1))
         self.assertEqual([t[0] for t in researcher._tiers()], ["BEST", "BACKUP"])
 
     @patch('engine.ai_research.time.sleep')
@@ -704,16 +704,70 @@ class TestAIFallbackChain(unittest.TestCase):
         client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
         researcher._call_ai("p")  # default delay=30
         waits = [c.args[0] for c in mock_sleep.call_args_list]
-        expected_tier = [min(30 * 2 ** i, researcher.MAX_DELAY) for i in range(self.n)]
-        # BEST: full schedule; BACKUP: same schedule minus the sleep after the very last attempt
-        self.assertEqual(waits, expected_tier + expected_tier[:-1])
+        # Sleeps sit between attempts within a tier (n-1 of them); none after a tier's final attempt,
+        # because the next call goes to a different model anyway
+        gaps = [min(30 * 2 ** i, researcher.MAX_DELAY) for i in range(self.n - 1)]
+        self.assertEqual(waits, gaps * 2)
         if self.n == 3:
-            self.assertEqual(waits, [30, 60, 120, 30, 60])
+            self.assertEqual(waits, [30, 60, 30, 60])
 
     def test_backoff_is_capped_at_max_delay(self):
         from engine.ai_research import LynchPinResearcher
         r = LynchPinResearcher.__new__(LynchPinResearcher)
         self.assertEqual([r._backoff(30, i) for i in range(5)], [30, 60, 120, 120, 120])
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_transient_error_does_not_poison_a_later_success(self, mock_genai, mock_post, mock_sleep):
+        """Regression guard: a 503 on attempt 1 must not cause the successful attempt 2 to be
+        classified as 'busy' (the transient check must only run inside the except path)."""
+        researcher, client = self._make(mock_genai)
+        client.models.generate_content.side_effect = [Exception("503 UNAVAILABLE"), self._gemini_response("ok")]
+        self.assertEqual(researcher._call_ai("p", delay=0), "ok")
+        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+        mock_post.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_no_sleep_after_a_tiers_final_attempt(self, mock_genai, mock_post, mock_sleep):
+        """The last busy attempt of BEST must switch to BACKUP immediately — not sleep 120s first."""
+        researcher, client = self._make(mock_genai, openrouter_key=None)
+        client.models.generate_content.side_effect = \
+            [Exception("503 UNAVAILABLE")] * self.n + [self._gemini_response("backup ok")]
+        self.assertEqual(researcher._call_ai("p"), "backup ok")
+        waits = [c.args[0] for c in mock_sleep.call_args_list]
+        self.assertEqual(len(waits), self.n - 1)
+        self.assertNotIn(researcher.MAX_DELAY, waits) if self.n == 3 else None
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.requests.post')
+    @patch('engine.ai_research.genai')
+    def test_openrouter_fatal_error_switches_tier_instead_of_rerolling(self, mock_genai, mock_post, mock_sleep):
+        """A 401 is account-level: drawing a different model cannot fix it, so don't burn the tier's attempts."""
+        researcher, client = self._make(mock_genai, meta_key="k")
+        client.models.generate_content.side_effect = Exception("404 model not found")
+        mock_post.side_effect = [
+            self._openrouter_response(status=401),                          # → switch tier, no re-roll
+            self._meta_response("SENTIMENT: ok.\n\n$AAPL:\n🤖: a\n"),        # Meta answers
+        ]
+        out = researcher._call_ai("p")
+        self.assertEqual(out.strip(), "SENTIMENT: ok.\n\n$AAPL:\n🤖: a")
+        urls = [c.args[0] for c in mock_post.call_args_list]
+        self.assertEqual(urls, ["https://openrouter.ai/api/v1/chat/completions", "https://api.meta.ai/v1/responses"])
+        mock_sleep.assert_not_called()
+
+    def test_is_fatal_markers(self):
+        from engine.ai_research import _is_fatal, _is_transient
+        for msg in ("OpenRouter HTTP 401: {\"error\":{\"message\":\"No auth credentials found\"}}",
+                    "OpenRouter HTTP 402: insufficient credits", "Meta HTTP 403: Forbidden",
+                    "Meta error invalid_api_key: bad key"):
+            self.assertTrue(_is_fatal(msg), msg)
+            self.assertFalse(_is_transient(msg), msg)
+        for msg in ("OpenRouter returned empty content (model: x)", "503 UNAVAILABLE", "OpenRouter HTTP 429: slow down"):
+            self.assertFalse(_is_fatal(msg), msg)
 
     @patch('engine.ai_research.time.sleep')
     @patch('engine.ai_research.requests.post')
@@ -793,8 +847,8 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertEqual(mock_post.call_count, self.n)  # the tier was NOT abandoned after the empty reply
         # Gemini busy retries used backoff: 30,60,120 per tier; OpenRouter failures never slept
         waits = [c.args[0] for c in mock_sleep.call_args_list]
-        self.assertEqual(waits, [30, 60, 120] * 2 if self.n == 3 else waits)
-        self.assertEqual(len(waits), 2 * self.n)
+        self.assertEqual(waits, [30, 60] * 2 if self.n == 3 else waits)
+        self.assertEqual(len(waits), 2 * (self.n - 1))
 
     # ── Tier 4: Meta Muse Spark 1.3 Contributor (paid) — used only after Gemini ×2 and OpenRouter fail ──
 
