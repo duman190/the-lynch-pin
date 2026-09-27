@@ -35,6 +35,44 @@ stops the bleeding, it is not a proven edge.):
     while (22 live re-entries lost $165 combined).
   - Direction from the scoring engine's bias; score band 3-5 kept.
 
+v2.1 (tmp/variant_probe.py, 11,607 signals / 106 tickers / 250 days — the
+seed-42 and seed-7 samples combined):
+  - LONG_ONLY.  Shorts under the v2 rules earned -0.014R (n=448) against
+    +0.138R for longs (n=600); the split had the same sign in both samples
+    separately (seed 42: +0.028 vs +0.278, seed 7: -0.019 vs +0.047).
+    Dropping them lifts avg R from +0.073 to +0.130, cuts max drawdown from
+    50.9R to 27.9R, and — unlike the mixed book, which was +0.19R in the
+    first half of the sample and -0.06R in the second — is positive in both
+    halves (+0.10 / +0.16).  A 20-day trend trail on single stocks fights
+    equity drift when short; the scoring engine's bearish calls did not
+    overcome that.
+  - MIN_ATR_PCT: skip names whose ATR(14) is under 1% of price.  Live, SAFT
+    (a pinned cash-deal target trading in a 0.1-0.35% daily range) took a
+    $1,500 slot — 15% of equity — to risk $6.  The "trend" signal on a
+    pinned stock is noise, and the notional cap turns the risk budget into
+    dead money.  No in-sample signal fell below 1%, so this is a sanity
+    filter rather than a tuned parameter.
+  - MAX_NOTIONAL_PCT 0.15 -> 0.10 so MAX_POSITIONS × cap ≤ 100% of equity.
+    At 15% the first scan deployed every dollar into 10 names and the last
+    fill (BOX) was sized by leftover cash rather than by its risk budget;
+    later scans could only add one name per day as stops freed cash.
+  - MOMENTUM_SMA: a long is only taken when price is above the ticker's own
+    20-day SMA.  Long signals below it earned -0.03R (n=153); above it,
+    +0.16R (n=572), positive in both halves of the sample (+0.12 / +0.18).
+    The same picture from other angles: RSI < 55 -> -0.01R vs +0.14R,
+    20-day momentum < 0 -> -0.14R vs +0.14R.  A chandelier trail needs a
+    trend to ride; "dip" signals hand it none.
+  - Honest caveat (tmp/variant_probe2.py): random-date long entries in the
+    same names under the same regime gate and exits earned +0.11R (5-95%
+    [+0.08, +0.15]) against +0.13R for the scoring engine's long signals.
+    The engine's *timing* is not distinguishable from random; the edge in
+    this book is long exposure above the 50-day index SMA plus the
+    asymmetric exit.  Do not expect the signal to save a down year.
+  - Daily summary and --status report mark-to-market equity, not cost.  A
+    trend book realises its losers first (four -1R stops in the first week)
+    while the winners are still open, so cost-basis "10 open ($10,000)"
+    understated the book by the unrealised P&L.
+
 Risk model:
   - Each position risks RISK_PCT of total equity (entry-to-stop distance),
     capped at MAX_NOTIONAL_PCT of equity per position
@@ -76,7 +114,7 @@ STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp", "simulator.pid")
 MAX_POSITIONS = 10
 RISK_PCT = 0.005          # 0.5% of total equity risked per trade (entry-to-stop)
-MAX_NOTIONAL_PCT = 0.15   # cap on any single position's notional vs equity
+MAX_NOTIONAL_PCT = 0.10   # cap on any single position's notional vs equity (10 × 10% = 100%: never cash-starved)
 MAX_HOLD_DAYS = 20        # trading-day time stop (10d halved the edge in backtest)
 SLIPPAGE_BPS = 5.0        # slippage per side, in basis points
 MIN_SCORE = 3
@@ -86,6 +124,9 @@ TRAIL_ATR = 3.0           # chandelier trail distance in ATR(14) from best prior
 ATR_PERIOD = 14
 REGIME_SMA = 50           # longs need index close > SMA50, shorts need < SMA50
 COOLDOWN_DAYS = 10        # calendar days before re-entering a symbol after a stop-out
+LONG_ONLY = True          # shorts: -0.014R avg (n=448) vs longs +0.138R (n=600); doubled drawdown
+MIN_ATR_PCT = 1.0         # skip names with ATR(14) < 1% of price (pinned / cash-deal targets, e.g. SAFT)
+MOMENTUM_SMA = 20         # longs need price > own SMA20: signals below it earned -0.03R (n=153) vs +0.16R above
 SCAN_HOUR = 7       # 7:30 AM PDT
 SCAN_MINUTE = 30
 CLOSE_HOUR = 12     # 12:00 PM PDT (1hr before market close) — used for daily summary
@@ -259,10 +300,34 @@ def _index_regime(index_symbol, cache=None):
 
 def _direction_allowed(direction, regime):
     """Regime gate: longs only in an UP index regime, shorts only in DOWN.
-    Backtest: gate lifted avg R from +0.10 to +0.17 and halved drawdown."""
+    Backtest: gate lifted avg R from +0.10 to +0.17 and halved drawdown.
+    With LONG_ONLY, shorts are never taken (see module docstring, v2.1)."""
     if regime is None:
         return False
+    if LONG_ONLY and direction != "bull":
+        return False
     return (direction == "bull") == (regime == "UP")
+
+
+def _atr_pct_ok(atr, price):
+    """Volatility floor: ATR must be at least MIN_ATR_PCT of price. Filters
+    pinned names (pending cash deals, ultra-low-vol) whose trend signal is
+    noise and whose notional-capped position cannot spend its risk budget."""
+    if not atr or not price or price <= 0:
+        return False
+    return atr / price * 100 >= MIN_ATR_PCT
+
+
+def _momentum_ok(direction, price, hist):
+    """Momentum confirmation: a long must trade above its own SMA(MOMENTUM_SMA)
+    of completed closes (a short below). A chandelier trail needs a trend
+    to ride; long signals taken below the 20-day average earned -0.03R
+    (n=153) against +0.16R above it, positive in both halves of the sample.
+    Falls back to True when there is not enough history to judge."""
+    if hist is None or len(hist) < MOMENTUM_SMA:
+        return True
+    sma = float(hist["Close"].tail(MOMENTUM_SMA).mean())
+    return price > sma if direction == "bull" else price < sma
 
 
 def _days_to_earnings(symbol):
@@ -393,6 +458,26 @@ def _in_cooldown(symbol, history, now=None):
     return False
 
 
+def _unrealized(pos, price=None):
+    """Open P&L in dollars at `price` (default: last price seen by the
+    monitor, else 0 — a position never marked is carried at cost)."""
+    price = price if price is not None else pos.get("last_price")
+    if not price:
+        return 0.0
+    entry = pos["entry_price"]
+    move = (price - entry) / entry if pos["direction"] == "bull" else (entry - price) / entry
+    return pos["size"] * move
+
+
+def _equity(state, mark_to_market=True):
+    """Cash + open positions. At cost when mark_to_market is False (what the
+    sizing model uses), otherwise at the last price the monitor saw."""
+    invested = sum(p["size"] for p in state["positions"])
+    if not mark_to_market:
+        return state["balance"] + invested
+    return state["balance"] + invested + sum(_unrealized(p) for p in state["positions"])
+
+
 def scan_and_open(state):
     """Scan universe for setups and open positions."""
     tickers = _load_tickers()
@@ -401,8 +486,8 @@ def scan_and_open(state):
     open_symbols = {p["symbol"] for p in state["positions"]}
     regime_cache = {}
 
-    _log(f"Scanning {total} tickers (score {MIN_SCORE}-{MAX_SCORE}, stop {STOP_ATR}xATR, "
-         f"trail {TRAIL_ATR}xATR, index>SMA{REGIME_SMA} gate)...")
+    _log(f"Scanning {total} tickers (score {MIN_SCORE}-{MAX_SCORE}, {'long-only, ' if LONG_ONLY else ''}"
+         f"ATR>={MIN_ATR_PCT:.0f}%, stop {STOP_ATR}xATR, trail {TRAIL_ATR}xATR, index>SMA{REGIME_SMA} gate)...")
 
     for i, (sym, idx) in enumerate(tickers):
         if sym in open_symbols or _in_cooldown(sym, state["history"]):
@@ -437,6 +522,10 @@ def scan_and_open(state):
             if atr is None:
                 continue
             price = result["price"]
+            if not _atr_pct_ok(atr, price):
+                continue
+            if not _momentum_ok(direction, price, hist):
+                continue
             trend_strength = (price - hist["Close"].rolling(50).mean().iloc[-1]) / atr
             if direction == "bear":
                 trend_strength = -trend_strength
@@ -509,6 +598,7 @@ def check_positions(state):
         price = _get_price(pos["symbol"])
         if not price:
             continue
+        pos["last_price"] = round(float(price), 4)
 
         entry = pos["entry_price"]
         stop = pos["stop"]
@@ -548,9 +638,8 @@ def check_positions(state):
     for i in sorted(closed_indices, reverse=True):
         state["positions"].pop(i)
 
-    if closed_indices:
-        state["balance"] = round(state["balance"], 2)
-        _save_state(state)
+    state["balance"] = round(state["balance"], 2)
+    _save_state(state)  # persists last_price marks even when nothing closed
 
     return len(closed_indices)
 
@@ -558,11 +647,15 @@ def check_positions(state):
 def print_status(state):
     """Print current state summary."""
     total_invested = sum(p["size"] for p in state["positions"])
+    unrealized = sum(_unrealized(p) for p in state["positions"])
+    equity = _equity(state)
     print(f"\n{'=' * 60}")
     print(f"  PAPER TRADING SIMULATOR")
     print(f"{'=' * 60}")
     print(f"  Cash:      ${state['balance']:,.2f}")
-    print(f"  Invested:  ${total_invested:,.2f} ({len(state['positions'])} positions)")
+    print(f"  Invested:  ${total_invested:,.2f} at cost ({len(state['positions'])} positions) | "
+          f"open P&L ${unrealized:+,.2f}")
+    print(f"  Equity:    ${equity:,.2f} (mark-to-market)")
     print(f"  Trades:    {len(state['history'])}")
     if state["history"]:
         wins = [t for t in state["history"] if t["pnl_pct"] > 0]
@@ -572,18 +665,20 @@ def print_status(state):
         rs = [t["r_multiple"] for t in state["history"] if "r_multiple" in t]
         if rs:
             print(f"  Avg R:     {sum(rs)/len(rs):+.2f}R over {len(rs)} trades")
-        ret = (state["balance"] + total_invested - state["starting_balance"]) / state["starting_balance"] * 100
-        print(f"  Return:    {ret:+.2f}%")
+        ret = (equity - state["starting_balance"]) / state["starting_balance"] * 100
+        print(f"  Return:    {ret:+.2f}% (mark-to-market)")
     print(f"  Last Scan: {state.get('last_scan_date', 'never')}")
 
     if state["positions"]:
-        print(f"\n  {'Symbol':<6} {'Dir':<6} {'Entry':>7} {'Stop':>7} {'Init':>7} {'ATR':>6} {'Score':>5}")
-        print(f"  {'-' * 50}")
+        print(f"\n  {'Symbol':<6} {'Dir':<6} {'Entry':>8} {'Last':>8} {'Stop':>8} {'Init':>8} {'ATR':>6} {'Score':>5} {'Open$':>8}")
+        print(f"  {'-' * 72}")
         for pos in state["positions"]:
             d = "LONG" if pos["direction"] == "bull" else "SHORT"
-            print(f"  {pos['symbol']:<6} {d:<6} ${pos['entry_price']:>6.2f} "
-                  f"${pos['stop']:>6.2f} ${pos.get('initial_stop', pos['stop']):>6.2f} "
-                  f"${pos.get('atr', 0):>5.2f} {pos['score']:>4}")
+            last = pos.get("last_price")
+            print(f"  {pos['symbol']:<6} {d:<6} ${pos['entry_price']:>7.2f} "
+                  f"{('$%.2f' % last) if last else 'n/a':>8} "
+                  f"${pos['stop']:>7.2f} ${pos.get('initial_stop', pos['stop']):>7.2f} "
+                  f"${pos.get('atr', 0):>5.2f} {pos['score']:>4} {_unrealized(pos):>+8.2f}")
     print()
 
 
@@ -620,8 +715,9 @@ def run_daemon(state):
     _log(f"Daemon started. Balance: ${state['balance']:,.2f} | "
          f"{len(state['positions'])} open positions")
     _log(f"Will scan at {SCAN_HOUR}:{SCAN_MINUTE:02d} AM PDT on trading days")
-    _log(f"Trend mode: stop {STOP_ATR:.1f}xATR, trail {TRAIL_ATR:.1f}xATR, time stop "
-         f"{MAX_HOLD_DAYS} trading days | risk {RISK_PCT*100:.1f}%/trade | "
+    _log(f"Trend mode: {'long-only, ' if LONG_ONLY else ''}stop {STOP_ATR:.1f}xATR, trail {TRAIL_ATR:.1f}xATR, "
+         f"time stop {MAX_HOLD_DAYS} trading days | risk {RISK_PCT*100:.1f}%/trade, "
+         f"cap {MAX_NOTIONAL_PCT*100:.0f}%/position | ATR>={MIN_ATR_PCT:.0f}% of price | "
          f"slippage {SLIPPAGE_BPS:.0f}bps/side | index>SMA{REGIME_SMA} gate")
     _log(f"State saved to: {STATE_FILE}")
     print()
@@ -656,9 +752,13 @@ def run_daemon(state):
                 if today_trades or state["positions"]:
                     day_pnl = sum(t["pnl_dollars"] for t in today_trades)
                     day_wins = len([t for t in today_trades if t["pnl_pct"] > 0])
+                    unreal = sum(_unrealized(p) for p in state["positions"])
+                    equity = _equity(state)
+                    ret = (equity - state["starting_balance"]) / state["starting_balance"] * 100
                     _log(f"DAY DONE: {day_wins}/{len(today_trades)} wins closed | "
                          f"P&L: ${day_pnl:+.2f} | Cash: ${state['balance']:,.2f} | "
-                         f"{len(state['positions'])} open (${invested:,.0f})")
+                         f"{len(state['positions'])} open (${invested:,.0f} cost, "
+                         f"${unreal:+,.0f} open P&L) | Equity: ${equity:,.2f} ({ret:+.2f}%)")
                 state["last_summary_date"] = today_str
                 _save_state(state)
 
