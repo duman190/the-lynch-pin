@@ -2076,8 +2076,64 @@ class TestSimulator(unittest.TestCase):
     def test_direction_allowed_matches_regime(self):
         self.assertTrue(self.sim._direction_allowed("bull", "UP"))
         self.assertFalse(self.sim._direction_allowed("bull", "DOWN"))
-        self.assertTrue(self.sim._direction_allowed("bear", "DOWN"))
-        self.assertFalse(self.sim._direction_allowed("bear", "UP"))
+        with patch.object(self.sim, "LONG_ONLY", False):
+            self.assertTrue(self.sim._direction_allowed("bear", "DOWN"))
+            self.assertFalse(self.sim._direction_allowed("bear", "UP"))
+
+    def test_long_only_blocks_shorts_even_in_down_regime(self):
+        """v2.1: shorts earned -0.014R vs +0.138R for longs → never taken."""
+        self.assertTrue(self.sim.LONG_ONLY)
+        self.assertFalse(self.sim._direction_allowed("bear", "DOWN"))
+        self.assertTrue(self.sim._direction_allowed("bull", "UP"))
+
+    def test_atr_pct_floor(self):
+        """SAFT-style pinned names (ATR 0.2% of price) are skipped."""
+        self.assertFalse(self.sim._atr_pct_ok(0.22, 103.50))
+        self.assertTrue(self.sim._atr_pct_ok(3.0, 135.0))
+        self.assertFalse(self.sim._atr_pct_ok(None, 100.0))
+        self.assertFalse(self.sim._atr_pct_ok(1.0, 0.0))
+        # exactly at the floor passes
+        self.assertTrue(self.sim._atr_pct_ok(self.sim.MIN_ATR_PCT, 100.0))
+
+    def test_momentum_gate_price_vs_own_sma(self):
+        bars = self._bars(n=40, close=100.0)
+        self.assertTrue(self.sim._momentum_ok("bull", 101.0, bars))
+        self.assertFalse(self.sim._momentum_ok("bull", 99.0, bars))
+        self.assertTrue(self.sim._momentum_ok("bear", 99.0, bars))
+        self.assertFalse(self.sim._momentum_ok("bear", 101.0, bars))
+        # not enough history → no opinion
+        self.assertTrue(self.sim._momentum_ok("bull", 50.0, self._bars(n=5)))
+        self.assertTrue(self.sim._momentum_ok("bull", 50.0, None))
+
+    def test_max_notional_never_exceeds_cash(self):
+        """MAX_POSITIONS × MAX_NOTIONAL_PCT ≤ 1 so a full book is never cash-starved."""
+        self.assertLessEqual(self.sim.MAX_POSITIONS * self.sim.MAX_NOTIONAL_PCT, 1.0 + 1e-9)
+
+    # ── Mark-to-market ────────────────────────────────────────────────────
+
+    def test_unrealized_and_equity(self):
+        long_pos = self._pos()                                   # $1000 @ 100
+        long_pos["last_price"] = 110.0                           # +10% → +$100
+        short_pos = self._pos(direction="bear", entry=50.0, stop=53.0)
+        short_pos["last_price"] = 55.0                           # -10% → -$100
+        unmarked = self._pos()                                   # carried at cost
+        self.assertAlmostEqual(self.sim._unrealized(long_pos), 100.0)
+        self.assertAlmostEqual(self.sim._unrealized(short_pos), -100.0)
+        self.assertAlmostEqual(self.sim._unrealized(unmarked), 0.0)
+        self.assertAlmostEqual(self.sim._unrealized(long_pos, 90.0), -100.0)
+        state = {"balance": 500.0, "positions": [long_pos, short_pos, unmarked]}
+        self.assertAlmostEqual(self.sim._equity(state, mark_to_market=False), 3500.0)
+        self.assertAlmostEqual(self.sim._equity(state), 3500.0)  # +100 -100 +0
+
+    def test_check_positions_records_last_price(self):
+        from datetime import datetime
+        st = {"positions": [self._pos()], "history": [], "balance": 0.0}
+        st["positions"][0]["opened_at"] = datetime.now().isoformat()
+        with patch.object(self.sim, "_get_price", return_value=103.0), \
+             patch.object(self.sim, "_save_state"), patch.object(self.sim, "_log"):
+            self.assertEqual(self.sim.check_positions(st), 0)
+        self.assertEqual(st["positions"][0]["last_price"], 103.0)
+        self.assertAlmostEqual(self.sim._unrealized(st["positions"][0]), 30.0)
 
     def test_direction_blocked_without_regime(self):
         self.assertFalse(self.sim._direction_allowed("bull", None))
@@ -2218,12 +2274,21 @@ class TestSimulator(unittest.TestCase):
     # ── Risk-based sizing ─────────────────────────────────────────────────
 
     def test_position_size_equal_dollar_risk(self):
-        """A 4% stop and a 5% stop should risk the same dollars."""
+        """A 6% stop and an 8% stop should risk the same dollars (both wide
+        enough that the 10% notional cap does not bind: 0.5%/6% = 8.3%)."""
         equity, cash = 10000.0, 10000.0
-        tight = self.sim._position_size(equity, cash, 100.0, 96.0)   # 4% stop
-        wide = self.sim._position_size(equity, cash, 100.0, 95.0)    # 5% stop
-        self.assertAlmostEqual(tight * 0.04, wide * 0.05, places=2)
-        self.assertAlmostEqual(tight * 0.04, equity * self.sim.RISK_PCT, places=2)
+        tight = self.sim._position_size(equity, cash, 100.0, 94.0)   # 6% stop
+        wide = self.sim._position_size(equity, cash, 100.0, 92.0)    # 8% stop
+        self.assertAlmostEqual(tight * 0.06, wide * 0.08, places=2)
+        self.assertAlmostEqual(tight * 0.06, equity * self.sim.RISK_PCT, places=2)
+
+    def test_position_size_cap_binds_on_tighter_stops(self):
+        """Below a 5% stop the 0.5% risk budget wants > 10% notional → capped,
+        so the realised risk is *less* than RISK_PCT, never more."""
+        equity, cash = 10000.0, 10000.0
+        size = self.sim._position_size(equity, cash, 100.0, 96.0)    # 4% stop
+        self.assertAlmostEqual(size, equity * self.sim.MAX_NOTIONAL_PCT, places=2)
+        self.assertLess(size * 0.04, equity * self.sim.RISK_PCT)
 
     def test_position_size_notional_cap(self):
         """A very tight stop can't blow past the notional cap."""
