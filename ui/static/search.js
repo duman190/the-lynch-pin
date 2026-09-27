@@ -1,0 +1,454 @@
+/* The Lynch Pin · Quant Portal — ticker search, progressive result rendering, AI overview.
+   Depends on app.js helpers ($, el, getJSON, openLightbox). DOM is built with textContent only. */
+"use strict";
+
+(() => {
+  const TICKER_RE = /^[A-Z][A-Z0-9.\-]{0,9}$/;
+  const STAGE_LABELS = { stats: "Valuation", grades: "Grades", technicals: "Technicals", edge: "6M edge", plot: "Chart", ai: "AI overview" };
+  const RECENT_KEY = "lynchpin.recent";
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  const S = {
+    app: null, sym: null, token: 0, timer: null, started: 0, rendered: new Set(),
+    lastSnap: null, aiTimer: null,
+  };
+
+  /** replaceChildren that skips null/false (the DOM API would render them as "null"). */
+  function put(node, ...kids) {
+    node.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false));
+  }
+
+  /* ── formatting ─────────────────────────────────────────────────────────── */
+  const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+  const fx = (v, d = 1, suf = "") => (isNum(v) ? v.toFixed(d) + suf : "N/A");
+  const signed = (v, d = 0, suf = "%") => (isNum(v) ? (v > 0 ? "+" : "") + v.toFixed(d) + suf : "N/A");
+  function money(v, cur) {
+    if (!isNum(v)) return "—";
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD", maximumFractionDigits: 2 }).format(v); }
+    catch (_) { return `$${v.toFixed(2)}`; }
+  }
+  function bigMoney(v) {
+    if (!isNum(v)) return null;
+    for (const [n, s] of [[1e12, "T"], [1e9, "B"], [1e6, "M"]]) if (Math.abs(v) >= n) return `$${(v / n).toFixed(2)}${s}`;
+    return `$${v.toFixed(0)}`;
+  }
+
+  /* ── recent lookups (localStorage, validated) ───────────────────────────── */
+  function getRecent() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      return Array.isArray(arr) ? arr.filter((t) => typeof t === "string" && TICKER_RE.test(t)).slice(0, 8) : [];
+    } catch (_) { return []; }
+  }
+  function pushRecent(sym) {
+    const list = [sym, ...getRecent().filter((t) => t !== sym)].slice(0, 8);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch (_) { /* private mode */ }
+    renderRecent();
+  }
+  function renderRecent() {
+    const box = $("#recent");
+    const list = getRecent();
+    put(box, ...list.map((t) => el("button", { type: "button", "aria-label": `Analyze ${t}`, onclick: () => go(t) }, `$${t}`)));
+  }
+
+  /* ── skeleton ───────────────────────────────────────────────────────────── */
+  function stepper(stages) {
+    const ol = el("ol", { class: "stepper", id: "stepper" });
+    for (const s of stages) ol.append(el("li", { "data-stage": s, class: "pending" }, el("span", { class: "step-dot", "aria-hidden": "true" }), el("span", { text: STAGE_LABELS[s] })));
+    return ol;
+  }
+
+  function skeleton(sym) {
+    const res = $("#result");
+    const stages = ["stats", "grades", "technicals", "edge", "plot"];
+    if (S.app.health && S.app.health.features.ai) stages.push("ai");
+    put(res, 
+      el("div", { class: "panel result-head", id: "card-head" },
+        el("div", { class: "rh-main" },
+          el("h1", { class: "rh-ticker" }, el("span", { class: "sky" }, "$"), sym),
+          el("div", { class: "rh-name muted", id: "rh-name", text: "Fetching quote…" })),
+        el("div", { class: "rh-side" },
+          el("div", { class: "rh-price", id: "rh-price" }),
+          el("div", { class: "rh-badges", id: "rh-badges" }))),
+      el("div", { class: "progress-row" },
+        stepper(stages),
+        el("p", { class: "status-line", id: "status-line", role: "status", "aria-live": "polite" }, "Queued…")),
+      el("div", { class: "result-grid", id: "result-grid" },
+        el("div", { class: "panel card card-valuation", id: "card-valuation" }, placeholder("Valuation")),
+        el("figure", { class: "panel card card-plot", id: "card-plot" }, placeholder("PEG deviation chart")),
+        el("div", { class: "panel card card-ai", id: "card-ai", hidden: !stages.includes("ai") }, placeholder("AI overview")),
+        el("div", { class: "panel card card-income", id: "card-income" }, placeholder("Income statement")),
+        el("div", { class: "panel card card-credit", id: "card-credit" }, placeholder("Balance sheet")),
+        el("div", { class: "panel card card-tech", id: "card-tech" }, placeholder("Technicals · 6M edge"))));
+    res.hidden = false;
+    res.setAttribute("aria-busy", "true");
+  }
+
+  function placeholder(title) {
+    return [el("h2", { text: title }), el("div", { class: "shimmer", "aria-hidden": "true" }, el("span"), el("span"), el("span"))];
+  }
+
+  /* ── cards ──────────────────────────────────────────────────────────────── */
+  function renderHead(d, snap) {
+    const name = [d.name, d.sector, d.industry].filter(Boolean).join(" · ");
+    $("#rh-name").textContent = name || d.ticker;
+    const mc = bigMoney(d.market_cap);
+    put($("#rh-price"), el("span", { class: "px", text: money(d.price, d.currency) }), mc ? el("span", { class: "muted small", text: ` mkt cap ${mc}` }) : null);
+    const badges = [];
+    const st = d.stats;
+    if (st && st.history === "unavailable") {
+      badges.push(el("span", { class: "badge badge-amber", title: "The 5-year PEG history could not be fetched; refresh to retry" }, "PEG history unavailable"));
+    } else if (st && isNum(st.Dev_SD)) {
+      badges.push(el("span", { class: `badge ${st.Dev_SD < 0 ? "badge-green" : "badge-red"}`, title: "Today's PEG vs its 5Y history, in standard deviations" }, `${st.Dev_SD > 0 ? "+" : ""}${st.Dev_SD.toFixed(2)} SD`));
+    }
+    if (d.flagged) badges.push(el("span", { class: "badge badge-amber", title: "Risk flag (*): growth > 99%, PEG ≥ 2.5, no SD, no trailing PE or base ROI < 9%" }, "⚠ risk flag"));
+    if (d.status === "nodata") badges.push(el("span", { class: "badge badge-dim", text: "no GARP data" }));
+    if (snap.cached) badges.push(el("span", { class: "badge badge-dim", title: "Served from today's cache" }, "⚡ cached"));
+    badges.push(el("button", { type: "button", class: "btn-ghost", title: "Re-run the analysis", "aria-label": `Refresh ${d.ticker}`, onclick: () => go(d.ticker, true) }, "↻ Refresh"));
+    put($("#rh-badges"), ...badges);
+  }
+
+  function bellSVG(dev) {
+    const W = 320, H = 120, base = 100, top = 14;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("class", "bell");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `PEG sits ${fx(dev, 2)} standard deviations from its historical mean`);
+    const xOf = (z) => W / 2 + (z / 3.6) * (W / 2 - 8);
+    const yOf = (z) => base - Math.exp(-z * z / 2) * (base - top);
+    let d = `M ${xOf(-3.6)} ${base}`;
+    for (let z = -3.6; z <= 3.6001; z += 0.08) d += ` L ${xOf(z).toFixed(1)} ${yOf(z).toFixed(1)}`;
+    const mk = (tag, attrs) => { const n = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); svg.append(n); return n; };
+    mk("path", { d: d + ` L ${xOf(3.6)} ${base} Z`, class: "bell-fill" });
+    for (let i = -3; i <= 3; i++) mk("line", { x1: xOf(i), x2: xOf(i), y1: base, y2: yOf(i), class: "bell-sd" });
+    mk("path", { d, class: "bell-glow" });
+    mk("path", { d, class: "bell-line" });
+    mk("line", { x1: 4, x2: W - 4, y1: base, y2: base, class: "bell-axis" });
+    if (isNum(dev)) {
+      const z = Math.max(-3.4, Math.min(3.4, dev));
+      mk("line", { x1: xOf(z), x2: xOf(z), y1: base, y2: yOf(z), class: "bell-marker" });
+      mk("circle", { cx: xOf(z), cy: yOf(z), r: 6, class: "bell-dot" });
+    }
+    for (const [i, lab] of [[-2, "-2σ"], [0, "mean"], [2, "+2σ"]]) {
+      const t = mk("text", { x: xOf(i), y: H - 4, class: "bell-lab", "text-anchor": "middle" });
+      t.textContent = lab;
+    }
+    return svg;
+  }
+
+  function roiBars(st) {
+    const rows = [["Bull", st.Bull, "bull"], ["Base", st.Base, "base"], ["Bear", st.Bear, "bear"]];
+    const max = Math.max(30, ...rows.map((r) => Math.abs(r[1] || 0)));
+    return el("div", { class: "roi", role: "list", "aria-label": "Projected 5-year annualised ROI" },
+      rows.map(([lab, v, cls]) => el("div", { class: "roi-row", role: "listitem" },
+        el("span", { class: "roi-lab", text: lab }),
+        el("span", { class: "roi-track" }, el("span", { class: `roi-bar ${cls}${isNum(v) && v < 0 ? " neg" : ""}`, style: null, "data-w": isNum(v) ? Math.min(100, Math.abs(v) / max * 100).toFixed(1) : "0" })),
+        el("span", { class: "roi-val", text: signed(v, 1) }))));
+  }
+
+  function statTable(pairs) {
+    return el("dl", { class: "mono-table" }, pairs.map(([k, v, cls]) => [el("dt", { text: k }), el("dd", { class: cls || null, text: v })]));
+  }
+
+  function renderValuation(d) {
+    const card = $("#card-valuation");
+    const st = d.stats;
+    if (!st) {
+      put(card, el("h2", { text: "Valuation" }),
+        el("p", { class: "muted", text: d.reason ? `No GARP valuation: ${d.reason.replace(/^no GARP data \(|\)$/g, "")}.` : "No GARP valuation available." }),
+        el("p", { class: "muted small", text: "Grades, technicals and the 6M edge below still apply." }));
+      return;
+    }
+    put(card, 
+      el("h2", { text: "Valuation (PEG)" }),
+      el("div", { class: "peg-hero" },
+        el("div", {},
+          el("div", { class: "peg-num", text: fx(st.PEG, 2) }),
+          el("div", { class: "peg-sub muted", text: `hist. mean ${fx(st.Mean, 2)} · σ ${fx(st.SD, 2)}` })),
+        st.history === "unavailable"
+          ? el("p", { class: "hint-box", text: "PEG history unavailable (Yahoo/SEC data outage) — Mean/SD are placeholders. Use ↻ Refresh to retry." })
+          : bellSVG(st.Dev_SD)),
+      statTable([
+        ["PE", fx(st.PE)], ["Fwd PE", fx(st.FwdPE)], ["2Y Fwd PE", fx(st["2YFwd"])],
+        ["5Y Growth", st.display["5YGrowth"]], ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
+      ]),
+      el("h3", { class: "sub-h", text: "5Y ROI projection" }),
+      roiBars(st));
+    // widths via CSSOM (CSP forbids inline style attributes)
+    requestAnimationFrame(() => card.querySelectorAll(".roi-bar").forEach((b) => { b.style.width = `${b.dataset.w}%`; }));
+  }
+
+  function renderPlot(d) {
+    const fig = $("#card-plot");
+    if (!d.plot_preview_url) {
+      put(fig, el("h2", { text: "PEG deviation chart" }), el("p", { class: "muted", text: d.stages && d.stages.plot === "error" ? "Chart rendering failed." : "No chart — the PEG distribution needs GARP data." }));
+      return;
+    }
+    const alt = `${d.ticker} PEG valuation deviation chart: bell curve of the 5-year PEG history with today's position, stats, income grade and credit rating`;
+    put(fig, 
+      el("button", { type: "button", class: "plot-btn", "aria-label": `Enlarge ${d.ticker} chart`, onclick: () => openLightbox(d.plot_url, alt) },
+        el("img", { src: d.plot_preview_url, alt, width: 1568, height: 915, decoding: "async" })),
+      el("figcaption", { class: "muted small" }, "Tap to enlarge · ", el("a", { href: d.plot_url, download: `${d.ticker}_valuation.png` }, "download PNG")));
+  }
+
+  function renderIncome(d) {
+    const card = $("#card-income");
+    const inc = d.income;
+    if (!inc) { put(card, el("h2", { text: "Income statement" }), el("p", { class: "muted", text: "Income statement data unavailable." })); return; }
+    const mark = { good: ["✓", "green", "healthy vs revenue"], neutral: ["~", "sky", "in line"], bad: ["✗", "red", "bloating vs revenue"], na: [" ", "muted", "n/a"] };
+    put(card, 
+      el("div", { class: "card-title-row" }, el("h2", { text: "Income grade" }), el("span", { class: "grade", text: inc.grade || "N/A" })),
+      el("table", { class: "mono-grid" },
+        el("caption", { class: "sr-only", text: "Year-over-year growth per income statement line" }),
+        el("tbody", {}, inc.items.filter((i) => isNum(i.growth)).map((i) => {
+          const [m, cls, desc] = mark[i.signal] || mark.na;
+          return el("tr", {}, el("td", { class: cls, "aria-label": desc, text: m }), el("th", { scope: "row", text: i.label }), el("td", { class: "num", text: signed(i.growth * 100) }));
+        }))));
+  }
+
+  function renderCredit(d) {
+    const card = $("#card-credit");
+    const c = d.credit;
+    if (!c) { put(card, el("h2", { text: "Balance sheet" }), el("p", { class: "muted", text: "Balance sheet data unavailable." })); return; }
+    const hints = { "IntCov": "Operating income / interest", "ND/EBITDA": "Net debt / EBITDA", "Cash/Debt": "Cash / total debt", "Svc/FCF%": "Interest / free cash flow" };
+    put(card, 
+      el("div", { class: "card-title-row" }, el("h2", { text: "Credit rating" }), el("span", { class: "grade", text: c.rating || "NR" })),
+      el("dl", { class: "mono-table" }, c.metrics.map((m) => [el("dt", { title: hints[m.label] || "", text: m.label }),
+        el("dd", { text: isNum(m.value) ? (Math.abs(m.value) < 100 ? m.value.toFixed(1) : m.value.toFixed(0)) : "N/A" })])),
+      el("p", { class: "muted small", text: "Synthetic rating (Damodaran interest-coverage method, notched for leverage & liquidity)." }));
+  }
+
+  function renderTech(d) {
+    const card = $("#card-tech");
+    const t = d.technicals, e = d.edge;
+    const parts = [el("div", { class: "card-title-row" }, el("h2", { text: "Technicals" }),
+      t ? el("span", { class: `grade sig-${String(t.signal).toLowerCase()}`, text: t.signal }) : null)];
+    if (t) {
+      const z = t.accumulation_zone;
+      parts.push(statTable([["RSI (14)", fx(t.rsi, 0)], ["vs SMA200", signed(t.price_vs_sma200, 1)], ["ATR compr.", fx(t.atr_compression, 2)],
+        ["Accum. zone", z && isNum(z[0]) ? `$${Math.round(z[0])}–$${Math.round(z[1])}` : "N/A"]]));
+    } else parts.push(el("p", { class: "muted", text: "Price history unavailable." }));
+    parts.push(el("h3", { class: "sub-h", text: `6M directional edge vs ${d.benchmark || "SPY"}` }));
+    if (e) {
+      parts.push(statTable([
+        ["Bull acc.", `${fx(e.bull_acc, 0)}% (${e.bull_n})`, e.best_edge === "BULL" && e.bull_acc > 55 ? "green" : null], ["Bull P&L", signed(e.bull_pnl, 2)],
+        ["Bear acc.", `${fx(e.bear_acc, 0)}% (${e.bear_n})`, e.best_edge === "BEAR" && e.bear_acc > 55 ? "red" : null], ["Bear P&L", signed(e.bear_pnl, 2)],
+        ["Edge", e.best_edge || "—"]]));
+      let hint = "Neither side > 55% — low conviction for options income.";
+      if (e.best_edge === "BULL" && e.bull_acc > 60) hint = "💡 BULL edge → sell cash-secured puts on dips.";
+      else if (e.best_edge === "BEAR" && e.bear_acc > 60) hint = "💡 BEAR edge → sell covered calls on bounces.";
+      else if (Math.max(e.bull_acc || 0, e.bear_acc || 0) > 55) hint = "Edge between 55–60% — modest conviction.";
+      parts.push(el("p", { class: "hint-box", text: hint }));
+    } else parts.push(el("p", { class: "muted", text: "Backtest unavailable." }));
+    put(card, ...parts);
+  }
+
+  /* ── AI overview (step 4) ──────────────────────────────────────────────── */
+  function renderAI(ai) {
+    const card = $("#card-ai");
+    if (!card || card.hidden) return;
+    const head = el("div", { class: "card-title-row" }, el("h2", { text: "🤖 AI overview" }),
+      ai && ai.model ? el("span", { class: "chip", title: `Local model · ${ai.elapsed_s || "?"}s`, text: ai.model_short || ai.model }) : null);
+    if (!ai || ai.status === "queued" || ai.status === "running") {
+      const msg = ai && ai.status === "queued" ? `Waiting for the local model (position ${ai.queue_position || 1})…` : "Local model is writing the overview…";
+      put(card, head, el("p", { class: "muted", text: msg }), el("div", { class: "shimmer", "aria-hidden": "true" }, el("span"), el("span"), el("span")));
+      return;
+    }
+    if (ai.status !== "done") {
+      const offline = ai.status === "unavailable" && ai.reason !== "no_garp";
+      const base = (S.app.health && S.app.health.ai && S.app.health.ai.base_url) || "the configured LM Studio URL";
+      const retry = el("button", { type: "button", class: "btn-ghost", onclick: () => (ai.need_quant ? go(S.sym, true) : startAI(S.sym, true)) },
+        ai.need_quant ? "↻ Re-run analysis" : "↻ Retry AI");
+      if (/timed out/.test(ai.error || "")) { retry.disabled = true; setTimeout(() => { retry.disabled = false; }, 30000); }
+      put(card, head,
+        el("p", { class: "muted", text: offline ? `AI offline — ${ai.error || "local model unavailable"}.` : (ai.error || "AI overview unavailable.") }),
+        offline ? el("p", { class: "muted small", text: `Start LM Studio's server at ${base} and load a model; the quant analysis above does not need it.` }) : null,
+        retry);
+      return;
+    }
+    const n = ai.narrative || {};
+    const sec = (cls, title, text) => text ? el("section", { class: `ai-sec ${cls}` }, el("h3", { text: title }), ...String(text).split(/\n{2,}/).map((p) => el("p", { text: p.trim() }))) : null;
+    put(card, head,
+      n.sentiment ? el("p", { class: "ai-sentiment", title: "The local model has no live market feed — treat this line as its opinion" },
+        el("span", { class: "sky", text: "Model's market read " }), el("span", { class: "muted small", text: "(no live data): " }), n.sentiment) : null,
+      sec("ai-overview", "Overview", n.overview),
+      sec("ai-dcf", "📊 Reverse 5Y DCF", n.reverse_dcf),
+      sec("ai-stomach", "🐻 Stomach test — why it can underperform for 5 years", n.stomach_test),
+      !n.overview && !n.reverse_dcf && !n.stomach_test && n.raw ? el("p", { class: "ai-raw", text: n.raw }) : null,
+      el("p", { class: "muted small", text: "AI-generated from the quant data above. Not financial advice." }));
+  }
+
+  function setAIStep(state) {
+    const li = document.querySelector('#stepper li[data-stage="ai"]');
+    if (li) li.className = state;
+  }
+
+  async function startAI(sym, retry = false) {
+    if (!S.app.health || !S.app.health.features.ai) return;
+    const token = S.token;
+    clearTimeout(S.aiTimer);
+    setAIStep("running");
+    renderAI({ status: "running" });
+    const url = `/api/ticker/${encodeURIComponent(sym)}/ai${retry ? "?refresh=1" : ""}`;
+    let first = true;
+    const poll = async () => {
+      if (token !== S.token) return;
+      if (document.hidden) { S.aiTimer = setTimeout(poll, 1500); return; }
+      try {
+        const ai = await getJSON(first && retry ? url : `/api/ticker/${encodeURIComponent(sym)}/ai`);
+        first = false;
+        if (token !== S.token) return;
+        renderAI(ai);
+        if (["done", "error", "unavailable"].includes(ai.status)) {
+          setAIStep(ai.status === "done" ? "done" : ai.status === "unavailable" ? "skipped" : "error");
+          return;
+        }
+      } catch (e) {
+        if (token !== S.token) return;
+        if (e.status === 429) { S.aiTimer = setTimeout(poll, (e.retryAfter || 15) * 1000); return; }
+        renderAI({ status: "error", error: e.message });
+        setAIStep("error");
+        return;
+      }
+      S.aiTimer = setTimeout(poll, 2000);
+    };
+    poll();
+  }
+
+  /* ── polling state machine ──────────────────────────────────────────────── */
+  const CARD_FOR = { stats: [renderValuation], grades: [renderIncome, renderCredit], technicals: [], edge: [renderTech], plot: [renderPlot] };
+
+  function applySnapshot(snap) {
+    S.lastSnap = snap;
+    const d = snap.data || {};
+    const stages = d.stages || {};
+    for (const [name, state] of Object.entries(stages)) {
+      const li = document.querySelector(`#stepper li[data-stage="${name}"]`);
+      if (li && li.className !== state) li.className = state;
+    }
+    if (!S.rendered.has("head") && (d.name || d.status === "nodata" || d.price !== undefined)) { renderHead(d, snap); S.rendered.add("head"); }
+    for (const [stage, fns] of Object.entries(CARD_FOR)) {
+      const st = stages[stage];
+      if (S.rendered.has(stage) || !["done", "error", "skipped"].includes(st)) continue;
+      fns.forEach((f) => f(d));
+      S.rendered.add(stage);
+    }
+    // technicals card combines two stages; render once both are settled
+    const line = $("#status-line");
+    let msg;
+    if (snap.status === "queued") msg = `Queued — position ${snap.queue_position || 1}…`;
+    else if (snap.status === "running") msg = `Running ${STAGE_LABELS[snap.stage] || "analysis"}… ${Math.round(snap.elapsed_s || 0)}s`;
+    else if (snap.status === "done") msg = snap.cached ? "Loaded from today's cache ⚡" : `Analysis complete in ${Math.round(snap.elapsed_s || 0)}s`;
+    else if (snap.status === "nodata") msg = `No GARP valuation for ${snap.ticker}: ${d.reason || "insufficient data"}`;
+    else msg = `Analysis failed: ${snap.error || d.reason || "unknown error"}`;
+    if (line.textContent !== msg) line.textContent = msg;
+
+    const final = ["done", "nodata", "error"].includes(snap.status);
+    if (final) {
+      renderHead(d, snap);  // refresh badges (cached / flagged) once
+      for (const [stage, fns] of Object.entries(CARD_FOR)) if (!S.rendered.has(stage)) { fns.forEach((f) => f(d)); S.rendered.add(stage); }
+      $("#result").setAttribute("aria-busy", "false");
+      if (snap.status === "error" && !d.name) $("#rh-name").textContent = "—";
+      if (snap.status === "done") startAI(snap.ticker);
+      else { setAIStep("skipped"); const c = $("#card-ai"); if (c) c.hidden = true; }  // AI needs GARP data
+    }
+    return final;
+  }
+
+  function countdown(token, secs, msg, then) {
+    if (token !== S.token) return;
+    if (secs <= 0) { then(); return; }
+    $("#status-line").textContent = `${msg} Retrying in ${secs}s…`;
+    S.timer = setTimeout(() => countdown(token, secs - 1, msg, then), 1000);
+  }
+
+  async function poll(token, sym, refresh) {
+    if (token !== S.token) return;
+    if (document.hidden) { S.timer = setTimeout(() => poll(token, sym, refresh), 1000); return; }
+    let delay = Date.now() - S.started > 10000 ? 2000 : 1000;
+    try {
+      // first request = a lookup (counts in the LFU); follow-ups are polls of that same lookup
+      const q = refresh ? "?refresh=1" : (S.polled ? "?poll=1" : "");
+      const snap = await getJSON(`/api/ticker/${encodeURIComponent(sym)}${q}`);
+      S.polled = true;
+      if (token !== S.token) return;
+      if (snap.status === "expired") {  // our lookup vanished (midnight / eviction): look it up again
+        S.polled = false;
+        S.timer = setTimeout(() => poll(token, sym, false), 500);
+        return;
+      }
+      if (applySnapshot(snap)) return;
+    } catch (e) {
+      if (token !== S.token) return;
+      if (e.status === 429) {  // queue full: keep the refresh intent until a request is accepted
+        countdown(token, e.retryAfter || 10, e.message, () => poll(token, sym, refresh));
+        return;
+      } else if (e.status === 400) {
+        $("#status-line").textContent = `“${sym}” is not a valid ticker symbol.`;
+        $("#result").setAttribute("aria-busy", "false");
+        return;
+      } else {
+        $("#status-line").textContent = `Connection problem (${e.message}) — retrying…`;
+        delay = 3000;
+      }
+    }
+    S.timer = setTimeout(() => poll(token, sym, false), delay);
+  }
+
+  function go(raw, refresh = false, push = true) {
+    const sym = String(raw || "").trim().toUpperCase().replace(/^\$/, "");
+    const input = $("#q");
+    if (!TICKER_RE.test(sym)) {
+      input.setCustomValidity("Enter a ticker symbol like MSFT or BRK.B");
+      input.reportValidity();
+      return;
+    }
+    input.setCustomValidity("");
+    input.value = sym;
+    S.token += 1;
+    clearTimeout(S.timer);
+    clearTimeout(S.aiTimer);
+    S.sym = sym;
+    S.started = Date.now();
+    S.rendered = new Set();
+    S.polled = false;
+    skeleton(sym);
+    pushRecent(sym);
+    if (push) {
+      const url = `?t=${encodeURIComponent(sym)}`;
+      if (location.search !== url) history.pushState({ t: sym }, "", url);
+    }
+    document.title = `$${sym} · The Lynch Pin`;
+    if (window.matchMedia("(max-width: 700px)").matches) input.blur();  // drop the phone keyboard
+    $("#result").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    poll(S.token, sym, refresh);
+  }
+
+  function fromURL() {
+    const t = new URLSearchParams(location.search).get("t");
+    if (t && TICKER_RE.test(t.toUpperCase())) go(t, false, false);
+    else {
+      S.token += 1;
+      clearTimeout(S.timer);
+      $("#result").hidden = true;
+      document.title = "The Lynch Pin · Quant Portal";
+    }
+  }
+
+  window.LynchSearch = {
+    init(appState) {
+      S.app = appState;
+      if (!appState.health || !appState.health.features.search) return;
+      renderRecent();
+      $("#search-form").addEventListener("submit", (e) => { e.preventDefault(); go($("#q").value); });
+      $("#q").addEventListener("input", (e) => e.target.setCustomValidity(""));
+      window.addEventListener("popstate", fromURL);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "/" && document.activeElement !== $("#q") && !e.ctrlKey && !e.metaKey) { e.preventDefault(); $("#q").focus(); }
+      });
+      fromURL();
+    },
+    _test: { applySnapshot, go },
+  };
+})();

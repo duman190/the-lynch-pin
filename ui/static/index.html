@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Lynch Pin">
+  <title>The Lynch Pin · Quant Portal</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+  <script src="/static/search.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar" role="banner">
+    <a class="brand" href="/" aria-label="The Lynch Pin Quant Portal home">
+      <img src="/static/img/logo.png" alt="" width="40" height="40">
+      <span class="brand-text"><strong>THE LYNCH PIN</strong><span>Quant Portal</span></span>
+    </a>
+    <div class="chips">
+      <span class="chip" id="chip-ai" hidden><span class="dot"></span><span class="chip-label">AI</span></span>
+      <span class="chip" id="chip-cache" hidden><span class="chip-label">Cache</span></span>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-label="The Lynch Pin Quant Portal">
+      <picture>
+        <source media="(max-width: 700px)" type="image/webp" srcset="/static/img/hero_square.webp" width="1200" height="1200">
+        <source media="(max-width: 700px)" srcset="/static/img/hero_square.jpg" width="1200" height="1200">
+        <source type="image/webp" srcset="/static/img/hero_wide.webp" width="2400" height="900">
+        <img src="/static/img/hero_wide.jpg" width="2400" height="900" fetchpriority="high"
+             alt="The Lynch Pin badge — Peter Lynch with a PEG bell curve — framed by glowing quant dial rings, candlesticks and a PEG deviation curve with a -2.1 SD marker. Quant Portal: Growth at a Reasonable Price.">
+      </picture>
+    </section>
+
+    <section class="search-wrap" id="search-section" hidden aria-label="Ticker search">
+      <form class="search" id="search-form" role="search" autocomplete="off">
+        <label class="sr-only" for="q">Ticker symbol</label>
+        <span class="search-icon" aria-hidden="true">$</span>
+        <input id="q" name="q" type="search" inputmode="text" autocapitalize="characters" spellcheck="false"
+               maxlength="10" placeholder="Ticker symbol, e.g. MSFT" pattern="[A-Za-z][A-Za-z0-9.\-]{0,9}"
+               aria-describedby="search-hint" required>
+        <button type="submit" class="btn-primary">Analyze</button>
+      </form>
+      <p class="hint" id="search-hint">PEG deviation · 5Y ROI · income grade · credit rating · technicals · 6M edge<span id="ai-hint" hidden> · AI overview</span></p>
+      <div class="recent" id="recent" aria-label="Recent lookups"></div>
+    </section>
+
+    <section id="result" class="result" hidden aria-live="polite" aria-busy="false"></section>
+
+    <section class="panel gallery-wrap" aria-labelledby="gallery-title">
+      <div class="panel-head">
+        <h2 id="gallery-title">Latest scan</h2>
+        <span class="muted" id="gallery-meta"></span>
+      </div>
+      <div class="gallery" id="gallery"><p class="muted">Loading charts…</p></div>
+    </section>
+
+    <section class="panel about" aria-labelledby="about-title">
+      <h2 id="about-title">How to read the Lynch Pin</h2>
+      <div class="about-grid">
+        <div>
+          <p><strong class="sky">PEG = P/E ÷ Growth.</strong> Forward P/E divided by the multi-source 5Y EPS growth estimate. The bell curve is the stock's own reconstructed 5-year forward-PEG history; the <span class="red">red marker</span> is today.</p>
+          <p><strong class="sky">Dev (SD)</strong> — how many standard deviations today's PEG sits from its historical mean. Negative = cheaper than usual.</p>
+          <p><strong class="sky">Bull / Base / Bear ROI</strong> — annualised 5-year return under a terminal-multiple framework with growth decay.</p>
+          <p class="muted small">Quant scans, not financial advice. Math can be mistaken. Investing involves risk. Always DYOR. 🫶</p>
+        </div>
+        <img class="banner" src="/static/img/banner.jpg" alt="The Lynch Pin banner: A data-driven guide to finding growth at a discount. PEG = P/E ÷ Growth. Quote: My best stocks have been the third year, the fourth year, the fifth year I've owned them — Peter Lynch." width="1600" height="534">
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>The Lynch Pin · GARP screener</span>
+    <span class="muted">Local network only</span>
+  </footer>
+
+  <dialog id="lightbox" aria-label="Chart preview">
+    <button class="lightbox-close" id="lightbox-close" aria-label="Close preview">×</button>
+    <img id="lightbox-img" alt="">
+  </dialog>
+</body>
+</html>
