@@ -31,7 +31,7 @@ def settings(tmp_path, lm):
 
 
 def test_defaults_are_configurable(monkeypatch):
-    assert Settings().llm_ctx == 65536 and Settings().llm_base_url == "http://127.0.0.1:8080"
+    assert Settings().llm_ctx == 65536 and Settings().llm_base_url == "http://127.0.0.1:1234"
     assert Settings().llm_model == ""
     monkeypatch.setenv("LYNCH_LLM_MODEL", "google/gemma-3-27b")
     monkeypatch.setenv("LYNCH_LLM_CTX", "32768")
