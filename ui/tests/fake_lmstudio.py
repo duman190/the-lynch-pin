@@ -10,7 +10,8 @@ Loopback only.
 
 Knobs (``state`` dict): delay (s per chunk), inline_think, prefill_think (only ``</think>`` streams),
 sloppy (markdown-bold labels), finish ("stop" | "length"), limit (max chunks), fail (404 "No models
-loaded"), state / loaded_ctx (native model listing).
+loaded"), reject_reasoning_effort (400 on that field), state / loaded_ctx (native model listing).
+``"reasoning_effort": "none"`` in a request suppresses the reasoning tokens, like Qwen3.6 Splash.
 """
 import argparse
 import json
@@ -82,13 +83,15 @@ def make_handler(state):
             base = {"id": "chatcmpl-x", "object": "chat.completion.chunk", "model": req.get("model")}
             n = 0
             try:
-                if state.get("inline_think"):
+                if req.get("reasoning_effort") == "none":  # thinking switched off
+                    pieces = []
+                elif state.get("inline_think"):
                     pieces = [("content", t) for t in _tokens(f"<think>{REASONING}</think>\n\n")]
                 elif state.get("prefill_think"):  # template prefilled "<think>": only the closing tag streams
                     pieces = [("content", t) for t in _tokens(f"{REASONING}</think>\n\n")]
                 else:
                     pieces = [("reasoning_content", t) for t in _tokens(REASONING)]
-                pieces += [("content", t) for t in _tokens(reply)]
+                pieces = list(pieces) + [("content", t) for t in _tokens(reply)]
                 if state.get("finish") == "length":
                     pieces = pieces[:len(pieces) // 3]
                 if state.get("limit"):
@@ -119,6 +122,8 @@ def make_handler(state):
                 return self._json(404, {"error": "not found"})
             if state.get("fail"):
                 return self._json(404, {"error": {"message": "No models loaded. Please load a model."}})
+            if state.get("reject_reasoning_effort") and "reasoning_effort" in req:
+                return self._json(400, {"error": {"message": "Unrecognized request argument supplied: reasoning_effort"}})
             prompt = req["messages"][-1]["content"]
             reply = canned_reply(prompt, state.get("sloppy"))
             if req.get("stream"):
