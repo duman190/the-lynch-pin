@@ -110,7 +110,10 @@ def test_head_has_no_body(server):
     ("169.254.1.1", True), ("fe80::1", True), ("fd00::5", True), ("::ffff:192.168.0.2", True),
     ("8.8.8.8", False), ("2001:4860::8888", False), ("0.0.0.0", False), ("garbage", False), ("", False),
     ("0.0.0.1", False), ("240.0.0.1", False), ("198.18.0.1", False), ("192.0.2.1", False),
-    ("2001:db8::1", False), ("100.64.0.1", False), ("172.32.0.1", False),
+    ("2001:db8::1", False), ("172.32.0.1", False),
+    # Tailscale: 100.64.0.0/10 and its IPv6 ULA; the rest of 100.0.0.0/8 is public internet space
+    ("100.85.21.20", True), ("100.64.0.1", True), ("100.127.255.254", True), ("fd7a:115c:a1e0::1", True),
+    ("100.63.255.255", False), ("100.128.0.1", False), ("100.0.0.1", False),
 ])
 def test_is_local_client(ip, ok):
     assert is_local_client(ip) is ok
@@ -125,10 +128,27 @@ def test_is_allowed_host(host, ok):
     assert is_allowed_host(host) is ok
 
 
-def test_allowed_nets_env_for_tailscale(monkeypatch):
-    monkeypatch.setenv("LYNCH_UI_ALLOWED_NETS", "100.64.0.0/10, bogus")
-    assert is_local_client("100.100.1.2")
+def test_allowed_nets_env(monkeypatch):
+    assert not is_local_client("203.0.113.9")
+    monkeypatch.setenv("LYNCH_UI_ALLOWED_NETS", "203.0.113.0/24, bogus")
+    assert is_local_client("203.0.113.9")
     assert not is_local_client("8.8.8.8")
+
+
+def test_allow_net_and_host_flags(monkeypatch):
+    from ui import netguard
+    monkeypatch.setattr(netguard, "_CLI_NETS", [])
+    monkeypatch.setattr(netguard, "_CLI_HOSTS", set())
+    assert netguard.allow(["203.0.113.0/24,nope", "198.51.100.7"], ["portal.example.org"]) == ["nope"]
+    assert is_local_client("203.0.113.5") and is_local_client("198.51.100.7")
+    assert is_allowed_host("portal.example.org:8765")
+    assert netguard.extra_allowed() == (["203.0.113.0/24", "198.51.100.7/32"], ["portal.example.org"])
+    from ui.server import parse_args
+    assert parse_args(["--allow-net", "10.8.0.0/24", "--allow-host", "x.example"])[1].allow_net == ["10.8.0.0/24"]
+
+
+def test_magicdns_names_accepted():
+    assert is_allowed_host("myserver.tail1234.ts.net:8765") and is_allowed_host("100.85.21.20:8765")
 
 
 def test_allowed_hosts_env(monkeypatch):
@@ -232,3 +252,25 @@ def test_concurrent_previews_share_one_render(tmp_path):
     with open(paths[0], "rb") as f:
         assert f.read(2) == b"\xff\xd8"
     assert not [n for n in os.listdir(out_dir) if n.endswith(".part")]
+
+
+def test_refusal_is_explained_once_in_the_log(server, capfd):
+    import ui.server as srv
+    srv._REFUSED.clear()
+    for _ in range(3):
+        assert get(server, "/api/health", host="evil.example.com")[0].status == 403
+    err = capfd.readouterr().err
+    assert err.count("⛔") == 1 and "--allow-host evil.example.com" in err
+
+
+def test_connection_reset_is_not_logged_as_a_traceback(capfd):
+    from ui.server import PortalServer
+    httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(Settings())))
+    try:
+        try:
+            raise ConnectionResetError(54, "Connection reset by peer")
+        except ConnectionResetError:
+            httpd.handle_error(None, ("100.85.21.20", 5000))
+        assert "Traceback" not in capfd.readouterr().err
+    finally:
+        httpd.server_close()
