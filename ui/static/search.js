@@ -147,8 +147,14 @@
         el("span", { class: "roi-val", text: signed(v, 1) }))));
   }
 
-  function statTable(pairs) {
-    return el("dl", { class: "mono-table" }, pairs.map(([k, v, cls]) => [el("dt", { text: k }), el("dd", { class: cls || null, text: v })]));
+  function statTable(pairs) {  // values may be strings or nodes
+    return el("dl", { class: "mono-table" }, pairs.map(([k, v, cls]) => [el("dt", { text: k }), el("dd", { class: cls || null }, v)]));
+  }
+
+  /** "Enriched" / "Not enriched" tag in front of the 5Y growth value. */
+  function growthTag(enriched) {
+    if (typeof enriched !== "boolean") return null;
+    return el("span", { class: `growth-tag ${enriched ? "tag-on" : "tag-off"}` }, enriched ? "Enriched" : "Not enriched");
   }
 
   function renderValuation(d) {
@@ -171,7 +177,8 @@
           : bellSVG(st.Dev_SD)),
       statTable([
         ["PE", fx(st.PE)], ["Fwd PE", fx(st.FwdPE)], ["2Y Fwd PE", fx(st["2YFwd"])],
-        ["5Y Growth", st.display["5YGrowth"]], ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
+        ["5Y Growth", [growthTag(d.growth_enriched), " ", st.display["5YGrowth"]]],
+        ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
       ]),
       el("h3", { class: "sub-h", text: "5Y ROI projection" }),
       roiBars(st));
