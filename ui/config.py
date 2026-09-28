@@ -31,7 +31,8 @@ class Settings:
     llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:1234"))
     llm_model: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_MODEL", ""))
     llm_ctx: int = field(default_factory=lambda: _env_int("LYNCH_LLM_CTX", 65536))
-    llm_max_tokens: int = field(default_factory=lambda: _env_int("LYNCH_LLM_MAX_TOKENS", 4096))
+    # Output budget incl. reasoning tokens of thinking models (the model stops as soon as it is done)
+    llm_max_tokens: int = field(default_factory=lambda: _env_int("LYNCH_LLM_MAX_TOKENS", 8192))
     llm_timeout: int = field(default_factory=lambda: _env_int("LYNCH_LLM_TIMEOUT", 600))
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
