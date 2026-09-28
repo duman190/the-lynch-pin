@@ -48,37 +48,6 @@ function initLightbox() {
   dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
 }
 
-/* ── latest scan gallery (charts from main.py runs in tmp/) ──────────────── */
-function fmtAge(epochSec) {
-  const s = Math.max(0, Date.now() / 1000 - epochSec);
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-}
-
-async function loadGallery() {
-  const box = $("#gallery");
-  try {
-    const { items } = await getJSON("/api/scan");
-    box.replaceChildren();
-    if (!items.length) {
-      box.append(el("p", { class: "muted", text: "No charts yet — run main.py with --plot to populate tmp/." }));
-      return;
-    }
-    const newest = Math.max(...items.map((i) => i.mtime));
-    $("#gallery-meta").textContent = `${items.length} charts · updated ${fmtAge(newest)}`;
-    for (const it of items) {
-      const alt = it.kind === "ticker" ? `${it.label} PEG valuation deviation chart` : `${it.label} chart`;
-      box.append(el("figure", { class: it.kind === "ticker" ? "" : "wide" },
-        el("button", { type: "button", "aria-label": `Enlarge ${alt}`, onclick: () => openLightbox(it.url, alt) },
-          el("img", { src: it.thumb, alt, loading: "lazy", decoding: "async", width: it.width, height: it.height })),
-        el("figcaption", {}, el("span", { text: it.label }), el("span", { text: fmtAge(it.mtime) }))));
-    }
-  } catch (e) {
-    box.replaceChildren(el("p", { class: "muted", text: `Could not load charts: ${e.message}` }));
-  }
-}
-
 /* ── health / feature chips ──────────────────────────────────────────────── */
 const state = { health: null };
 
@@ -120,7 +89,6 @@ async function refreshHealth() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initLightbox();
-  loadGallery();
   await refreshHealth();
   if (window.LynchSearch) window.LynchSearch.init(state);
   setInterval(refreshHealth, 30000);
