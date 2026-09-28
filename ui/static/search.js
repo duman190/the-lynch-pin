@@ -10,7 +10,7 @@
 
   const S = {
     app: null, sym: null, token: 0, timer: null, started: 0, rendered: new Set(),
-    lastSnap: null, aiTimer: null,
+    lastSnap: null, aiTimer: null, es: null,
   };
 
   /** replaceChildren that skips null/false (the DOM API would render them as "null"). */
@@ -244,39 +244,19 @@
     put(card, ...parts);
   }
 
-  /* ── AI overview (step 4) ──────────────────────────────────────────────── */
-  function renderAI(ai) {
-    const card = $("#card-ai");
-    if (!card || card.hidden) return;
-    const head = el("div", { class: "card-title-row" }, el("h2", { text: "🤖 AI overview" }),
-      ai && ai.model ? el("span", { class: "chip", title: `Local model · ${ai.elapsed_s || "?"}s`, text: ai.model_short || ai.model }) : null);
-    if (!ai || ai.status === "queued" || ai.status === "running") {
-      const msg = ai && ai.status === "queued" ? `Waiting for the local model (position ${ai.queue_position || 1})…` : "Local model is writing the overview…";
-      put(card, head, el("p", { class: "muted", text: msg }), el("div", { class: "shimmer", "aria-hidden": "true" }, el("span"), el("span"), el("span")));
-      return;
-    }
-    if (ai.status !== "done") {
-      const offline = ai.status === "unavailable" && ai.reason !== "no_garp";
-      const base = (S.app.health && S.app.health.ai && S.app.health.ai.base_url) || "the configured LM Studio URL";
-      const retry = el("button", { type: "button", class: "btn-ghost", onclick: () => (ai.need_quant ? go(S.sym, true) : startAI(S.sym, true)) },
-        ai.need_quant ? "↻ Re-run analysis" : "↻ Retry AI");
-      if (/timed out/.test(ai.error || "")) { retry.disabled = true; setTimeout(() => { retry.disabled = false; }, 30000); }
-      put(card, head,
-        el("p", { class: "muted", text: offline ? `AI offline — ${ai.error || "local model unavailable"}.` : (ai.error || "AI overview unavailable.") }),
-        offline ? el("p", { class: "muted small", text: `Start LM Studio's server at ${base} and load a model; the quant analysis above does not need it.` }) : null,
-        retry);
-      return;
-    }
-    const n = ai.narrative || {};
-    const sec = (cls, title, text) => text ? el("section", { class: `ai-sec ${cls}` }, el("h3", { text: title }), ...String(text).split(/\n{2,}/).map((p) => el("p", { text: p.trim() }))) : null;
-    put(card, head,
-      n.sentiment ? el("p", { class: "ai-sentiment", title: "The local model has no live market feed — treat this line as its opinion" },
-        el("span", { class: "sky", text: "Model's market read " }), el("span", { class: "muted small", text: "(no live data): " }), n.sentiment) : null,
-      sec("ai-overview", "Overview", n.overview),
-      sec("ai-dcf", "📊 Reverse 5Y DCF", n.reverse_dcf),
-      sec("ai-stomach", "🐻 Stomach test — why it can underperform for 5 years", n.stomach_test),
-      !n.overview && !n.reverse_dcf && !n.stomach_test && n.raw ? el("p", { class: "ai-raw", text: n.raw }) : null,
-      el("p", { class: "muted small", text: "AI-generated from the quant data above. Not financial advice." }));
+  /* ── AI overview: typed live over Server-Sent Events ─────────────────────── */
+  const AI_SECTIONS = [
+    ["overview", "Overview", "ai-overview"],
+    ["reverse_dcf", "📊 Reverse 5Y DCF", "ai-dcf"],
+    ["stomach_test", "🐻 Stomach test — why it can underperform for 5 years", "ai-stomach"],
+  ];
+  const AI_FINAL = new Set(["done", "error", "unavailable"]);
+  const AI_METRICS = [["ttft", "TTFT"], ["speed", "Speed"], ["tokens", "Tokens"], ["thinking", "Thinking"], ["elapsed", "Time"]];
+  const nf = new Intl.NumberFormat();
+
+  function stopAI() {
+    clearTimeout(S.aiTimer);
+    if (S.es) { S.es.close(); S.es = null; }
   }
 
   function setAIStep(state) {
@@ -284,36 +264,215 @@
     if (li) li.className = state;
   }
 
-  async function startAI(sym, retry = false) {
-    if (!S.app.health || !S.app.health.features.ai) return;
-    const token = S.token;
-    clearTimeout(S.aiTimer);
-    setAIStep("running");
-    renderAI({ status: "running" });
-    const url = `/api/ticker/${encodeURIComponent(sym)}/ai${retry ? "?refresh=1" : ""}`;
-    let first = true;
-    const poll = async () => {
-      if (token !== S.token) return;
-      if (document.hidden) { S.aiTimer = setTimeout(poll, 1500); return; }
-      try {
-        const ai = await getJSON(first && retry ? url : `/api/ticker/${encodeURIComponent(sym)}/ai`);
-        first = false;
-        if (token !== S.token) return;
-        renderAI(ai);
-        if (["done", "error", "unavailable"].includes(ai.status)) {
-          setAIStep(ai.status === "done" ? "done" : ai.status === "unavailable" ? "skipped" : "error");
-          return;
+  function aiHead(ai) {
+    const h = S.app.health && S.app.health.ai;
+    const model = (ai && ai.model) || (h && h.model);
+    const short = (ai && ai.model_short) || (h && h.model_short) || model;
+    return el("div", { class: "card-title-row" }, el("h2", { text: "🤖 AI overview" }),
+      model ? el("span", { class: "chip", title: `Local model ${model}`, text: short }) : null);
+  }
+
+  /** Live AI card: metrics bar, status line, collapsible reasoning and three typing sections. */
+  function aiLiveView() {
+    const card = $("#card-ai");
+    const dd = {};
+    const metrics = el("dl", { class: "ai-metrics", "aria-label": "Generation metrics" },
+      AI_METRICS.map(([k, lab]) => el("div", { class: `aim aim-${k}` }, el("dt", { text: lab }), (dd[k] = el("dd", { text: "—" })))));
+    const status = el("p", { class: "ai-status", role: "status", "aria-live": "polite" }, "Starting the local model…");
+    const rText = document.createTextNode("");
+    const rPre = el("pre", { class: "ai-reasoning" }, rText);
+    const rSum = el("summary", { text: "🧠 Model reasoning" });
+    const rBox = el("details", { class: "ai-think", hidden: true }, rSum, rPre);
+    const secs = {};
+    const secEls = AI_SECTIONS.map(([key, title, cls]) => {
+      const p = el("p", { class: "ai-text" });
+      const sec = el("section", { class: `ai-sec ${cls}`, hidden: true }, el("h3", { text: title }), p);
+      secs[key] = { sec, p };
+      return sec;
+    });
+    let head = aiHead(null);
+    put(card, head, metrics, status, rBox, secEls,
+      el("p", { class: "muted small", text: "AI-generated from the quant data above. Not financial advice." }));
+    card.setAttribute("aria-busy", "true");
+    const cur = {};
+    let lastStatus = "";
+    const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+
+    return {
+      setHead(ai) { const h = aiHead(ai); head.replaceWith(h); head = h; },
+      metrics(m, reset = false) {
+        if (reset) {
+          for (const k of Object.keys(cur)) delete cur[k];
+          setText(rSum, "🧠 Model reasoning");
         }
+        Object.assign(cur, m || {});
+        setText(dd.ttft, isNum(cur.ttft_s) ? `${cur.ttft_s.toFixed(1)}s` : "—");
+        setText(dd.speed, isNum(cur.tok_s) ? `${cur.tok_s.toFixed(1)} tok/s` : "—");
+        setText(dd.tokens, isNum(cur.tokens) && cur.tokens ? nf.format(cur.tokens) : "—");
+        setText(dd.thinking, cur.reasoning_tokens ? `${nf.format(cur.reasoning_tokens)} tok${isNum(cur.thinking_s) ? ` · ${cur.thinking_s.toFixed(1)}s` : ""}` : "—");
+        setText(dd.elapsed, isNum(cur.elapsed_s) ? `${cur.elapsed_s.toFixed(1)}s` : "—");
+        if (cur.reasoning_tokens) setText(rSum, `🧠 Model reasoning · ${nf.format(cur.reasoning_tokens)} tokens`);
+      },
+      tick(elapsed) { if (!isNum(cur.ttft_s) && isNum(elapsed)) this.metrics({ elapsed_s: elapsed }); },  // before 1st token
+      status(msg) { if (msg && msg !== lastStatus) { lastStatus = msg; status.textContent = msg; } },
+      phase(ph, queuePos, note) {
+        const msgs = {
+          queued: `Waiting for the local model — position ${queuePos || 1}…`,
+          connecting: note ? `${note[0].toUpperCase()}${note.slice(1)}…` : "Processing the prompt…",
+          thinking: "🧠 Thinking…",
+          writing: "✍️ Writing…",
+          reset: note ? `${note[0].toUpperCase()}${note.slice(1)}…` : "Retrying…",
+        };
+        this.status(msgs[ph]);
+      },
+      clear() {
+        rText.data = "";
+        rBox.hidden = true;
+        for (const { sec, p } of Object.values(secs)) { p.textContent = ""; p.classList.remove("typing"); sec.hidden = true; }
+      },
+      reasoning(txt, replace = false) {
+        if (replace) rText.data = txt || "";
+        else if (txt) rText.appendData(txt);
+        rBox.hidden = !rText.data;
+        if (rBox.open && rPre.scrollHeight - rPre.scrollTop - rPre.clientHeight < 40) rPre.scrollTop = rPre.scrollHeight;
+      },
+      sections(sec, typing) {
+        let last = null;
+        for (const [key] of AI_SECTIONS) {
+          const text = (sec && sec[key]) || "";
+          const { sec: box, p } = secs[key];
+          setText(p, text);
+          box.hidden = !text;
+          p.classList.remove("typing");
+          if (text) last = key;
+        }
+        if (typing && last) secs[last].p.classList.add("typing");  // caret on the paragraph being written
+      },
+      finish() {
+        for (const { p } of Object.values(secs)) p.classList.remove("typing");
+        card.setAttribute("aria-busy", "false");
+      },
+    };
+  }
+
+  function renderAIError(ai) {
+    const card = $("#card-ai");
+    if (!card || card.hidden) return;
+    const offline = ai.status === "unavailable" && ai.reason !== "no_garp";
+    const base = (S.app.health && S.app.health.ai && S.app.health.ai.base_url) || "the configured LM Studio URL";
+    const retry = el("button", { type: "button", class: "btn-ghost", onclick: () => (ai.need_quant ? go(S.sym, true) : startAI(S.sym, true)) },
+      ai.need_quant ? "↻ Re-run analysis" : "↻ Retry AI");
+    if (/timed out/.test(ai.error || "")) { retry.disabled = true; setTimeout(() => { retry.disabled = false; }, 30000); }
+    put(card, aiHead(ai),
+      el("p", { class: "muted", text: offline ? `AI offline — ${ai.error || "local model unavailable"}.` : (ai.error || "AI overview unavailable.") }),
+      offline ? el("p", { class: "muted small", text: `Start LM Studio's server at ${base} and load a model; the quant analysis above does not need it.` }) : null,
+      retry);
+    card.setAttribute("aria-busy", "false");
+  }
+
+  function finishAI(ai, V) {
+    stopAI();
+    if (ai.status !== "done") {
+      renderAIError(ai);
+      setAIStep(ai.status === "unavailable" ? "skipped" : "error");
+      return;
+    }
+    V.setHead(ai);
+    V.sections(ai.narrative || {}, false);
+    V.metrics(ai.metrics || {});
+    const m = ai.metrics || {};
+    const took = isNum(m.elapsed_s) ? m.elapsed_s : ai.elapsed_s;
+    V.status([isNum(took) ? `Done in ${took.toFixed(1)}s` : "Done", ai.cached ? "⚡ from today's cache" : null,
+      ai.complete === false ? "partial reply" : null].filter(Boolean).join(" · "));
+    V.finish();
+    setAIStep("done");
+    if (typeof refreshHealth === "function") refreshHealth();
+  }
+
+  /** JSON snapshot (initial GET / polling fallback) → live view. */
+  function applyLive(V, snap) {
+    const lv = snap.live || {};
+    V.phase(snap.status === "queued" ? "queued" : (lv.phase || "connecting"), snap.queue_position, lv.note);
+    if (lv.metrics) V.metrics(lv.metrics);
+    if (lv.sections) V.sections(lv.sections, true);
+  }
+
+  function pollAI(sym, token, V) {
+    const tick = async () => {
+      if (token !== S.token) return;
+      try {
+        const snap = await getJSON(`/api/ticker/${encodeURIComponent(sym)}/ai`);
+        if (token !== S.token) return;
+        if (AI_FINAL.has(snap.status)) { finishAI(snap, V); return; }
+        applyLive(V, snap);
       } catch (e) {
         if (token !== S.token) return;
-        if (e.status === 429) { S.aiTimer = setTimeout(poll, (e.retryAfter || 15) * 1000); return; }
-        renderAI({ status: "error", error: e.message });
-        setAIStep("error");
+        if (e.status !== 429) { finishAI({ status: "error", error: e.message }, V); return; }
+      }
+      S.aiTimer = setTimeout(tick, document.hidden ? 3000 : 1000);
+    };
+    tick();
+  }
+
+  function streamAI(sym, token, V) {
+    if (!("EventSource" in window)) { pollAI(sym, token, V); return; }
+    const es = new EventSource(`/api/ticker/${encodeURIComponent(sym)}/ai/stream`);
+    S.es = es;
+    const on = (type, fn) => es.addEventListener(type, (ev) => {
+      if (token !== S.token) { es.close(); return; }
+      fn(JSON.parse(ev.data));
+    });
+    on("snapshot", (d) => {  // first event of every (re)connection: replace everything
+      V.clear();
+      V.reasoning(d.reasoning, true);
+      if (d.sections) V.sections(d.sections, true);
+      V.metrics(d.metrics);
+      V.phase(d.phase, d.queue_position, d.note);
+    });
+    on("reset", (d) => { V.clear(); V.metrics(null, true); V.phase("reset", null, d.note); });
+    on("delta", (d) => {
+      V.reasoning(d.reasoning);
+      if ("sections" in d) V.sections(d.sections, true);  // null = answer moved back to reasoning
+      V.metrics(d.metrics);
+      V.phase(d.phase, null, d.note);
+    });
+    on("state", (d) => {
+      if (d.status === "queued") V.phase("queued", d.queue_position);
+      else V.tick(d.elapsed_s);
+    });
+    for (const t of AI_FINAL) on(t, (d) => finishAI(d, V));
+    es.onerror = () => {
+      if (token !== S.token) { es.close(); return; }
+      if (es.readyState === EventSource.CLOSED) {  // e.g. 404: the job finished between GET and connect
+        if (S.es === es) S.es = null;
+        pollAI(sym, token, V);
+      }  // CONNECTING: the browser reconnects by itself and the server replays a snapshot
+    };
+  }
+
+  async function startAI(sym, retry = false) {
+    if (!S.app.health || !S.app.health.features.ai) return;
+    stopAI();
+    const token = S.token;
+    setAIStep("running");
+    const V = aiLiveView();
+    let snap;
+    try {
+      snap = await getJSON(`/api/ticker/${encodeURIComponent(sym)}/ai${retry ? "?refresh=1" : ""}`);
+    } catch (e) {
+      if (token !== S.token) return;
+      if (e.status === 429) {
+        V.status(`${e.message} — retrying shortly…`);
+        S.aiTimer = setTimeout(() => startAI(sym, retry), (e.retryAfter || 15) * 1000);
         return;
       }
-      S.aiTimer = setTimeout(poll, 2000);
-    };
-    poll();
+      finishAI({ status: "error", error: e.message }, V);
+      return;
+    }
+    if (token !== S.token) return;
+    if (AI_FINAL.has(snap.status)) { finishAI(snap, V); return; }
+    applyLive(V, snap);
+    streamAI(sym, token, V);
   }
 
   /* ── polling state machine ──────────────────────────────────────────────── */
@@ -349,6 +508,7 @@
       renderHead(d, snap);  // refresh badges (cached / flagged) once
       for (const [stage, fns] of Object.entries(CARD_FOR)) if (!S.rendered.has(stage)) { fns.forEach((f) => f(d)); S.rendered.add(stage); }
       $("#result").setAttribute("aria-busy", "false");
+      if (typeof refreshHealth === "function") refreshHealth();  // cache chip reflects this lookup now
       if (snap.status === "error" && !d.name) $("#rh-name").textContent = "—";
       if (snap.status === "done") startAI(snap.ticker);
       else { setAIStep("skipped"); const c = $("#card-ai"); if (c) c.hidden = true; }  // AI needs GARP data
@@ -408,7 +568,7 @@
     input.value = sym;
     S.token += 1;
     clearTimeout(S.timer);
-    clearTimeout(S.aiTimer);
+    stopAI();
     S.sym = sym;
     S.started = Date.now();
     S.rendered = new Set();
@@ -431,6 +591,7 @@
     else {
       S.token += 1;
       clearTimeout(S.timer);
+      stopAI();
       $("#result").hidden = true;
       document.title = "The Lynch Pin · Quant Portal";
     }
