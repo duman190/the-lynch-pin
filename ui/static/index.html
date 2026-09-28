@@ -58,6 +58,19 @@
     <section id="result" class="result" hidden aria-live="polite" aria-busy="false"></section>
 
 
+    <section class="panel deepdive" id="deepdive" hidden aria-labelledby="dd-title">
+      <div class="card-title-row dd-head">
+        <h2 id="dd-title">🔬 Deep Dive Prompt</h2>
+        <div class="dd-actions">
+          <button type="button" class="btn-primary btn-sm" id="dd-copy">Copy</button>
+          <button type="button" class="btn-ghost" id="dd-toggle" aria-expanded="false" aria-controls="dd-text">Show</button>
+        </div>
+      </div>
+      <p class="muted small" id="dd-meta">A research brief for Claude, ChatGPT or Gemini: paste it into a chat with web search on.</p>
+      <pre class="dd-text" id="dd-text" tabindex="0" hidden></pre>
+      <p class="sr-only" id="dd-status" role="status" aria-live="polite"></p>
+    </section>
+
     <section class="panel about" aria-labelledby="about-title">
       <h2 id="about-title">How to read the Lynch Pin</h2>
       <div class="about-grid">
