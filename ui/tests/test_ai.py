@@ -71,14 +71,131 @@ def test_configured_model_must_exist(settings):
     assert st["available"] is False and "not available" in st["reason"]
 
 
-def test_generate_budgets_tokens_and_strips_think(settings, lm):
+def test_generate_streams_with_metrics_and_separates_reasoning(settings, lm):
+    seen = []
     c = L.LocalLLMClient(settings)
-    text, meta = c.generate("- MSFT: PE 28")
-    assert not text.startswith("<think>") and "$MSFT:" in text
+    text, meta = c.generate("- MSFT: PE 28", on_delta=lambda r, t, m: seen.append((r, t, dict(m))))
     path, req = lm[1]["requests"][-1]
-    assert path == "/v1/chat/completions" and req["stream"] is False
-    assert req["model"] == fake_lmstudio.MODEL and req["max_tokens"] == settings.llm_max_tokens
-    assert meta["finish_reason"] == "stop"
+    assert path == "/v1/chat/completions" and req["stream"] is True
+    assert req["stream_options"] == {"include_usage": True}
+    assert req["model"] == fake_lmstudio.MODEL and req["max_tokens"] == settings.llm_max_tokens == 8192
+    assert text.startswith("🤖:") and fake_lmstudio.REASONING not in text
+    assert "".join(r for r, _, _ in seen) == fake_lmstudio.REASONING  # reasoning streamed separately
+    assert "".join(t for _, t, _ in seen) == text
+    assert seen[0][2]["ttft_s"] is not None and seen[-1][2]["tokens"] == len(seen)
+    m = meta["metrics"]
+    assert meta["finish_reason"] == "stop" and m["tokens"] == meta["usage"]["completion_tokens"]
+    assert m["reasoning_tokens"] > 0 and m["content_tokens"] > 0 and m["prompt_tokens"] == 900
+
+
+def test_inline_think_tags_are_split_while_streaming(settings, lm):
+    lm[1]["inline_think"] = True
+    reasoning = []
+    text, meta = L.LocalLLMClient(settings).generate("- MSFT: x", on_delta=lambda r, t, m: reasoning.append(r))
+    assert "<think>" not in text and "</think>" not in text and text.startswith("🤖:")
+    assert "".join(reasoning).strip() == fake_lmstudio.REASONING
+    assert meta["metrics"]["reasoning_tokens"] > 0
+
+
+def test_tokens_are_delivered_one_by_one_as_sent(settings, lm):
+    lm[1].update(delay=0.2, limit=6)
+    stamps = []
+    L.LocalLLMClient(settings).generate("- MSFT: x", on_delta=lambda r, t, m: stamps.append(time.monotonic()))
+    gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+    assert len(stamps) == 6 and all(g > 0.12 for g in gaps), gaps  # no batching of several tokens per read
+
+
+def test_prefilled_think_is_moved_out_of_the_answer(settings, lm):
+    lm[1]["prefill_think"] = True
+    seen, rewound = [], []
+    text, meta = L.LocalLLMClient(settings).generate(
+        "- MSFT: x", on_delta=lambda r, t, m: seen.append((r, t)), on_rewind=rewound.append)
+    assert text.startswith("🤖:") and fake_lmstudio.REASONING not in text
+    assert len(rewound) == 1 and (rewound[0] + "".join(r for r, _ in seen)).strip() == fake_lmstudio.REASONING
+    m = meta["metrics"]
+    assert m["reasoning_tokens"] >= len(fake_lmstudio.REASONING.split()) and m["content_tokens"] > 0
+
+
+def test_prefilled_think_streams_into_the_reasoning_box(settings, lm):
+    lm[1].update(prefill_think=True, delay=0.01)
+    jm, _, _ = make(settings)
+    wait(lambda: jm.request("MSFT"), lambda s: s["status"] == "done")
+    jm.request_ai("MSFT")
+    snap = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "done")
+    assert snap["narrative"]["overview"].startswith("MSFT is") and snap["metrics"]["reasoning_tokens"] > 0
+    jm.shutdown()
+
+
+def test_cancelled_generation_closes_stream(settings, lm):
+    lm[1]["delay"] = 0.01
+    calls = {"n": 0}
+
+    def cancelled():
+        calls["n"] += 1
+        return calls["n"] > 5
+
+    with pytest.raises(L.LLMCancelled):
+        L.LocalLLMClient(settings).generate("- MSFT: x", cancelled=cancelled)
+    time.sleep(0.3)
+    assert lm[1]["sent_chunks"] < 40  # the server stopped streaming once we hung up
+
+
+def test_non_streaming_server_fallback(settings):
+    class R:
+        status_code = 200
+        headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            return {"model": "m", "choices": [{"finish_reason": "stop", "message": {
+                "content": "<think>hmm</think>🤖: ok", "reasoning_content": None}}], "usage": {}}
+
+        def close(self):
+            pass
+
+    meter = L.StreamMeter()
+    content, finish, usage, served = L.LocalLLMClient._consume(R(), meter, None, None)
+    assert content == "🤖: ok" and finish == "stop" and meter.reasoning_tokens == 1
+
+
+def test_think_splitter_implicit_open_tag():
+    sp = L.ThinkSplitter()
+    out = [sp.feed(x) for x in ["Okay, weigh", " it.</th", "ink>\n\n🤖: Fine"]]
+    assert sp.take_rewind() is True and sp.take_rewind() is False
+    # text before "</think>" was emitted as content (nothing marked it as reasoning yet) and the
+    # rewind flag tells the caller to move it; only the partial-tag tail was held back
+    assert out[0] == ("", "Okay, weigh") and out[1] == ("", " it.") and out[2] == ("", "\n\n🤖: Fine")
+    sp2 = L.ThinkSplitter()
+    sp2.feed("<think>a</think>b")
+    assert sp2.feed(" c </think> d") == ("", " c </think> d") and not sp2.take_rewind()
+
+
+def test_think_splitter_handles_tags_split_across_chunks():
+    sp = L.ThinkSplitter()
+    out = [sp.feed(x) for x in ["Hi <th", "ink>reason", "ing</thi", "nk> answer", " <"]]
+    out.append(sp.flush())
+    assert "".join(r for r, _ in out) == "reasoning"
+    assert "".join(c for _, c in out) == "Hi  answer <"
+
+
+def test_stream_meter_ttft_and_rate():
+    t = {"now": 100.0}
+    m = L.StreamMeter(clock=lambda: t["now"])
+    t["now"] = 102.5
+    m.chunk("think", "")        # first token (reasoning) at 2.5 s → TTFT
+    t["now"] = 103.5
+    for _ in range(40):         # 40 answer tokens over 2 s after 1 s of thinking
+        m.chunk("", "tok")
+        t["now"] += 0.05
+    t["now"] -= 0.05
+    live = m.metrics()
+    assert live["ttft_s"] == 2.5 and live["tokens"] == 41 and live["reasoning_tokens"] == 1
+    assert live["content_tokens"] == 40 and live["thinking_s"] == 1.0
+    assert live["tok_s"] == pytest.approx(40 / 2.95, rel=0.01)
+    m.finish({"completion_tokens": 82, "prompt_tokens": 800})  # server's exact count wins at the end
+    final = m.metrics()
+    assert final["tokens"] == 82 and final["tok_s"] == pytest.approx(81 / 2.95, rel=0.01)
+    assert final["prompt_tokens"] == 800
+    assert (final["reasoning_tokens"], final["content_tokens"]) == (2, 80)  # split in the observed ratio
 
 
 def test_prompt_larger_than_ctx_rejected(settings, lm):
@@ -102,14 +219,64 @@ def test_autoload_sends_ctx(settings, lm):
     assert loads == [{"model": fake_lmstudio.MODEL, "context_length": 65536}]
 
 
-def test_parse_narrative_mirrors_main():
-    raw = ("SENTIMENT: SENTIMENT: $QQQ rallies on AI\n\nSECTION 2 — PER-TICKER ANALYSIS:\n"
-           "$ON:\n🤖: ON is cheap.\n\n📊 Reverse DCF: math here.\n\n🧪 Stomach Test: risks.\n\n"
-           "$ONTO:\n🤖: other ticker")
-    p = L.parse_narrative(raw, "ON")
-    assert p["sentiment"] == "QQQ rallies on AI"
-    assert p["overview"] == "ON is cheap." and p["reverse_dcf"] == "math here." and p["stomach_test"] == "risks."
-    assert "other ticker" not in p["block"]
+def test_parse_sections_tolerates_small_model_formatting():
+    raw = ("**$MSFT:**\n**🤖:** Great business.\n\n📊 Reverse 5Y DCF: [the math]\n\n"
+           "🐻 \"Stomach Test\" (why it can underperform in the next 5 years): capex risk")
+    assert L.parse_sections(raw) == {"overview": "Great business.", "reverse_dcf": "the math",
+                                     "stomach_test": "capex risk"}
+    assert L.parse_sections("$MSFT:\nJust prose, no labels.")["overview"] == "Just prose, no labels."
+    assert L.parse_sections("<think>x</think>🤖: a\n\n🧪 Stomach Test: b")["stomach_test"] == "b"
+
+
+def test_parse_sections_partial_hides_half_arrived_label():
+    live = L.parse_sections("🤖: Solid compounder.\n\n📊 Rever", partial=True)
+    assert live == {"overview": "Solid compounder.", "reverse_dcf": "", "stomach_test": ""}
+    assert L.parse_sections("🤖: a\n\n📊 Reverse DCF: b", partial=True)["reverse_dcf"] == "b"
+
+
+def test_portal_prompt_is_per_ticker_without_sentiment_or_char_limits(settings):
+    data = _analysed(settings)
+    inp = data["_ai_inputs"]
+    p = L.build_portal_prompt(inp["row"], inp["g"], inp["b"], inp["t"], inp["e"])
+    low = p.lower()
+    for banned in ("sentiment", "character", "strict max", "250", "100-150", "twitter", "tweet", "section 1",
+                   "index: $spy", "sentences"):
+        assert banned not in low, banned
+    assert p.count("paragraph") >= 4 and "$MSFT" in p
+    # the DATASET block is the daily scan's, verbatim
+    assert "- MSFT: PE 28.7, FwdPE 21.8" in p and "Base ROI math:" in p
+    assert "Income Grade: A+" in p and "Credit Rating: AAA" in p and "6M Directional Edge: BULL" in p
+    for label in ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:"):
+        assert label in p
+
+
+def test_portal_prompt_strips_risk_flag(settings):
+    inp = _analysed(settings)["_ai_inputs"]
+    p = L.build_portal_prompt(dict(inp["row"], Ticker="MSFT*"), inp["g"], inp["b"], inp["t"], inp["e"])
+    assert "MSFT*" not in p and "- MSFT: PE" in p
+
+
+def test_autoload_note_while_model_loads(settings, lm):
+    settings.llm_autoload = True
+    notes = []
+
+    class Sink(L.NullSink):
+        def begin(self, attempt, note=None):
+            notes.append(note)
+
+    c = L.LocalLLMClient(settings)
+    assert c.autoload_pending() is True
+    L.ticker_narrative(c, _analysed(settings), sink=Sink())
+    assert notes == ["loading the model in LM Studio"] and c.autoload_pending() is False
+
+
+def test_portal_prompt_is_much_shorter_than_the_daily_scan_prompt(settings):
+    from engine.ai_research import LynchPinResearcher as R
+    inp = _analysed(settings)["_ai_inputs"]
+    wrap = lambda x: {"MSFT": x}  # noqa: E731
+    daily = R.build_prompt([inp["row"]], wrap(inp["g"]), "SPY", wrap(inp["b"]), wrap(inp["t"]), wrap(inp["e"]))
+    portal = L.build_portal_prompt(inp["row"], inp["g"], inp["b"], inp["t"], inp["e"])
+    assert len(portal) < len(daily) * 0.85
 
 
 def _analysed(settings):
@@ -123,15 +290,17 @@ def test_ticker_narrative_end_to_end(settings, lm):
     n = out["narrative"]
     assert "sleep-well compounder" in n["overview"] and "Reverse" not in n["overview"]
     assert n["reverse_dcf"].startswith("MSFT sells") and n["stomach_test"].startswith("AI capex")
-    assert n["sentiment"].startswith("Mega-cap")
+    assert set(n) == {"overview", "reverse_dcf", "stomach_test"}  # no sentiment any more
+    assert out["metrics"]["ttft_s"] is not None and out["metrics"]["tokens"] > 0
     prompt = lm[1]["requests"][-1][1]["messages"][0]["content"]
-    assert "Income Grade: A+" in prompt and "Credit Rating: AAA" in prompt and "6M Directional Edge: BULL" in prompt
+    assert "SENTIMENT" not in prompt and "Income Grade: A+" in prompt and "6M Directional Edge: BULL" in prompt
 
 
 def test_sloppy_small_model_is_normalised(settings, lm):
-    lm[1]["sloppy"] = True  # "TICKER: MSFT" headers
+    lm[1]["sloppy"] = True  # **🤖:** markdown-bold labels
     out = L.ticker_narrative(L.LocalLLMClient(settings), _analysed(settings))
-    assert out["status"] == "done" and "compounder" in out["narrative"]["overview"]
+    assert out["status"] == "done" and out["complete"] and "compounder" in out["narrative"]["overview"]
+    assert "*" not in "".join(out["narrative"].values())
 
 
 def test_prompt_inputs_none_safe(settings, lm):
@@ -232,26 +401,33 @@ class ScriptedClient:
     def status(self, **k):
         return {"available": True, "model": "m", "ctx": 65536}
 
-    def generate(self, prompt, max_tokens=None):
+    def generate(self, prompt, max_tokens=None, on_delta=None, cancelled=None, on_rewind=None):
         self.calls.append(max_tokens)
         item = self.script.pop(0)
         if isinstance(item, Exception):
             raise item
-        return item, {"model": "m", "finish_reason": self.finish, "max_tokens": max_tokens or 4096, "elapsed_s": 1}
+        return item, {"model": "m", "finish_reason": self.finish, "max_tokens": max_tokens or 4096, "elapsed_s": 1,
+                      "metrics": {"tokens": 10}}
 
 
 def test_length_finish_retries_with_double_budget(settings):
-    c = ScriptedClient(["<truncated>", fake_lmstudio.canned_reply("- MSFT: x")], finish="length")
+    c = ScriptedClient(["", fake_lmstudio.canned_reply("- MSFT: x")], finish="length")
     out = L.ticker_narrative(c, _analysed(settings))
     assert c.calls == [None, 8192] and out["status"] == "done" and out["attempts"] == 2
 
 
 def test_partial_kept_when_retry_errors(settings):
-    partial = "SENTIMENT: ok\n\n$MSFT:\n📊 Reverse DCF: only the math"  # no 🤖 → unusable, coverage 0
-    c = ScriptedClient([partial, L.LLMError("timed out")])
+    partial = "📊 Reverse DCF: only the math"  # truncated after one section
+    c = ScriptedClient([partial, L.LLMError("timed out")], finish="length")
     out = L.ticker_narrative(c, _analysed(settings))
     assert out["status"] == "done" and out["complete"] is False
     assert out["narrative"]["reverse_dcf"] == "only the math"
+
+
+def test_usable_partial_is_not_retried(settings):
+    c = ScriptedClient(["🤖: short but fine"])
+    out = L.ticker_narrative(c, _analysed(settings))
+    assert out["status"] == "done" and out["attempts"] == 1 and out["complete"] is False
 
 
 def test_first_attempt_error_propagates(settings):
@@ -290,10 +466,10 @@ def test_refresh_during_ai_does_not_attach_stale_narrative(settings, lm):
     entered = threading.Event()
 
     class SlowClient(L.LocalLLMClient):
-        def generate(self, prompt, max_tokens=None):
+        def generate(self, prompt, max_tokens=None, **kw):
             entered.set()
             gate.wait(10)
-            return super().generate(prompt, max_tokens)
+            return super().generate(prompt, max_tokens, **kw)
 
     store = DayStore()
     jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), store=store,
@@ -309,6 +485,101 @@ def test_refresh_during_ai_does_not_attach_stale_narrative(settings, lm):
     wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "done")
     assert "ai" not in store.peek("MSFT")  # fresh analysis → fresh AI on next request
     assert old_entry["ai"]["status"] == "done"
+    jm.shutdown()
+
+
+def read_sse(port, path, timeout=15):
+    """Minimal SSE client: returns [(event, data)] until the server closes the stream."""
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    c.request("GET", path, headers={"Accept": "text/event-stream"})
+    r = c.getresponse()
+    assert r.status == 200 and r.getheader("Content-Type").startswith("text/event-stream")
+    events, ev, data = [], None, []
+    for raw in r:
+        line = raw.decode("utf-8").rstrip("\n")
+        if line.startswith("event:"):
+            ev = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].strip())
+        elif line == "" and ev:
+            events.append((ev, json.loads("".join(data))))
+            ev, data = None, []
+    c.close()
+    return events
+
+
+def test_sse_streams_typing_with_live_metrics(settings, lm):
+    lm[1]["delay"] = 0.01
+    jm, store, client = make(settings)
+    httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(settings, jobs=jm, llm=client)))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        wait(lambda: jm.request("MSFT", poll=True) if jm.lookup("MSFT") else jm.request("MSFT"),
+             lambda s: s["status"] == "done")
+        assert jm.request_ai("MSFT")["status"] in ("queued", "running")
+        events = read_sse(httpd.server_address[1], "/api/ticker/MSFT/ai/stream")
+        kinds = [e for e, _ in events]
+        assert kinds[0] == "snapshot" and kinds[-1] == "done" and kinds.count("delta") >= 5
+        deltas = [d for e, d in events if e == "delta"]
+        reasoning = events[0][1]["reasoning"] + "".join(d["reasoning"] for d in deltas)
+        assert reasoning == fake_lmstudio.REASONING
+        overviews = [d["sections"]["overview"] for d in deltas if d.get("sections")]
+        assert len(set(overviews)) >= 3 and all(b.startswith(a) for a, b in zip(overviews, overviews[1:]))  # typing
+        assert any(d["phase"] == "thinking" for d in deltas) and deltas[-1]["phase"] == "writing"
+        live = [d["metrics"] for d in deltas if d["metrics"].get("tok_s")]
+        assert live and live[-1]["ttft_s"] is not None and live[-1]["tokens"] > live[0]["tokens"]
+        done = events[-1][1]
+        assert done["status"] == "done" and done["narrative"]["stomach_test"].startswith("AI capex")
+        assert done["metrics"]["tok_s"] > 0 and done["metrics"]["ttft_s"] >= 0
+        assert store.peek("MSFT")["ai"]["metrics"]["tokens"] == done["metrics"]["tokens"]
+        # a late (re)connect replays the finished result immediately
+        again = read_sse(httpd.server_address[1], "/api/ticker/MSFT/ai/stream")
+        assert [e for e, _ in again] == ["snapshot", "done"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        jm.shutdown()
+
+
+def test_sse_404_without_job_and_bad_paths(settings, lm):
+    jm, _, client = make(settings)
+    httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(settings, jobs=jm, llm=client)))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        for path, code in [("/api/ticker/MSFT/ai/stream", 404), ("/api/ticker/MSFT/ai/x", 400),
+                           ("/api/ticker/MSFT/stream", 400), ("/api/ticker/MSFT/ai/stream/x", 400)]:
+            c = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+            c.request("GET", path)
+            assert c.getresponse().status == code, path
+            c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        jm.shutdown()
+
+
+def test_json_poll_exposes_partial_text_while_running(settings, lm):
+    lm[1]["delay"] = 0.03
+    jm, _, _ = make(settings)
+    wait(lambda: jm.request("MSFT"), lambda s: s["status"] == "done")
+    jm.request_ai("MSFT")
+    snap = wait(lambda: jm.request_ai("MSFT"),
+                lambda s: s["status"] == "running" and ((s.get("live") or {}).get("sections") or {}).get("overview"))
+    assert snap["live"]["phase"] == "writing" and snap["live"]["metrics"]["ttft_s"] is not None
+    assert wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "done")["complete"] is True
+    jm.shutdown()
+
+
+def test_ai_watchdog_cancels_the_llm_stream(settings, lm):
+    lm[1]["delay"] = 0.05
+    jm, _, _ = make(settings)
+    jm.ai_deadline = 0.6
+    wait(lambda: jm.request("MSFT"), lambda s: s["status"] == "done")
+    jm.request_ai("MSFT")
+    snap = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "error")
+    assert "timed out" in snap["error"]
+    wait(lambda: lm[1].get("client_closed_at"), lambda v: v is not None, timeout=5)
+    assert lm[1]["client_closed_at"] < 60  # generation stopped early instead of running to the end
     jm.shutdown()
 
 
