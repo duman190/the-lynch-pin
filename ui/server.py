@@ -38,8 +38,6 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
-# Charts produced by main.py runs in tmp/ (read-only gallery). Strict allowlist, no paths.
-SCAN_FILE_RE = re.compile(r"^(?:[A-Z][A-Z0-9.\-]{0,9}_valuation|benchmark_comparison|portfolio_allocation)\.png$")
 STATIC_FILE_RE = re.compile(r"^(?:[a-z0-9_\-]+/)?[A-Za-z0-9_\-]+\.(?:html|css|js|png|jpg|jpeg|webp|svg|webmanifest|ico)$")
 
 SECURITY_HEADERS = {
@@ -91,65 +89,6 @@ class PortalApp:
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
         self.started = time.time()
-
-    # ── read-only gallery of the latest main.py scan ──────────────────────────────
-    def scan_listing(self):
-        d = self.settings.scan_dir
-        items = []
-        try:
-            names = os.listdir(d)
-        except OSError:
-            names = []
-        for name in names:
-            if not SCAN_FILE_RE.match(name):
-                continue
-            path = os.path.join(d, name)
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                continue
-            if name.endswith("_valuation.png"):
-                kind, label = "ticker", name[: -len("_valuation.png")]
-            elif name.startswith("benchmark"):
-                kind, label = "benchmark", "Index benchmark"
-            else:
-                kind, label = "portfolio", "Portfolio X-ray"
-            try:
-                from PIL import Image
-                with Image.open(path) as im:  # header only — cheap
-                    width, height = im.size
-            except Exception:
-                width = height = None
-            items.append({"file": name, "kind": kind, "label": label, "mtime": mtime,
-                          "width": width, "height": height,
-                          "url": f"/scan/{name}?v={int(mtime)}",
-                          "thumb": f"/scan/thumb/{name}?v={int(mtime)}"})
-        order = {"benchmark": 0, "portfolio": 1, "ticker": 2}
-        items.sort(key=lambda i: (order[i["kind"]], -i["mtime"], i["label"]))
-        return {"items": items}
-
-    THUMB_WIDTH = 900        # per-ticker charts: 3-4 per row on PC, 1-2 on phones
-    WIDE_THUMB_WIDTH = 1600  # benchmark / portfolio X-ray span the full row
-
-    def _thumb_width(self, name):
-        return self.THUMB_WIDTH if name.endswith("_valuation.png") else self.WIDE_THUMB_WIDTH
-
-    def scan_thumbnail(self, name):
-        """JPEG preview of a tmp/ chart (the originals are 300-dpi PNGs, ~1 MB each — too heavy
-        for a phone gallery). Cached under ui/.cache/thumbs keyed by file name + mtime."""
-        from ui.imaging import jpeg_preview
-        return jpeg_preview(os.path.join(self.settings.scan_dir, name),
-                            os.path.join(self.settings.cache_dir, "thumbs"), self._thumb_width(name))
-
-    def warm_thumbnails(self):
-        """Pre-render gallery previews in the background so the first page load is instant."""
-        def run():
-            for item in self.scan_listing()["items"]:
-                try:
-                    self.scan_thumbnail(item["file"])
-                except Exception:
-                    pass
-        threading.Thread(target=run, name="thumb-warmer", daemon=True).start()
 
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
@@ -276,24 +215,6 @@ def make_handler(app):
                 return self.send_file(os.path.join(settings.static_dir, "index.html"), "no-cache")
             if path == "/api/health":
                 return self.send_json(app.health())
-            if path == "/api/scan":
-                return self.send_json(app.scan_listing())
-            if path.startswith("/scan/thumb/"):
-                name = path[len("/scan/thumb/"):]
-                if not SCAN_FILE_RE.match(name):
-                    return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
-                try:
-                    thumb = app.scan_thumbnail(name)
-                except Exception:  # unreadable/corrupt image
-                    thumb = None
-                if not thumb:
-                    return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
-                return self.send_file(thumb, "public, max-age=86400")
-            if path.startswith("/scan/"):
-                name = path[len("/scan/"):]
-                if not SCAN_FILE_RE.match(name):
-                    return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
-                return self.send_file(os.path.join(settings.scan_dir, name), "public, max-age=300")
             if path.startswith("/api/ticker/"):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
             if path.startswith("/plots/"):
@@ -385,7 +306,7 @@ def parse_args(argv=None):
     p.add_argument("--port", type=int, default=s.port)
     p.add_argument("--lan", action="store_true", default=s.lan,
                    help="listen on all interfaces so phones on the same private network can connect")
-    p.add_argument("--llm-url", default=s.llm_base_url, help="LM Studio base URL (default http://127.0.0.1:8080)")
+    p.add_argument("--llm-url", default=s.llm_base_url, help="LM Studio base URL (default http://127.0.0.1:1234)")
     p.add_argument("--llm-model", default=s.llm_model, help="model id (default: first model the server lists)")
     p.add_argument("--llm-ctx", type=int, default=s.llm_ctx, help="context window in tokens (default 65536)")
     p.add_argument("--llm-max-tokens", type=int, default=s.llm_max_tokens)
@@ -418,7 +339,6 @@ def main(argv=None):
     settings, args = parse_args(argv)
     app = build_app(settings, with_ai=not args.no_ai)
     httpd = PortalServer((settings.bind_host, settings.port), make_handler(app))
-    app.warm_thumbnails()
     print(f"📈 Lynch Pin Quant Portal on http://{settings.bind_host}:{settings.port}", flush=True)
     if settings.lan:
         print("⚠️  --lan: listening on ALL interfaces with NO authentication. Any device on your private "
