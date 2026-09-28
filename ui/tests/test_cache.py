@@ -1,4 +1,4 @@
-"""Step 5: daily LFU cache (100 tickers/day) and its integration with the job manager."""
+"""Step 5: daily LFU cache (250 tickers/day) and its integration with the job manager."""
 import datetime as dt
 import os
 import threading
@@ -79,12 +79,14 @@ def test_hit_miss_stats_and_top():
     assert [k for k, _ in st["top"][2:]] == ["AMD", "GOOG", "META"]  # deterministic tie order
 
 
-def test_default_capacity_is_100_tickers():
-    c = DailyLFUCache(Settings().cache_capacity)
-    for i in range(150):
+def test_default_capacity_is_250_tickers():
+    s = Settings()
+    assert s.cache_capacity == 250
+    c = DailyLFUCache(s.cache_capacity)
+    for i in range(300):
         c.put(f"T{i}", i)
-    assert len(c) == 100 and c.stats()["evictions"] == 50
-    assert "T149" in c and "T0" not in c
+    assert len(c) == 250 and c.stats()["evictions"] == 50
+    assert "T299" in c and "T0" not in c
 
 
 def test_rollover_clears_entries_counters_and_old_plot_dirs(tmp_path):
@@ -262,7 +264,7 @@ def test_http_polls_do_not_touch_lfu(tmp_path):
         snap = get("/api/ticker/MSFT")
         after = get("/api/cache")
         assert snap["cached"] is True and after["hits"] == before["hits"] + 1
-        assert after["capacity"] == 100 and after["policy"] == "lfu" and after["top"][0][0] == "MSFT"
+        assert after["capacity"] == 250 and after["policy"] == "lfu" and after["top"][0][0] == "MSFT"
     finally:
         httpd.shutdown()
         httpd.server_close()
