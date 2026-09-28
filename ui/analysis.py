@@ -183,7 +183,9 @@ class TickerAnalyzer:
             if not isinstance(fwd_pe, (int, float)) or fwd_pe <= 0:
                 data["status"], data["reason"] = "nodata", "no GARP data (negative or absent forward earnings)"
                 return "skipped"
-            row = engine.get_ticker_stats(enrich=self.settings.enrich)
+            row = engine.get_ticker_stats(enrich=self.settings.enrich_enabled)
+            # Enriched = the FMP analyst estimate actually made it into the 5Y growth blend
+            data["growth_enriched"] = "fmp" in (getattr(engine, "_growth_sources", None) or [])
             if not row:
                 data["status"], data["reason"] = "nodata", "no GARP data (no usable growth estimate or EPS base)"
                 return "skipped"
