@@ -26,6 +26,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 | `--llm-model` | `LYNCH_LLM_MODEL` | *(auto: first loaded model)* |
 | `--llm-ctx` | `LYNCH_LLM_CTX` | `65536` |
 | `--llm-max-tokens` | `LYNCH_LLM_MAX_TOKENS` | `8192` (includes thinking tokens) |
+| `--llm-reasoning` | `LYNCH_LLM_REASONING` | `off` (sends `reasoning_effort: "none"`; `on` keeps the model's thinking) |
 | `--llm-autoload` | `LYNCH_LLM_AUTOLOAD=1` | off (asks LM Studio to load the model with `--llm-ctx`) |
 | `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `100` |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
