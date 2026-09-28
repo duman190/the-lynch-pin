@@ -200,6 +200,7 @@ class LocalLLMClient:
         self._status_at = -1e9
         self._autoloaded = False
         self._refreshing = False
+        self._reasoning_field_ok = True  # flips to False if the server rejects reasoning_effort
 
     # ── discovery ────────────────────────────────────────────────────────────
     def _probe(self):
@@ -279,6 +280,7 @@ class LocalLLMClient:
 
     def _refresh(self):
         st = self._probe()
+        st["reasoning"] = self.reasoning_mode()
         st.setdefault("base_url", self.base)
         st.setdefault("ctx", self.settings.llm_ctx)
         st.setdefault("model", self.settings.llm_model or None)
@@ -308,6 +310,12 @@ class LocalLLMClient:
             pass
 
     # ── generation ───────────────────────────────────────────────────────────
+    def reasoning_mode(self):
+        """"off" (reasoning_effort=none is sent), "on" (server default) or "unsupported" (server refused the field)."""
+        if self.settings.llm_reasoning != "off":
+            return "on"
+        return "off" if self._reasoning_field_ok else "unsupported"
+
     def autoload_pending(self):
         """True when the next generate() will first ask LM Studio to load the model (may take minutes)."""
         return bool(self.settings.llm_autoload and not self._autoloaded)
@@ -330,17 +338,18 @@ class LocalLLMClient:
         budget = max(256, min(max_tokens or self.settings.llm_max_tokens, ctx - est - 256))
         self._autoload(model)
         meter = StreamMeter()
-        try:
-            r = self.http.post(f"{self.base}/v1/chat/completions", json={
-                "model": model, "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.6, "max_tokens": budget,
-                "stream": True, "stream_options": {"include_usage": True},
-            }, stream=True, timeout=(3, self.settings.llm_timeout))
-        except requests.ConnectionError as e:
-            self._mark(False, f"LM Studio not reachable at {self.base}")
-            raise LLMUnavailable(f"LM Studio not reachable at {self.base}") from e
-        except requests.Timeout as e:
-            raise LLMError(f"local model timed out after {self.settings.llm_timeout}s") from e
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                   "temperature": 0.6, "max_tokens": budget,
+                   "stream": True, "stream_options": {"include_usage": True}}
+        if self.reasoning_mode() == "off":
+            payload["reasoning_effort"] = "none"  # "a switch, not a dial": none turns thinking off
+        r = self._post_chat(payload)
+        if r.status_code in (400, 422) and "reasoning_effort" in payload and "reasoning" in r.text[:400].lower():
+            r.close()  # this server does not know the switch: remember and go without it
+            self._reasoning_field_ok = False
+            print(f"ℹ️  {self.base} rejected reasoning_effort — generating with the model's default reasoning")
+            payload.pop("reasoning_effort")
+            r = self._post_chat(payload)
         try:
             if r.status_code != 200:
                 body_text = r.text[:400]
@@ -359,9 +368,20 @@ class LocalLLMClient:
             with self._lock:  # JIT-loaded just now: re-probe so the real context window is used next
                 self._status_at = -1e9
         meta = {"model": served or model, "finish_reason": finish, "max_tokens": budget, "prompt_tokens_est": est,
+                "reasoning": "off" if "reasoning_effort" in payload else self.reasoning_mode(),
                 "ctx": ctx, "usage": usage or {}, "metrics": meter.metrics(),
                 "elapsed_s": meter.metrics()["elapsed_s"]}
         return content.strip(), meta
+
+    def _post_chat(self, payload):
+        try:
+            return self.http.post(f"{self.base}/v1/chat/completions", json=payload, stream=True,
+                                  timeout=(3, self.settings.llm_timeout))
+        except requests.ConnectionError as e:
+            self._mark(False, f"LM Studio not reachable at {self.base}")
+            raise LLMUnavailable(f"LM Studio not reachable at {self.base}") from e
+        except requests.Timeout as e:
+            raise LLMError(f"local model timed out after {self.settings.llm_timeout}s") from e
 
     @staticmethod
     def _consume(r, meter, on_delta, cancelled, on_rewind=None):
@@ -435,24 +455,28 @@ class LocalLLMClient:
 # ── portal prompt ───────────────────────────────────────────────────────────
 _DATASET_RE = re.compile(r"DATASET:\n(.*?)\n\nTASK:", re.DOTALL)
 
-PORTAL_TASK = """TASK: Write about {sym} in exactly three labeled paragraphs, in this order, each starting with its label. \
-Plain text, no markdown, no headings, nothing before the first label.
+PORTAL_TASK = """TASK: Write about {sym} in exactly three paragraphs, in this order. Start each paragraph with its \
+label exactly as shown ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:"). Plain text, no markdown, nothing before the \
+first label.
 
-🤖: One short paragraph: conviction vs risk, from the valuation and the Income Grade. An accelerating \
-waterfall (A/A+) is a "sleep well" compounder; bloating costs (RED) mean flagging what could go wrong; a low \
-PEG with a poor grade means judging trap vs opportunity.
+🤖: One short paragraph weighing conviction against risk, using the valuation and the Income Grade.
 
-📊 Reverse DCF: One paragraph. What the company does and its moat. Then the math, citing the "Base ROI math" \
-numbers: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx FwdPE to Nx implied PE \
-at maturity" (no decay exponents or terminal PEG formulas). What that requires operationally (revenue growth, \
-margins, share gains), and your verdict: realistic, achievable or a stretch.
+📊 Reverse DCF: One paragraph. What the company does and its moat; then the math, citing the "Base ROI math" \
+numbers: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx FwdPE to Nx implied PE at \
+maturity" (no decay exponents or terminal PEG formulas); what that requires operationally (revenue growth, margins, \
+share gains); and your verdict: realistic, achievable or a stretch.
 
-🧪 Stomach Test: One paragraph with the specific bear case: why it could underperform the market for 5 years, \
-with numbers. Weigh the balance sheet: AA+/AAA is a fortress that mitigates risk; BBB or below makes debt a key \
-risk (cite interest coverage, net debt/EBITDA or debt service/FCF). If Technicals are BEARISH or price is below \
-SMA200, warn about catching a falling knife; if ACCUMULATION, note the favorable entry. If a 6M Directional Edge \
-is given: BULL above 60% supports selling cash-secured puts on dips, BEAR above 60% supports covered calls on \
-bounces, neither above 55% means low conviction for options income.
+🧪 Stomach Test: One paragraph with the specific bear case: why it could underperform the market for 5 years, with \
+numbers.
+
+Guidance (apply only what the data supports, and never restate these rules):
+- Income Grade A/A+ with an accelerating waterfall: a "sleep well" compounder. Costs growing faster than revenue \
+(RED items): say what could go wrong. Low PEG but a poor grade: judge trap vs opportunity.
+- Credit rating AA+ or AAA: a fortress balance sheet that softens the bear case. BBB or below: debt is a key risk \
+(cite interest coverage, net debt/EBITDA or debt service/FCF).
+- Technicals BEARISH or price below SMA200: warn about catching a falling knife. ACCUMULATION: favorable entry timing.
+- 6M Directional Edge: BULL above 60% fits selling cash-secured puts on dips; BEAR above 60% fits covered calls on \
+bounces; neither above 55% means low conviction for options income.
 
 Tone: wise, slightly witty, Peter Lynch talking to a friend over coffee."""
 
@@ -473,12 +497,19 @@ def build_portal_prompt(row, g=None, b=None, t=None, e=None, benchmark="SPY"):
 
 # ── reply parsing ───────────────────────────────────────────────────────────
 SECTION_KEYS = ("overview", "reverse_dcf", "stomach_test")
+_BOL = r"(?:^|\n)[ \t>*#_-]*"  # start of a line, ignoring markdown bullets / quotes / bold remnants
 _LABELS = (
-    ("overview", re.compile(r"🤖\s*(?:Overview\s*)?:")),
-    ("reverse_dcf", re.compile(r"📊\s*(?:Reverse\s*(?:5Y\s*)?DCF)?\s*:", re.IGNORECASE)),
-    ("stomach_test", re.compile(r"(?:🧪|🐻)\s*(?:\"?Stomach\s*Test\"?[^:\n]{0,60})?:", re.IGNORECASE)),
+    # Either the emoji at the start of a line (label text and colon optional — small models often write
+    # "🤖 Let's look…" or "📊 Caterpillar makes…"), or the full label with its colon anywhere.
+    ("overview", re.compile(_BOL + r"🤖[ \t]*(?:Overview\b)?[ \t]*:?|🤖[ \t]*(?:Overview[ \t]*)?:", re.IGNORECASE)),
+    ("reverse_dcf", re.compile(_BOL + r"📊[ \t]*(?:Reverse[ \t]*(?:5Y[ \t]*)?DCF\b)?[ \t]*:?"
+                               r"|📊[ \t]*Reverse[ \t]*(?:5Y[ \t]*)?DCF[ \t]*:", re.IGNORECASE)),
+    ("stomach_test", re.compile(_BOL + r"(?:🧪|🐻)[ \t]*(?:\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:)?[ \t]*:?"
+                                r"|(?:🧪|🐻)[ \t]*\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:", re.IGNORECASE)),
 )
-_LABEL_STARTS = ("🤖", "📊", "🧪", "🐻")
+_LABEL_WORDS = {"🤖": ("overview",), "📊": ("reverse dcf", "reverse 5y dcf"),
+                "🧪": ("stomach test",), "🐻": ("stomach test",)}
+_LABEL_STARTS = tuple(_LABEL_WORDS)
 
 
 def _clean(text):
@@ -490,10 +521,20 @@ def _clean(text):
 
 
 def _trim_partial_label(text):
-    """While streaming, drop a label that has started to arrive but has no colon yet ("…\n\n📊 Rev")."""
-    tail = text[-40:]
+    """While streaming, hide a label that is still arriving ("…\n\n📊", "…\n\n📊 Reverse D") so its
+    letters never flash as answer text. Once the text after the emoji is clearly prose, it stays."""
+    tail = text[-90:]
     cut = max(tail.rfind(e) for e in _LABEL_STARTS)
-    if cut >= 0 and ":" not in tail[cut:]:
+    if cut < 0:
+        return text
+    emoji = next(e for e in _LABEL_STARTS if tail.startswith(e, cut))
+    after = tail[cut + len(emoji):]
+    if "\n" in after or ":" in after:
+        return text  # the label line is complete
+    words = after.strip().lstrip('"').lower()
+    label_prefix = any(w.startswith(words) for w in _LABEL_WORDS[emoji])
+    long_stomach = words.startswith("stomach test") and len(after) < 75  # "(why it can underperform…):" follows
+    if not words or label_prefix or long_stomach:
         return text[:len(text) - len(tail) + cut]
     return text
 
@@ -580,4 +621,5 @@ def ticker_narrative(client, data, benchmark="SPY", sink=None, cancelled=None):
     return {"status": "done", "narrative": best, "model": best_meta.get("model"),
             "model_short": _short(best_meta.get("model")), "metrics": best_meta.get("metrics") or {},
             "elapsed_s": best_meta.get("elapsed_s"), "usage": best_meta.get("usage"), "attempts": attempts,
+            "reasoning": best_meta.get("reasoning"),
             "generated_at": time.time(), "complete": best_score == len(SECTION_KEYS)}
