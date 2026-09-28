@@ -1,6 +1,6 @@
 """Daily LFU cache for analysed tickers (step 5).
 
-Holds up to ``capacity`` (default 100) ticker results for the current day so re-typing a symbol
+Holds up to ``capacity`` (portal default 250) ticker results for the current day so re-typing a symbol
 skips the quant pipeline, the chart render and the AI overview. Eviction is least-frequently-used
 with least-recently-used as the tie-break, all O(1):
 
@@ -19,7 +19,7 @@ import threading
 
 
 class DailyLFUCache:
-    def __init__(self, capacity=100, today=_dt.date.today, plots_root=None):
+    def __init__(self, capacity=250, today=_dt.date.today, plots_root=None):
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
         self.capacity = int(capacity)
