@@ -94,8 +94,9 @@ def _default_backends():
     from engine.lynch_pin_core import LynchPinEngine
     from engine.technical_timing import analyze, backtest_edge
     from graphics.visualizer import LynchPinVisualizer
+    from ui.levels import price_levels
     return {"engine": LynchPinEngine, "grade_income": grade_income, "grade_bs": grade_bs,
-            "technicals": analyze, "edge": backtest_edge, "visualizer": LynchPinVisualizer}
+            "technicals": analyze, "levels": price_levels, "edge": backtest_edge, "visualizer": LynchPinVisualizer}
 
 
 class StageError(Exception):
@@ -216,7 +217,14 @@ class TickerAnalyzer:
         def do_tech():
             ctx["t"] = b["technicals"](ticker_obj)
             data["technicals"] = format_technicals(ctx["t"])
-            return "done" if ctx["t"] else "skipped"
+            levels_fn = b.get("levels")
+            if levels_fn is not None:
+                try:  # price levels are a bonus: never fail the technicals stage over them
+                    data["levels"] = levels_fn(ticker_obj, data.get("price"))
+                except Exception as e:
+                    print(f"⚠️  {sym} levels: {type(e).__name__}: {e}")
+                    data["levels"] = None
+            return "done" if (ctx["t"] or data.get("levels")) else "skipped"
 
         def do_edge():
             ctx["e"] = b["edge"](sym, self.settings.benchmark, 180)
