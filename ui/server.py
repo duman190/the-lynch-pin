@@ -341,7 +341,9 @@ def parse_args(argv=None):
                    else "off", help="thinking for reasoning models: off sends reasoning_effort=none (default off)")
     p.add_argument("--llm-autoload", action="store_true", default=s.llm_autoload,
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
-    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 100)")
+    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 250)")
+    p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
+                   help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
     a = p.parse_args(argv)
@@ -349,6 +351,7 @@ def parse_args(argv=None):
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
     s.llm_max_tokens, s.llm_autoload, s.llm_reasoning = a.llm_max_tokens, a.llm_autoload, a.llm_reasoning
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
+    s.enrich = a.enrich
     return s, a
 
 
@@ -374,6 +377,8 @@ def main(argv=None):
               "network can use the portal (public IPs and foreign Host headers are refused).", flush=True)
         for a in _lan_addresses():
             print(f"   📱 open http://{a}:{settings.port} on your phone", flush=True)
+    if app.jobs is not None:
+        print(f"📈 Growth enrichment: {'on' if settings.enrich_enabled else 'off'}", flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning}", flush=True)
