@@ -250,6 +250,20 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 .shimmer span:nth-child(2) { width: 80%; } .shimmer span:nth-child(3) { width: 60%; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
+/* ── deep dive prompt ────────────────────────────────────────────────────── */
+.deepdive { border-color: rgba(93,156,236,.35); }
+.dd-head { flex-wrap: wrap; }
+.dd-actions { display: flex; gap: 8px; }
+.btn-sm { padding: 8px 18px; min-height: 36px; font-size: .9rem; }
+#dd-meta { margin: 0; }
+.dd-text { margin: 12px 0 0; padding: 14px 16px; max-height: 60vh; overflow: auto; white-space: pre-wrap;
+  word-break: break-word; background: #121212; border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font: .82rem/1.55 var(--mono); scrollbar-color: #444 #121212; scrollbar-width: thin; }
+.dd-text::-webkit-scrollbar { width: 10px; }
+.dd-text::-webkit-scrollbar-track { background: #121212; }
+.dd-text::-webkit-scrollbar-thumb { background: #444; border-radius: 6px; }
+.dd-clip { position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; }
+
 /* ── about ───────────────────────────────────────────────────────────────── */
 .about-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px; align-items: center; margin-top: 12px; }
 .about p { margin: 0 0 10px; }
