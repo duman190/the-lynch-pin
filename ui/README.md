@@ -12,7 +12,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 **Security:** `--lan` listens on all interfaces **without authentication**, so every device on your Wi-Fi can use the portal. The portal is read-only. Clients outside loopback, RFC 1918, ULA or link-local ranges get a 403, and so do requests with a foreign `Host` header, which blocks DNS rebinding. Do not port-forward it to the internet.
 
 ## Features
-- Hero artwork built from the Lynch Pin badge, plus a *Latest scan* gallery of the charts in `tmp/` (read-only, JPEG previews).
+- Hero artwork built from the Lynch Pin badge.
 - Ticker search at `?t=MSFT`, which you can bookmark and share. It shows valuation (PEG, Dev SD bell, 5Y Bull/Base/Bear ROI), the same chart `main.py` renders, the income grade, the credit rating, technicals and the 6M edge. Results stream in stage by stage.
 - An AI overview from a local LM Studio server. It uses the same prompt, normalisation and parsing as the daily scan in `main.py`. When no model is loaded, the UI shows "AI offline" and keeps working.
 - A daily LFU cache of 100 tickers. Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
@@ -22,7 +22,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 |---|---|---|
 | `--port` | `LYNCH_UI_PORT` | `8765` |
 | `--lan` | `LYNCH_UI_LAN=1` | off (loopback) |
-| `--llm-url` | `LYNCH_LLM_BASE_URL` | `http://127.0.0.1:8080` |
+| `--llm-url` | `LYNCH_LLM_BASE_URL` | `http://127.0.0.1:1234` (LM Studio default) |
 | `--llm-model` | `LYNCH_LLM_MODEL` | *(auto: first loaded model)* |
 | `--llm-ctx` | `LYNCH_LLM_CTX` | `65536` |
 | `--llm-max-tokens` | `LYNCH_LLM_MAX_TOKENS` | `4096` |
