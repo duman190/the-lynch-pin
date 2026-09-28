@@ -9,7 +9,7 @@ python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Stud
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
-**Security:** `--lan` listens on all interfaces **without authentication**, so every device on your Wi-Fi can use the portal. The portal is read-only. Clients outside loopback, RFC 1918, ULA or link-local ranges get a 403, and so do requests with a foreign `Host` header, which blocks DNS rebinding. Do not port-forward it to the internet.
+**Security:** `--lan` listens on all interfaces **without authentication**, so every device on your Wi-Fi or your Tailscale tailnet can use the portal. The portal is read-only. Clients outside loopback, RFC 1918, ULA, link-local and Tailscale (`100.64.0.0/10`) ranges get a 403, and so do requests with a foreign `Host` header, which blocks DNS rebinding. The server log says why a request was refused. Do not port-forward it to the internet.
 
 ## Features
 - Hero artwork built from the Lynch Pin badge.
@@ -33,6 +33,6 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
-| | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | e.g. Tailscale `100.64.0.0/10` / MagicDNS names |
+| `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |
 
 The LLM context window is the smaller of `--llm-ctx` and the loaded model's real context (from LM Studio's `/api/v0/models`). To try the AI card without a model, run `python -m ui.tests.fake_lmstudio --port 18080` (streams a canned reply; `--delay` sets the typing speed) and start the server with `--llm-url http://127.0.0.1:18080`.
