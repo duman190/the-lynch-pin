@@ -254,8 +254,13 @@ def make_handler(app):
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
             parts = rest.split("/")
             sym = parts[0].strip().upper()
-            if not TICKER_RE.match(sym) or parts[1:] not in ([], ["ai"], ["ai", "stream"]):
+            if not TICKER_RE.match(sym) or parts[1:] not in ([], ["ai"], ["ai", "stream"], ["deepdive"]):
                 return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
+            if parts[1:] == ["deepdive"]:
+                dd = app.jobs.deep_dive(sym)
+                if dd is None:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "analyse this ticker first")
+                return self.send_json(dd)
             if len(parts) >= 2 and app.llm is None:
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "AI disabled")
             if len(parts) == 3:
