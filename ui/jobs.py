@@ -382,13 +382,13 @@ class JobManager:
                 changed = st.version != seen
                 seen = st.version
                 final = st.final
+                events = []
                 if st.attempt != attempt:
-                    attempt, r_idx, content_seen = st.attempt, 0, ""
-                    events = [("reset", {"attempt": st.attempt, "note": st.note})]
-                else:
-                    events = []
+                    if attempt >= 1:  # a real retry: the client must drop attempt 1's text
+                        events.append(("reset", {"attempt": st.attempt, "note": st.note}))
+                    attempt, r_idx, content_seen = st.attempt, 0, ""  # (0 → 1 is just the first start)
                 if changed and final is None:
-                    delta = {"phase": st.phase, "metrics": dict(st.metrics),
+                    delta = {"phase": st.phase, "note": st.note, "metrics": dict(st.metrics),
                              "reasoning": "".join(st.reasoning[r_idx:])}
                     r_idx = len(st.reasoning)
                     if st.content != content_seen:
