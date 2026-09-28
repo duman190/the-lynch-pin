@@ -236,6 +236,24 @@
       parts.push(statTable([["RSI (14)", fx(t.rsi, 0)], ["vs SMA200", signed(t.price_vs_sma200, 1)], ["ATR compr.", fx(t.atr_compression, 2)],
         ["Accum. zone", z && isNum(z[0]) ? `$${Math.round(z[0])}–$${Math.round(z[1])}` : "N/A"]]));
     } else parts.push(el("p", { class: "muted", text: "Price history unavailable." }));
+    const lv = d.levels;
+    if (lv) {
+      const px = (v) => (isNum(v) ? `$${v.toFixed(2)}` : "N/A");
+      const lvl = (x) => [px(x.price), isNum(x.p_touch_1m) ? el("span", { class: "muted small", text: ` ${x.p_touch_1m.toFixed(0)}%` }) : null];
+      const rows = [];
+      const res = lv.resistance || [], sup = lv.support || [];
+      if (!res.length) rows.push(["R", el("span", { class: "muted", text: "none nearby" })]);
+      res.slice().reverse().forEach((x, i, a) => rows.push([`R${a.length - i}`, lvl(x), "red"]));
+      rows.push(["Now", px(lv.price)]);
+      sup.forEach((x, i) => rows.push([`S${i + 1}`, lvl(x), "green"]));
+      if (!sup.length) rows.push(["S", el("span", { class: "muted", text: "none nearby" })]);
+      if (isNum(lv.poc)) rows.push(["POC (3M)", px(lv.poc)]);
+      const m = lv.ranges && lv.ranges["1m"];
+      if (m) rows.push(["1M range ±1σ", `${px(m["1sigma_lower"])}–${px(m["1sigma_upper"])}`]);
+      rows.push(["52W range", `${px(lv.low_52w)}–${px(lv.high_52w)}`]);
+      parts.push(el("h3", { class: "sub-h", title: "Support / resistance from clustered pivots (6M), volume point of control (3M), expected range from realised volatility. % = chance of touching the level within a month." }, "Price levels · P(touch) 1M"),
+        statTable(rows));
+    }
     parts.push(el("h3", { class: "sub-h", text: `6M directional edge vs ${d.benchmark || "SPY"}` }));
     if (e) {
       parts.push(statTable([
@@ -385,6 +403,7 @@
     if (ai.status !== "done") {
       renderAIError(ai);
       setAIStep(ai.status === "unavailable" ? "skipped" : "error");
+      loadDeepDive(S.sym, S.token);
       return;
     }
     V.setHead(ai);
@@ -396,6 +415,7 @@
       ai.complete === false ? "partial reply" : null].filter(Boolean).join(" · "));
     V.finish();
     setAIStep("done");
+    loadDeepDive(S.sym, S.token);
     if (typeof refreshHealth === "function") refreshHealth();
   }
 
@@ -482,7 +502,84 @@
     if (token !== S.token) return;
     if (AI_FINAL.has(snap.status)) { finishAI(snap, V); return; }
     applyLive(V, snap);
+    loadDeepDive(sym, token);  // quant data now; refreshed with the AI overview when it is done
     streamAI(sym, token, V);
+  }
+
+  /* ── Deep Dive Prompt ───────────────────────────────────────────────────── */
+  const DD = { text: "" };
+
+  async function loadDeepDive(sym, token) {
+    try {
+      const dd = await getJSON(`/api/ticker/${encodeURIComponent(sym)}/deepdive`);
+      if (token !== S.token) return;
+      DD.text = dd.prompt;
+      $("#dd-text").textContent = dd.prompt;
+      const ai = { included: "AI overview included", pending: "AI overview still being written; it is added when done",
+        disabled: "no AI overview (disabled)", unavailable: "no AI overview" }[dd.ai] || "";
+      $("#dd-meta").textContent = `A research brief for Claude, ChatGPT or Gemini: paste it into a chat with web search on. ` +
+        `${dd.words.toLocaleString()} words · ${ai}.`;
+      $("#deepdive").hidden = false;
+    } catch (_) {
+      if (token === S.token) $("#deepdive").hidden = true;
+    }
+  }
+
+  function hideDeepDive() {
+    DD.text = "";
+    $("#deepdive").hidden = true;
+  }
+
+  function ddStatus(msg) {
+    const s = $("#dd-status");
+    s.textContent = "";
+    requestAnimationFrame(() => { s.textContent = msg; });
+  }
+
+  /** Clipboard API needs a secure context (https / localhost); LAN and Tailscale URLs are plain http. */
+  async function copyText(text) {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall back */ }
+    }
+    const ta = el("textarea", { readonly: true, class: "dd-clip", "aria-hidden": "true", tabindex: "-1" });
+    ta.value = text;
+    document.body.append(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);  // iOS Safari
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  function setToggle(show) {
+    const pre = $("#dd-text"), btn = $("#dd-toggle");
+    pre.hidden = !show;
+    btn.textContent = show ? "Hide" : "Show";
+    btn.setAttribute("aria-expanded", String(show));
+  }
+
+  function initDeepDive() {
+    const copyBtn = $("#dd-copy");
+    copyBtn.addEventListener("click", async () => {
+      if (!DD.text) return;
+      const ok = await copyText(DD.text);
+      if (ok) {
+        copyBtn.textContent = "Copied ✓";
+        ddStatus("Deep dive prompt copied to the clipboard.");
+        setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+      } else {  // show it selected so a long-press / Ctrl+C copies it
+        setToggle(true);
+        const range = document.createRange();
+        range.selectNodeContents($("#dd-text"));
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        ddStatus("Copy is blocked by this browser: the prompt is selected, copy it manually.");
+      }
+    });
+    $("#dd-toggle").addEventListener("click", () => setToggle($("#dd-text").hidden));
   }
 
   /* ── polling state machine ──────────────────────────────────────────────── */
@@ -520,8 +617,12 @@
       $("#result").setAttribute("aria-busy", "false");
       if (typeof refreshHealth === "function") refreshHealth();  // cache chip reflects this lookup now
       if (snap.status === "error" && !d.name) $("#rh-name").textContent = "—";
-      if (snap.status === "done") startAI(snap.ticker);
-      else { setAIStep("skipped"); const c = $("#card-ai"); if (c) c.hidden = true; }  // AI needs GARP data
+      if (snap.status === "done" && S.app.health && S.app.health.features.ai) startAI(snap.ticker);
+      else {
+        setAIStep("skipped");
+        const c = $("#card-ai"); if (c) c.hidden = true;  // AI needs GARP data
+        if (snap.status !== "error") loadDeepDive(snap.ticker, S.token);
+      }
     }
     return final;
   }
@@ -579,6 +680,7 @@
     S.token += 1;
     clearTimeout(S.timer);
     stopAI();
+    hideDeepDive();
     S.sym = sym;
     S.started = Date.now();
     S.rendered = new Set();
@@ -602,6 +704,7 @@
       S.token += 1;
       clearTimeout(S.timer);
       stopAI();
+      hideDeepDive();
       $("#result").hidden = true;
       document.title = "The Lynch Pin · Quant Portal";
     }
@@ -611,6 +714,7 @@
     init(appState) {
       S.app = appState;
       if (!appState.health || !appState.health.features.search) return;
+      initDeepDive();
       renderRecent();
       $("#search-form").addEventListener("submit", (e) => { e.preventDefault(); go($("#q").value); });
       $("#q").addEventListener("input", (e) => e.target.setCustomValidity(""));
