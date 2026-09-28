@@ -27,11 +27,13 @@ def settings(tmp_path, lm):
     s = Settings()
     s.cache_dir = str(tmp_path / "cache")
     s.llm_base_url = lm[0]
+    s.llm_reasoning = "on"  # most tests exercise the thinking stream; the "off" switch has its own tests
     return s
 
 
 def test_defaults_are_configurable(monkeypatch):
     assert Settings().llm_ctx == 65536 and Settings().llm_base_url == "http://127.0.0.1:1234"
+    assert Settings().llm_reasoning == "off"
     assert Settings().llm_model == ""
     monkeypatch.setenv("LYNCH_LLM_MODEL", "google/gemma-3-27b")
     monkeypatch.setenv("LYNCH_LLM_CTX", "32768")
@@ -41,8 +43,38 @@ def test_defaults_are_configurable(monkeypatch):
 
 def test_cli_overrides():
     from ui.server import parse_args
-    s, _ = parse_args(["--llm-model", "qwen3-8b", "--llm-ctx", "16384", "--llm-url", "http://10.0.0.5:8080/"])
-    assert (s.llm_model, s.llm_ctx, s.llm_base_url) == ("qwen3-8b", 16384, "http://10.0.0.5:8080")
+    s, _ = parse_args(["--llm-model", "qwen3-8b", "--llm-ctx", "16384", "--llm-url", "http://10.0.0.5:8080/",
+                       "--llm-reasoning", "on"])
+    assert (s.llm_model, s.llm_ctx, s.llm_base_url, s.llm_reasoning) == ("qwen3-8b", 16384, "http://10.0.0.5:8080", "on")
+    assert parse_args([])[0].llm_reasoning == "off"
+
+
+def test_reasoning_off_sends_switch_and_skips_thinking(settings, lm):
+    settings.llm_reasoning = "off"
+    c = L.LocalLLMClient(settings)
+    text, meta = c.generate("- MSFT: x")
+    req = lm[1]["requests"][-1][1]
+    assert req["reasoning_effort"] == "none" and meta["reasoning"] == "off"
+    assert meta["metrics"]["reasoning_tokens"] == 0 and meta["metrics"]["thinking_s"] is None
+    assert text.startswith("🤖:") and c.status()["reasoning"] == "off"
+
+
+def test_reasoning_on_leaves_server_default(settings, lm):
+    text, meta = L.LocalLLMClient(settings).generate("- MSFT: x")
+    assert "reasoning_effort" not in lm[1]["requests"][-1][1] and meta["metrics"]["reasoning_tokens"] > 0
+
+
+def test_server_rejecting_reasoning_switch_falls_back_once(settings, lm):
+    settings.llm_reasoning = "off"
+    lm[1]["reject_reasoning_effort"] = True
+    c = L.LocalLLMClient(settings)
+    text, meta = c.generate("- MSFT: x")
+    chats = [r for p, r in lm[1]["requests"] if p == "/v1/chat/completions"]
+    assert [("reasoning_effort" in r) for r in chats] == [True, False] and text.startswith("🤖:")
+    assert meta["reasoning"] == "unsupported" and c.status(force=True)["reasoning"] == "unsupported"
+    c.generate("- MSFT: x")
+    chats = [r for p, r in lm[1]["requests"] if p == "/v1/chat/completions"]
+    assert len(chats) == 3 and "reasoning_effort" not in chats[-1]  # remembered: no second rejection
 
 
 def test_strip_thinking():
@@ -228,9 +260,24 @@ def test_parse_sections_tolerates_small_model_formatting():
     assert L.parse_sections("<think>x</think>🤖: a\n\n🧪 Stomach Test: b")["stomach_test"] == "b"
 
 
+def test_parse_sections_emoji_only_labels_from_real_qwen_output():
+    # Qwen3.6 once answered with bare emoji, no "Reverse DCF:" / "Stomach Test:" text and no colons
+    raw = ("🤖 Let's look at the books before we buy the shovel. Caterpillar is a B grade.\n\n"
+           "📊 Caterpillar makes the heavy equipment that digs the world's infrastructure. The math: 11.9% base ROI.\n\n"
+           "🧪 Now let's talk about why your money might sleep poorly for the next five years.")
+    sec = L.parse_sections(raw)
+    assert sec["overview"].startswith("Let's look") and sec["reverse_dcf"].startswith("Caterpillar makes")
+    assert sec["stomach_test"].startswith("Now let's talk") and L.section_score(sec) == 3
+    assert L.parse_sections("🤖: one line with 📊 inside the text")["reverse_dcf"] == ""  # mid-line emoji ≠ label
+
+
 def test_parse_sections_partial_hides_half_arrived_label():
     live = L.parse_sections("🤖: Solid compounder.\n\n📊 Rever", partial=True)
     assert live == {"overview": "Solid compounder.", "reverse_dcf": "", "stomach_test": ""}
+    for tail in ("\n\n📊", "\n\n🧪 Stomach Test (why it can underperform"):
+        assert L.parse_sections("🤖: a" + tail, partial=True)["overview"] == "a"
+        assert not L.parse_sections("🤖: a" + tail, partial=True)["reverse_dcf"]
+    assert L.parse_sections("🤖: a\n\n📊 Caterpillar", partial=True)["reverse_dcf"] == "Caterpillar"
     assert L.parse_sections("🤖: a\n\n📊 Reverse DCF: b", partial=True)["reverse_dcf"] == "b"
 
 
@@ -243,6 +290,7 @@ def test_portal_prompt_is_per_ticker_without_sentiment_or_char_limits(settings):
                    "index: $spy", "sentences"):
         assert banned not in low, banned
     assert p.count("paragraph") >= 4 and "$MSFT" in p
+    assert "never restate these rules" in p and 'label exactly as shown ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:")' in p
     # the DATASET block is the daily scan's, verbatim
     assert "- MSFT: PE 28.7, FwdPE 21.8" in p and "Base ROI math:" in p
     assert "Income Grade: A+" in p and "Credit Rating: AAA" in p and "6M Directional Edge: BULL" in p
@@ -539,6 +587,27 @@ def test_sse_streams_typing_with_live_metrics(settings, lm):
         httpd.shutdown()
         httpd.server_close()
         jm.shutdown()
+
+
+def test_sse_first_attempt_is_not_a_reset_but_a_retry_is(settings):
+    from ui.jobs import AIJob
+    jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), store=DayStore(),
+                    llm=None, start=False)
+    job = AIJob("MSFT", {}, jm._clock())
+    jm._ai_inflight["MSFT"] = job
+    gen = jm.ai_events("MSFT", coalesce=0.0)
+    assert next(gen)[0] == "snapshot"  # connected while queued (attempt 0)
+    job.status = "running"
+    job.stream.begin(1, note="loading the model in LM Studio")
+    ev, data = next(gen)
+    assert ev == "delta" and data["phase"] == "connecting" and data["note"].startswith("loading")
+    job.stream.delta("", "🤖: first try", {"tokens": 1})
+    assert next(gen)[0] == "delta"
+    job.stream.begin(2, note="first reply was unusable — retrying")
+    ev, data = next(gen)
+    assert ev == "reset" and data["attempt"] == 2 and "retrying" in data["note"]
+    job.stream.finish({"status": "done", "ticker": "MSFT"})
+    assert [e for e, _ in gen][-1] == "done"
 
 
 def test_sse_404_without_job_and_bad_paths(settings, lm):
