@@ -19,7 +19,6 @@ from ui.tests import fakes
 def settings(tmp_path):
     s = Settings()
     s.cache_dir = str(tmp_path / "cache")
-    s.scan_dir = str(tmp_path / "scan")
     return s
 
 
@@ -321,3 +320,52 @@ def test_snapshot_is_isolated_from_worker_mutation(settings):
     wait_final(jm, "MSFT")
     assert snap["data"]["stage_ms"] == before  # worker kept writing into its own dict
     jm.shutdown()
+
+
+# ── growth enrichment flag ──────────────────────────────────────────────────
+def test_enrich_auto_follows_fmp_key(monkeypatch):
+    s = Settings()
+    assert s.enrich == "auto" and s.enrich_enabled is False
+    monkeypatch.setenv("FMP_API_KEY", "k")
+    assert s.enrich_enabled is True
+    s.enrich = "off"
+    assert s.enrich_enabled is False
+
+
+@pytest.mark.parametrize("raw,mode", [("1", "on"), ("yes", "on"), ("0", "off"), ("off", "off"), ("auto", "auto"),
+                                      ("junk", "auto")])
+def test_enrich_env_values(monkeypatch, raw, mode):
+    monkeypatch.setenv("LYNCH_UI_ENRICH", raw)
+    assert Settings().enrich == mode
+
+
+def test_cli_enrich_and_cache_defaults():
+    from ui.server import parse_args
+    assert (parse_args([])[0].enrich, parse_args([])[0].cache_capacity) == ("auto", 250)
+    s, _ = parse_args(["--enrich", "on", "--cache-size", "40"])
+    assert (s.enrich, s.cache_capacity) == ("on", 40)
+
+
+def test_growth_marked_enriched_with_fmp_key(settings, monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "k")
+    fakes.FakeEngine.enrich_calls = []
+    r = TickerAnalyzer(settings, backends=fakes.backends()).run("MSFT")
+    assert fakes.FakeEngine.enrich_calls == [("MSFT", True)] and r["growth_enriched"] is True
+
+
+def test_growth_marked_not_enriched_without_key(settings):
+    fakes.FakeEngine.enrich_calls = []
+    r = TickerAnalyzer(settings, backends=fakes.backends()).run("MSFT")
+    assert fakes.FakeEngine.enrich_calls == [("MSFT", False)] and r["growth_enriched"] is False
+
+
+def test_enrich_requested_but_fmp_had_no_estimates(settings, monkeypatch):
+    class NoFMP(fakes.FakeEngine):
+        def get_ticker_stats(self, enrich=False):
+            row = super().get_ticker_stats(enrich)
+            self._growth_sources = ["yahoo_peg"]  # FMP returned nothing usable
+            return row
+
+    monkeypatch.setenv("FMP_API_KEY", "k")
+    r = TickerAnalyzer(settings, backends=fakes.backends(engine=NoFMP)).run("MSFT")
+    assert r["growth_enriched"] is False
