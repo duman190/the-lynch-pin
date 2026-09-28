@@ -345,5 +345,9 @@ dialog#lightbox img { width: 100%; height: auto; }
 
 /* semantic colours inside the mono tables beat the neutral cell colour */
 .mono-table dd.green, .mono-grid td.green { color: var(--green); }
+.growth-tag { display: inline-block; margin-right: 6px; padding: 2px 7px; border-radius: 6px; vertical-align: 1px;
+  font: 800 .7rem/1.3 var(--mono); letter-spacing: .02em; }
+.tag-on { color: #06210F; background: var(--green); }
+.tag-off { color: var(--amber); background: rgba(245,176,65,.12); border: 1px solid rgba(245,176,65,.45); }
 .mono-table dd.red, .mono-grid td.red { color: var(--red); }
 .mono-grid td.sky { color: var(--sky); }
