@@ -27,7 +27,11 @@ class FakeEngine:
         self.ticker = f"<ticker {sym}>"
         self.info = dict(self.infos.get(sym, {}))
 
+    enrich_calls = []
+
     def get_ticker_stats(self, enrich=False):
+        FakeEngine.enrich_calls.append((self.symbol, enrich))
+        self._growth_sources = ["yahoo_peg", "fmp"] if enrich else ["yahoo_peg"]
         return dict(self.rows[self.symbol]) if self.symbol in self.rows else None
 
 
