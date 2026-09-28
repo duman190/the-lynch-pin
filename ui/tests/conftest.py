@@ -19,3 +19,10 @@ def _clean_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith(("LYNCH_UI_", "LYNCH_LLM_")) or k == "FMP_API_KEY":
             monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clean_cli_allowlists(monkeypatch):
+    from ui import netguard
+    monkeypatch.setattr(netguard, "_CLI_NETS", [])
+    monkeypatch.setattr(netguard, "_CLI_HOSTS", set())
