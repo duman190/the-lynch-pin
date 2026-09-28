@@ -242,11 +242,13 @@ def make_handler(app):
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
             parts = rest.split("/")
             sym = parts[0].strip().upper()
-            if not TICKER_RE.match(sym) or len(parts) > 2 or (len(parts) == 2 and parts[1] != "ai"):
+            if not TICKER_RE.match(sym) or parts[1:] not in ([], ["ai"], ["ai", "stream"]):
                 return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
+            if len(parts) >= 2 and app.llm is None:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "AI disabled")
+            if len(parts) == 3:
+                return self.route_ai_stream(sym)
             if len(parts) == 2:
-                if app.llm is None:
-                    return self.send_error_json(HTTPStatus.NOT_FOUND, "AI disabled")
                 snap = app.jobs.request_ai(sym, refresh=query.get("refresh", ["0"])[0] == "1")
                 if snap.get("status") == "busy":
                     return self._send(HTTPStatus.TOO_MANY_REQUESTS, to_json(snap),
@@ -259,6 +261,31 @@ def make_handler(app):
                 return self._send(HTTPStatus.TOO_MANY_REQUESTS, to_json(snap), "application/json; charset=utf-8",
                                   extra={"Retry-After": str(snap.get("retry_after", 10))})
             return self.send_json(snap)
+
+        def route_ai_stream(self, sym):
+            """Server-Sent Events: the AI overview token by token, with TTFT / tok/s metrics."""
+            events = app.jobs.ai_events(sym)
+            if events is None:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "no AI overview in progress")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")  # no Content-Length: the body ends when we close
+            for k, v in SECURITY_HEADERS.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.close_connection = True
+            if self.command == "HEAD":
+                return
+            self.wfile.write(b"retry: 2000\n\n")
+            for event, data in events:
+                if event == "ping":
+                    chunk = b": ping\n\n"
+                else:
+                    chunk = b"event: " + event.encode("ascii") + b"\ndata: " + to_json(data) + b"\n\n"
+                self.wfile.write(chunk)
+                self.wfile.flush()
 
         def route_plot(self, name):
             """/plots/SYM.png = full 300-dpi chart (lightbox), /plots/SYM.jpg = inline preview."""
