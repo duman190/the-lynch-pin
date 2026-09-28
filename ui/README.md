@@ -15,7 +15,8 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 - Hero artwork built from the Lynch Pin badge.
 - Ticker search at `?t=MSFT`, which you can bookmark and share. It shows valuation (PEG, Dev SD bell, 5Y Bull/Base/Bear ROI), the same chart `main.py` renders, the income grade, the credit rating, technicals and the 6M edge. Results stream in stage by stage.
 - An AI overview from a local LM Studio server that types in real time (Server-Sent Events), with live time to first token, tokens/s, token count and thinking tokens; a reasoning model's thinking streams into a collapsible box. The prompt reuses the daily scan's DATASET block but asks for three one-paragraph sections for this ticker only (no sentiment line, no character limits). When no model is loaded, the UI shows "AI offline" and keeps working.
-- A daily LFU cache of 100 tickers. Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
+- The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
+- A daily LFU cache of 250 tickers. Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
 
 ## Configuration (CLI flag or env var)
 | Flag | Env | Default |
@@ -28,10 +29,10 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 | `--llm-max-tokens` | `LYNCH_LLM_MAX_TOKENS` | `8192` (includes thinking tokens) |
 | `--llm-reasoning` | `LYNCH_LLM_REASONING` | `off` (sends `reasoning_effort: "none"`; `on` keeps the model's thinking) |
 | `--llm-autoload` | `LYNCH_LLM_AUTOLOAD=1` | off (asks LM Studio to load the model with `--llm-ctx`) |
-| `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `100` |
+| `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `250` |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
-| | `LYNCH_UI_ENRICH=1` | off (FMP multi-source growth, needs `FMP_API_KEY`) |
+| `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
 | | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | e.g. Tailscale `100.64.0.0/10` / MagicDNS names |
 
 The LLM context window is the smaller of `--llm-ctx` and the loaded model's real context (from LM Studio's `/api/v0/models`). To try the AI card without a model, run `python -m ui.tests.fake_lmstudio --port 18080` (streams a canned reply; `--delay` sets the typing speed) and start the server with `--llm-url http://127.0.0.1:18080`.
