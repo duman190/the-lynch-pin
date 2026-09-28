@@ -309,7 +309,10 @@
         setText(dd.ttft, isNum(cur.ttft_s) ? `${cur.ttft_s.toFixed(1)}s` : "—");
         setText(dd.speed, isNum(cur.tok_s) ? `${cur.tok_s.toFixed(1)} tok/s` : "—");
         setText(dd.tokens, isNum(cur.tokens) && cur.tokens ? nf.format(cur.tokens) : "—");
-        setText(dd.thinking, cur.reasoning_tokens ? `${nf.format(cur.reasoning_tokens)} tok${isNum(cur.thinking_s) ? ` · ${cur.thinking_s.toFixed(1)}s` : ""}` : "—");
+        const off = (cur.reasoning || (S.app.health && S.app.health.ai && S.app.health.ai.reasoning)) === "off";
+        setText(dd.thinking, cur.reasoning_tokens
+          ? `${nf.format(cur.reasoning_tokens)} tok${isNum(cur.thinking_s) ? ` · ${cur.thinking_s.toFixed(1)}s` : ""}`
+          : (off ? "off" : "—"));
         setText(dd.elapsed, isNum(cur.elapsed_s) ? `${cur.elapsed_s.toFixed(1)}s` : "—");
         if (cur.reasoning_tokens) setText(rSum, `🧠 Model reasoning · ${nf.format(cur.reasoning_tokens)} tokens`);
       },
@@ -379,7 +382,7 @@
     }
     V.setHead(ai);
     V.sections(ai.narrative || {}, false);
-    V.metrics(ai.metrics || {});
+    V.metrics(Object.assign({ reasoning: ai.reasoning }, ai.metrics || {}));
     const m = ai.metrics || {};
     const took = isNum(m.elapsed_s) ? m.elapsed_s : ai.elapsed_s;
     V.status([isNum(took) ? `Done in ${took.toFixed(1)}s` : "Done", ai.cached ? "⚡ from today's cache" : null,
