@@ -48,9 +48,19 @@ class FakeVisualizer:
         return path
 
 
+LEVELS = {"price": 430.0, "support": [{"price": 419.5, "p_touch_1m": 62.0}, {"price": 401.2, "p_touch_1m": 31.0}],
+          "resistance": [{"price": 445.8, "p_touch_1m": 48.0}], "poc": 425.1, "hvn": [410.0, 425.1, 438.2],
+          "ranges": {"1w": {"1sigma_lower": 415.0, "1sigma_upper": 445.0, "2sigma_lower": 400.0, "2sigma_upper": 460.0,
+                            "move_pct": 3.5},
+                     "1m": {"1sigma_lower": 399.0, "1sigma_upper": 461.0, "2sigma_lower": 368.0, "2sigma_upper": 492.0,
+                            "move_pct": 7.2}},
+          "realized_vol_pct": 24.9, "sma50": 420.0, "sma200": 380.0, "high_52w": 468.0, "low_52w": 344.0}
+
+
 def backends(**overrides):
     b = {"engine": FakeEngine, "grade_income": lambda t: INCOME, "grade_bs": lambda t: CREDIT,
-         "technicals": lambda t: TECH, "edge": lambda s, idx, days: EDGE, "visualizer": FakeVisualizer}
+         "technicals": lambda t: TECH, "levels": lambda t, price=None: LEVELS,
+         "edge": lambda s, idx, days: EDGE, "visualizer": FakeVisualizer}
     b.update(overrides)
     return b
 
