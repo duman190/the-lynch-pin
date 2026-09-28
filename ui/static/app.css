@@ -234,21 +234,6 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 .shimmer span:nth-child(2) { width: 80%; } .shimmer span:nth-child(3) { width: 60%; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
-/* ── gallery ─────────────────────────────────────────────────────────────── */
-.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-.gallery figure {
-  margin: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
-  transition: transform .15s, border-color .15s, box-shadow .15s;
-}
-.gallery figure:hover { transform: translateY(-2px); border-color: var(--sky); box-shadow: 0 0 24px rgba(93,156,236,.18); }
-.gallery button { all: unset; cursor: zoom-in; display: block; width: 100%; }
-.gallery button:focus-visible { outline: 2px solid var(--sky); outline-offset: -2px; }
-.gallery img { width: 100%; aspect-ratio: 1568 / 915; object-fit: cover; background: var(--bg); }
-.gallery figcaption { display: flex; justify-content: space-between; padding: 8px 12px; font: 700 .85rem var(--mono); color: var(--text); border-top: 1px solid var(--border); }
-.gallery figcaption span:last-child { color: var(--dim); font-weight: 400; }
-.gallery .wide { grid-column: 1 / -1; }
-.gallery .wide img { aspect-ratio: auto; object-fit: contain; }
-
 /* ── about ───────────────────────────────────────────────────────────────── */
 .about-grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 24px; align-items: center; margin-top: 12px; }
 .about p { margin: 0 0 10px; }
@@ -276,7 +261,6 @@ dialog#lightbox img { width: 100%; height: auto; }
 
 /* ── responsive: tablets & phones ────────────────────────────────────────── */
 @media (max-width: 1024px) {
-  .gallery { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
   .about-grid { grid-template-columns: 1fr; }
   .card-valuation, .card-plot { grid-column: 1 / -1; }
   .card-income, .card-credit { grid-column: span 6; }
@@ -308,9 +292,6 @@ dialog#lightbox img { width: 100%; height: auto; }
   .btn-primary { padding: 12px 16px; min-height: 48px; }
   .hint { font-size: .8rem; }
   .recent button { min-height: 40px; padding: 8px 14px; }
-  .gallery { grid-template-columns: 1fr 1fr; gap: 10px; }
-  .gallery figcaption { padding: 6px 8px; font-size: .75rem; }
-  .gallery figcaption span:last-child { display: none; }
   .panel-head { flex-direction: column; gap: 2px; }
   .result-grid { grid-template-columns: 1fr; gap: 12px; }
   .result-grid > .card { grid-column: 1 / -1; }
@@ -332,10 +313,6 @@ dialog#lightbox img { width: 100%; height: auto; }
   }
 }
 
-@media (max-width: 480px) {
-  .gallery { grid-template-columns: 1fr; }  /* chart text stays legible on phones */
-}
-
 @media (max-width: 380px) {
   .brand-text span { display: none; }
 }
@@ -344,10 +321,6 @@ dialog#lightbox img { width: 100%; height: auto; }
 @media (max-height: 500px) and (orientation: landscape) {
   .hero img { max-height: 70vh; object-fit: cover; }
   .topbar { position: static; }
-}
-
-@media (hover: none) {
-  .gallery figure:hover { transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
