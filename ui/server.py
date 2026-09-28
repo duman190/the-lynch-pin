@@ -337,6 +337,8 @@ def parse_args(argv=None):
     p.add_argument("--llm-model", default=s.llm_model, help="model id (default: first model the server lists)")
     p.add_argument("--llm-ctx", type=int, default=s.llm_ctx, help="context window in tokens (default 65536)")
     p.add_argument("--llm-max-tokens", type=int, default=s.llm_max_tokens)
+    p.add_argument("--llm-reasoning", choices=("off", "on"), default=s.llm_reasoning if s.llm_reasoning in ("off", "on")
+                   else "off", help="thinking for reasoning models: off sends reasoning_effort=none (default off)")
     p.add_argument("--llm-autoload", action="store_true", default=s.llm_autoload,
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
     p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 100)")
@@ -345,7 +347,7 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     s.host, s.port, s.lan = a.host, a.port, a.lan
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
-    s.llm_max_tokens, s.llm_autoload = a.llm_max_tokens, a.llm_autoload
+    s.llm_max_tokens, s.llm_autoload, s.llm_reasoning = a.llm_max_tokens, a.llm_autoload, a.llm_reasoning
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     return s, a
 
@@ -373,7 +375,8 @@ def main(argv=None):
         for a in _lan_addresses():
             print(f"   📱 open http://{a}:{settings.port} on your phone", flush=True)
     if app.llm is not None:
-        print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx}", flush=True)
+        print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
+              f"reasoning={settings.llm_reasoning}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
