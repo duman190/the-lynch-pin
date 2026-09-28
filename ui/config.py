@@ -34,6 +34,10 @@ class Settings:
     # Output budget incl. reasoning tokens of thinking models (the model stops as soon as it is done)
     llm_max_tokens: int = field(default_factory=lambda: _env_int("LYNCH_LLM_MAX_TOKENS", 8192))
     llm_timeout: int = field(default_factory=lambda: _env_int("LYNCH_LLM_TIMEOUT", 600))
+    # Thinking models: "off" sends reasoning_effort="none" (documented switch for Qwen3.6 Splash and
+    # OpenAI-style servers; retried without it if the server rejects the field), "on" leaves the
+    # server default.
+    llm_reasoning: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_REASONING", "off").strip().lower())
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
 
