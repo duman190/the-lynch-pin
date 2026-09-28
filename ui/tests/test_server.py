@@ -1,4 +1,4 @@
-"""Step 1/2: HTTP server, static assets, gallery, network guard."""
+"""Step 1/2: HTTP server, static assets, network guard."""
 import http.client
 import json
 import os
@@ -11,17 +11,6 @@ from ui.netguard import is_allowed_host, is_local_client
 from ui.server import PortalApp, PortalServer, make_handler, to_json
 
 
-@pytest.fixture
-def scan_dir(tmp_path):
-    d = tmp_path / "scan"
-    d.mkdir()
-    (d / "MSFT_valuation.png").write_bytes(b"\x89PNG fake")
-    (d / "benchmark_comparison.png").write_bytes(b"\x89PNG bench")
-    (d / "secret.txt").write_text("nope")
-    (d / "batch_results.csv").write_text("nope")
-    return d
-
-
 def serve(app):
     httpd = PortalServer(("127.0.0.1", 0), make_handler(app))
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -30,9 +19,9 @@ def serve(app):
 
 
 @pytest.fixture
-def server(scan_dir):
+def server(tmp_path):
     s = Settings()
-    s.scan_dir = str(scan_dir)
+    s.cache_dir = str(tmp_path / "cache")
     httpd = serve(PortalApp(s))
     yield httpd
     httpd.shutdown()
@@ -87,13 +76,11 @@ def test_health(server):
     assert r.getheader("Cache-Control") == "no-store"
 
 
-def test_scan_listing_filters_and_orders(server):
-    r, body = get(server, "/api/scan")
-    items = json.loads(body)["items"]
-    assert [i["file"] for i in items] == ["benchmark_comparison.png", "MSFT_valuation.png"]
-    assert items[1]["kind"] == "ticker" and items[1]["label"] == "MSFT"
-    r, img = get(server, items[1]["url"])
-    assert r.status == 200 and img == b"\x89PNG fake"
+def test_latest_scan_section_removed(server):
+    _, body = get(server, "/")
+    assert b"Latest scan" not in body and b'id="gallery"' not in body
+    for path in ["/api/scan", "/scan/MSFT_valuation.png", "/scan/thumb/MSFT_valuation.png"]:
+        assert get(server, path)[0].status == 404, path
 
 
 def test_search_disabled_without_jobs(server):
@@ -218,40 +205,30 @@ def test_default_bind_is_loopback(monkeypatch):
     assert s.bind_host == "0.0.0.0"
 
 
-def test_scan_thumbnail_is_small_jpeg(tmp_path):
+def test_jpeg_preview_is_small_and_cached(tmp_path):
+    import io
     from PIL import Image
-    d = tmp_path / "scan"
-    d.mkdir()
-    Image.new("RGB", (3000, 1800), "#121212").save(d / "AAPL_valuation.png")
-    s = Settings()
-    s.scan_dir, s.cache_dir = str(d), str(tmp_path / "cache")
-    httpd = serve(PortalApp(s))
-    try:
-        items = json.loads(get(httpd, "/api/scan")[1])["items"]
-        r, body = get(httpd, items[0]["thumb"])
-        assert r.status == 200 and r.getheader("Content-Type") == "image/jpeg"
-        assert body[:2] == b"\xff\xd8"
-        import io
-        assert Image.open(io.BytesIO(body)).width == PortalApp.THUMB_WIDTH
-        assert get(httpd, "/scan/thumb/../x.png")[0].status == 404
-        assert get(httpd, "/scan/thumb/ZZZ_valuation.png")[0].status == 404
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
+    from ui.imaging import jpeg_preview
+    src = tmp_path / "AAPL_valuation.png"
+    Image.new("RGB", (3000, 1800), "#121212").save(src)
+    out = jpeg_preview(str(src), str(tmp_path / "prev"), 900)
+    with open(out, "rb") as f:
+        body = f.read()
+    assert body[:2] == b"\xff\xd8" and Image.open(io.BytesIO(body)).width == 900
+    assert jpeg_preview(str(src), str(tmp_path / "prev"), 900) == out  # reused
+    assert jpeg_preview(str(tmp_path / "missing.png"), str(tmp_path / "prev"), 900) is None
 
 
-def test_concurrent_thumbnail_requests_share_one_render(tmp_path):
+def test_concurrent_previews_share_one_render(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from PIL import Image
-    d = tmp_path / "scan"
-    d.mkdir()
-    Image.new("RGB", (3000, 1800), "#5D9CEC").save(d / "NVDA_valuation.png")
-    s = Settings()
-    s.scan_dir, s.cache_dir = str(d), str(tmp_path / "cache")
-    app = PortalApp(s)
+    from ui.imaging import jpeg_preview
+    src = tmp_path / "NVDA_valuation.png"
+    Image.new("RGB", (3000, 1800), "#5D9CEC").save(src)
+    out_dir = tmp_path / "prev"
     with ThreadPoolExecutor(8) as ex:
-        paths = list(ex.map(lambda _: app.scan_thumbnail("NVDA_valuation.png"), range(16)))
+        paths = list(ex.map(lambda _: jpeg_preview(str(src), str(out_dir), 1100), range(16)))
     assert len(set(paths)) == 1 and paths[0].endswith(".jpg")
     with open(paths[0], "rb") as f:
         assert f.read(2) == b"\xff\xd8"
-    assert not [n for n in os.listdir(tmp_path / "cache" / "thumbs") if n.endswith(".part")]
+    assert not [n for n in os.listdir(out_dir) if n.endswith(".part")]
