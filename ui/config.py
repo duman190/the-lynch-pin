@@ -28,7 +28,7 @@ class Settings:
     lan: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_LAN"))
 
     # Local LLM (LM Studio, OpenAI-compatible). Empty model = use the first model the server lists.
-    llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:8080"))
+    llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:1234"))
     llm_model: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_MODEL", ""))
     llm_ctx: int = field(default_factory=lambda: _env_int("LYNCH_LLM_CTX", 65536))
     llm_max_tokens: int = field(default_factory=lambda: _env_int("LYNCH_LLM_MAX_TOKENS", 4096))
@@ -44,7 +44,6 @@ class Settings:
     # Paths
     static_dir: str = os.path.join(UI_DIR, "static")
     cache_dir: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_CACHE_DIR", os.path.join(UI_DIR, ".cache")))
-    scan_dir: str = os.path.join(REPO_ROOT, "tmp")  # read-only: charts produced by main.py runs
 
     @property
     def bind_host(self):
