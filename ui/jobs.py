@@ -324,6 +324,32 @@ class JobManager:
                 self._cv.notify_all()
             return self._ai_snapshot(job)
 
+    def deep_dive(self, sym):
+        """Deep Dive Prompt for today's analysis of ``sym`` (with the AI overview once it is written)."""
+        from ui.deepdive import build_deep_dive
+        with self._cv:
+            entry = self.lookup(sym)
+            if entry is None:
+                rj = self._recent.get(sym)
+                entry = rj.data if rj is not None and rj.status in ("done", "nodata") else None
+            if entry is None or entry.get("status") not in ("done", "nodata"):
+                return None
+            ai = entry.get("ai")
+            if ai is not None:
+                state = "included"
+            elif self.llm is None:
+                state = "disabled"
+            elif sym in self._ai_inflight:
+                state = "pending"
+            else:
+                done = self._recent_ai.get(sym)
+                if done is not None and done.status == "done" and done.entry is entry and done.result:
+                    ai, state = done.result, "included"
+                else:
+                    state = "unavailable"
+        prompt = build_deep_dive(entry, ai, state)
+        return {"ticker": sym, "prompt": prompt, "ai": state, "words": len(prompt.split()), "chars": len(prompt)}
+
     def _ai_snapshot(self, job):
         now = self._clock()
         pos = 0
