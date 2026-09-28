@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover
     pd = None
 
 from ui.config import REPO_ROOT, Settings  # noqa: E402
+from ui import netguard  # noqa: E402
 from ui.netguard import is_allowed_host, is_local_client  # noqa: E402
 
 if REPO_ROOT not in sys.path:
@@ -173,13 +174,24 @@ def make_handler(app):
                 ctype += "; charset=utf-8"
             self._send(HTTPStatus.OK, body, ctype, cache=cache, extra=validators)
 
+        def _refuse(self, message, hint):
+            key = (self.client_address[0], message)
+            if key not in _REFUSED:  # explain once per client, not on every request
+                _REFUSED.add(key)
+                sys.stderr.write(f"⛔ {self.client_address[0]}: {message} — {hint}\n")
+            self.send_error_json(HTTPStatus.FORBIDDEN, message)
+            return False
+
         def _guard(self):
-            if not is_local_client(self.client_address[0]):
-                self.send_error_json(HTTPStatus.FORBIDDEN, "local network only")
-                return False
-            if not is_allowed_host(self.headers.get("Host", "")):
-                self.send_error_json(HTTPStatus.FORBIDDEN, "unexpected Host header")
-                return False
+            ip = self.client_address[0]
+            if not is_local_client(ip):
+                return self._refuse("local network only",
+                                    f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)")
+            host = self.headers.get("Host", "")
+            if not is_allowed_host(host):
+                name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+                return self._refuse("unexpected Host header",
+                                    f"Host was {host!r}; to allow it restart with --allow-host {name}")
             return True
 
         # ── verbs ────────────────────────────────────────────────────────────────
@@ -302,9 +314,19 @@ def make_handler(app):
     return Handler
 
 
+_REFUSED = set()
+
+
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        """A phone locking or a tab closing mid-request is not an error worth a traceback."""
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, TimeoutError,
+                                          ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def build_app(settings, with_search=True, with_ai=True):
@@ -331,6 +353,10 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Lynch Pin Quant Portal (local web UI)")
     p.add_argument("--host", default=s.host, help="bind address (default 127.0.0.1)")
     p.add_argument("--port", type=int, default=s.port)
+    p.add_argument("--allow-net", action="append", default=[], metavar="CIDR",
+                   help="extra client network(s) beyond private LAN + Tailscale (repeatable, comma-separated)")
+    p.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                   help="extra Host name(s) to accept, e.g. a reverse-proxy name (repeatable)")
     p.add_argument("--lan", action="store_true", default=s.lan,
                    help="listen on all interfaces so phones on the same private network can connect")
     p.add_argument("--llm-url", default=s.llm_base_url, help="LM Studio base URL (default http://127.0.0.1:1234)")
@@ -356,27 +382,38 @@ def parse_args(argv=None):
 
 
 def _lan_addresses():
+    """This machine's LAN and Tailscale addresses (UDP connect sends no packet; it only picks the
+    interface that would route to the target: a private LAN address, and Tailscale's MagicDNS IP)."""
     import socket
     addrs = set()
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("10.255.255.255", 1))  # no packet is sent; picks the outbound interface
-            addrs.add(s.getsockname()[0])
-    except OSError:
-        pass
-    return sorted(a for a in addrs if is_local_client(a))
+    for target in ("10.255.255.255", "100.100.100.100"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 1))
+                addrs.add(s.getsockname()[0])
+        except OSError:
+            pass
+    return sorted(a for a in addrs if is_local_client(a) and not a.startswith("127."))
 
 
 def main(argv=None):
     settings, args = parse_args(argv)
+    bad = netguard.allow(args.allow_net, args.allow_host)
+    bad += netguard.parse_nets([os.environ.get("LYNCH_UI_ALLOWED_NETS", "")])[1]
+    if bad:
+        print(f"⚠️  ignoring invalid network(s): {', '.join(bad)} (expected CIDR like 100.0.0.0/8)", flush=True)
     app = build_app(settings, with_ai=not args.no_ai)
     httpd = PortalServer((settings.bind_host, settings.port), make_handler(app))
     print(f"📈 Lynch Pin Quant Portal on http://{settings.bind_host}:{settings.port}", flush=True)
     if settings.lan:
         print("⚠️  --lan: listening on ALL interfaces with NO authentication. Any device on your private "
-              "network can use the portal (public IPs and foreign Host headers are refused).", flush=True)
+              "network or tailnet can use the portal (public IPs and foreign Host headers are refused).", flush=True)
         for a in _lan_addresses():
-            print(f"   📱 open http://{a}:{settings.port} on your phone", flush=True)
+            where = "over Tailscale" if a.startswith("100.") else "on your Wi-Fi"
+            print(f"   📱 open http://{a}:{settings.port} {where}", flush=True)
+    nets, hosts = netguard.extra_allowed()
+    if nets or hosts:
+        print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)
     if app.jobs is not None:
         print(f"📈 Growth enrichment: {'on' if settings.enrich_enabled else 'off'}", flush=True)
     if app.llm is not None:
