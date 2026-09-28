@@ -20,6 +20,15 @@ def _env_bool(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _enrich_mode(value):
+    v = (value or "auto").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return "on"
+    if v in ("0", "false", "no", "off"):
+        return "off"
+    return "auto"
+
+
 @dataclass
 class Settings:
     # HTTP listener. Loopback by default; --lan opts into 0.0.0.0 (private-network clients only).
@@ -43,12 +52,18 @@ class Settings:
 
     # Analysis
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
-    enrich: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_ENRICH"))  # FMP multi-source growth
-    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 100))
+    # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
+    enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
+    # 250 = the FMP free plan's daily calls (one per enriched ticker)
+    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 250))
 
     # Paths
     static_dir: str = os.path.join(UI_DIR, "static")
     cache_dir: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_CACHE_DIR", os.path.join(UI_DIR, ".cache")))
+
+    @property
+    def enrich_enabled(self):
+        return self.enrich == "on" or (self.enrich == "auto" and bool(os.environ.get("FMP_API_KEY")))
 
     @property
     def bind_host(self):
