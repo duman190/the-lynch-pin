@@ -95,13 +95,88 @@ class Job:
         self.day = day
 
 
+class AIStream:
+    """Live state of one AI generation: written by the AI worker (it is the ``sink`` handed to
+    ``ui.llm.ticker_narrative``), read by SSE handlers and JSON pollers.
+
+    Reasoning is append-only (readers track an index); the answer is re-parsed into its three
+    sections on read, so a label that arrives mid-stream moves text between sections cleanly.
+    """
+    REASONING_TAIL = 20000  # chars of reasoning replayed to a (re)connecting client
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.version = 0
+        self.attempt = 0
+        self.note = None
+        self.phase = "queued"  # queued | connecting | thinking | writing | done | error | unavailable
+        self.reasoning = []
+        self.content = ""
+        self.metrics = {}
+        self.final = None
+        self.started_at = None
+        self._parsed = (-1, None)
+
+    def _bump(self):
+        self.version += 1
+        self.cv.notify_all()
+
+    # sink API ─────────────────────────────────────────────────────────────
+    def begin(self, attempt, note=None):
+        with self.cv:
+            self.attempt, self.note = attempt, note
+            self.reasoning, self.content, self.metrics = [], "", {}
+            self.phase = "connecting"
+            self.started_at = time.monotonic()
+            self._bump()
+
+    def rewind(self, moved):
+        """The answer typed so far was reasoning (prefilled <think>): move it to the reasoning box."""
+        with self.cv:
+            if moved:
+                self.reasoning.append(moved)
+            self.content = ""
+            self.phase = "thinking"
+            self._bump()
+
+    def delta(self, reasoning, content, metrics):
+        with self.cv:
+            if reasoning:
+                self.reasoning.append(reasoning)
+            if content:
+                self.content += content
+            self.phase = "writing" if self.content.strip() else ("thinking" if self.reasoning else "connecting")
+            self.metrics = metrics
+            self._bump()
+
+    def finish(self, payload):
+        with self.cv:
+            if self.final is None:
+                self.final = payload
+                self.phase = payload.get("status", "error")
+                self._bump()
+
+    # readers (hold cv) ────────────────────────────────────────────────────
+    def sections(self):
+        from ui.llm import parse_sections
+        if self._parsed[0] != self.version:
+            self._parsed = (self.version, parse_sections(self.content, partial=True) if self.content else None)
+        return self._parsed[1]
+
+    def live(self):
+        with self.cv:
+            return {"phase": self.phase, "attempt": self.attempt, "note": self.note, "sections": self.sections(),
+                    "metrics": dict(self.metrics), "reasoning_tokens": self.metrics.get("reasoning_tokens", 0)}
+
+
 class AIJob:
-    __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen")
+    __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen", "stream")
 
     def __init__(self, sym, entry, now):
         self.sym, self.entry = sym, entry
         self.status, self.result, self.error = "queued", None, None
         self.created, self.started, self.finished, self.gen = now, None, None, None
+        self.stream = AIStream()
 
 
 class JobManager:
@@ -261,7 +336,86 @@ class JobManager:
                "elapsed_s": round((job.finished or now) - (job.started or job.created), 1), "error": job.error}
         if job.result:
             out.update({k: v for k, v in job.result.items() if k not in ("status", "error")})
+        elif job.status in ("queued", "running"):
+            out["live"] = job.stream.live()  # partial answer + metrics for clients without SSE
         return out
+
+    # ── live AI stream (Server-Sent Events) ──────────────────────────────────
+    def ai_events(self, sym, heartbeat=10.0, coalesce=0.08):
+        """Event generator for the AI job of ``sym`` (in flight or just finished), or None.
+
+        Yields ``(event, data)``: ``snapshot`` first (full state, so reconnects are seamless), then
+        ``delta`` (new reasoning text, re-parsed sections when the answer changed, metrics),
+        ``reset`` (a retry started), ``state`` (queue position / phase ticks), ``ping`` (keep-alive)
+        and finally one of ``done`` / ``error`` / ``unavailable`` carrying the JSON snapshot.
+        """
+        with self._cv:
+            job = self._ai_inflight.get(sym) or self._recent_ai.get(sym)
+        if job is None:
+            return None
+        return self._ai_event_loop(job, heartbeat, coalesce)
+
+    def _ai_event_loop(self, job, heartbeat, coalesce):
+        st = job.stream
+        clock = time.monotonic
+        deadline = clock() + self.ai_deadline + 60  # never hold an HTTP thread forever
+        with st.cv:
+            seen, attempt, r_idx = st.version, st.attempt, len(st.reasoning)
+            reasoning = "".join(st.reasoning)[-AIStream.REASONING_TAIL:]
+            content_seen = st.content
+            snap = {"phase": st.phase, "attempt": st.attempt, "note": st.note, "reasoning": reasoning,
+                    "sections": st.sections(), "metrics": dict(st.metrics)}
+            final = st.final
+        with self._cv:
+            snap.update(queue_position=self._ai_snapshot(job).get("queue_position"), ticker=job.sym)
+        yield "snapshot", snap
+        if final is not None:
+            yield final.get("status", "error"), final
+            return
+        last_out, last_state = clock(), None
+        while clock() < deadline and not self._stop:
+            with st.cv:
+                if st.version == seen and st.final is None:
+                    st.cv.wait(1.0)
+            time.sleep(coalesce)  # let a few tokens accumulate: ~12 events/s instead of one per token
+            with st.cv:
+                changed = st.version != seen
+                seen = st.version
+                final = st.final
+                if st.attempt != attempt:
+                    attempt, r_idx, content_seen = st.attempt, 0, ""
+                    events = [("reset", {"attempt": st.attempt, "note": st.note})]
+                else:
+                    events = []
+                if changed and final is None:
+                    delta = {"phase": st.phase, "metrics": dict(st.metrics),
+                             "reasoning": "".join(st.reasoning[r_idx:])}
+                    r_idx = len(st.reasoning)
+                    if st.content != content_seen:
+                        content_seen = st.content
+                        delta["sections"] = st.sections()
+                    events.append(("delta", delta))
+            for ev in events:
+                yield ev
+                last_out = clock()
+            if final is not None:
+                yield final.get("status", "error"), final
+                return
+            if not events:
+                with self._cv:
+                    snap = self._ai_snapshot(job)
+                state = (job.status, snap.get("queue_position"))
+                if state != last_state or job.status == "running":
+                    last_state = state
+                    started = st.started_at  # same clock as the meter: time since this attempt began
+                    elapsed = round(clock() - started, 1) if started else snap.get("elapsed_s")
+                    yield "state", {"status": job.status, "phase": st.phase, "queue_position": state[1],
+                                    "elapsed_s": elapsed}
+                    last_out = clock()
+                elif clock() - last_out >= heartbeat:
+                    yield "ping", None
+                    last_out = clock()
+        yield "error", {"ticker": job.sym, "status": "error", "error": "AI stream closed — reload to continue"}
 
     def _spawn_ai_worker(self):
         self._ai_gen += 1
@@ -271,7 +425,7 @@ class JobManager:
         self._threads.append(t)
 
     def _ai_worker(self, gen):
-        from ui.llm import LLMError, LLMUnavailable, ticker_narrative
+        from ui.llm import LLMCancelled, LLMError, LLMUnavailable, ticker_narrative
         while True:
             with self._cv:
                 while not self._ai_queue and not self._stop and gen == self._ai_gen:
@@ -281,8 +435,14 @@ class JobManager:
                 job = self._ai_queue.popleft()
                 job.status, job.gen, job.started = "running", gen, self._clock()
                 self._ai_running = job
+            def cancelled(job=job, gen=gen):
+                return self._stop or gen != self._ai_gen or job.status != "running"
+
             try:
-                result = ticker_narrative(self.llm, job.entry, self.settings.benchmark)
+                result = ticker_narrative(self.llm, job.entry, self.settings.benchmark, sink=job.stream,
+                                          cancelled=cancelled)
+            except LLMCancelled:
+                continue  # watchdog / shutdown already finalised the job
             except LLMUnavailable as e:
                 result = {"status": "unavailable", "error": str(e)}
             except LLMError as e:
@@ -305,10 +465,12 @@ class JobManager:
                 self._finish_ai(job)
 
     def _finish_ai(self, job):
+        """Lock held: retire a finalised AI job and publish its final snapshot to stream readers."""
         self._ai_inflight.pop(job.sym, None)
         self._recent_ai[job.sym] = job
         if self._ai_running is job:
             self._ai_running = None
+        job.stream.finish(self._ai_snapshot(job))
 
     def cache_stats(self):
         st = dict(self.store.stats())
