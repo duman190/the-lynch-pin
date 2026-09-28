@@ -71,7 +71,7 @@ async function refreshHealth() {
       const ok = h.ai.available;
       const cls = h.ai.checking ? "busy" : ok ? (h.ai.warning ? "busy" : "on") : "off";
       const label = h.ai.checking ? "AI …" : ok ? `AI · ${h.ai.model_short || "local"}` : "AI offline";
-      const tip = ok ? `Local model ${h.ai.model} (ctx ${h.ai.ctx})${h.ai.warning ? " — " + h.ai.warning : ""}`
+      const tip = ok ? `Local model ${h.ai.model} (ctx ${h.ai.ctx}, reasoning ${h.ai.reasoning || "on"})${h.ai.warning ? " — " + h.ai.warning : ""}`
         : (h.ai.reason || "local model unavailable");
       setChip("#chip-ai", cls, label, tip);
       if (h.ai.checking) setTimeout(refreshHealth, 2500);  // background probe finishes shortly
