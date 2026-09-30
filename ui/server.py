@@ -110,6 +110,9 @@ def make_handler(app):
         server_version = "LynchPinPortal/1.0"
         sys_version = ""
         timeout = 30  # idle keep-alive sockets from phones are closed after this
+        # TCP_NODELAY: headers and body go out as two writes; with Nagle's algorithm on, the body waits
+        # for the client's delayed ACK (~40-50 ms per keep-alive response). See ui/tests/test_benchmark.py.
+        disable_nagle_algorithm = True
 
         # ── plumbing ─────────────────────────────────────────────────────────────
         def log_message(self, fmt, *args):  # quieter, single-line access log
@@ -325,6 +328,9 @@ _REFUSED = set()
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # Listen backlog. socketserver's default of 5 overflows when a page load or a few devices open many
+    # connections at once; dropped SYNs are retried after 1-3 s. (The OS may cap it, e.g. somaxconn.)
+    request_queue_size = 128
 
     def handle_error(self, request, client_address):
         """A phone locking or a tab closing mid-request is not an error worth a traceback."""
