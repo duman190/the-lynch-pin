@@ -5,7 +5,8 @@ Dark-mode web UI for the Lynch Pin engine, for PC and phone. Everything lives in
 ```bash
 python -m ui.server                  # http://127.0.0.1:8765, this machine only
 python -m ui.server --lan            # phones/PCs on the same private network (prints the URL to open)
-python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Studio)
+python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Studio), incl. a quick benchmark
+python ui/tests/test_benchmark.py    # throughput benchmark: req/s and latency per endpoint (AI off)
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
