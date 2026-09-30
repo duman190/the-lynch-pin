@@ -274,3 +274,27 @@ def test_connection_reset_is_not_logged_as_a_traceback(capfd):
         assert "Traceback" not in capfd.readouterr().err
     finally:
         httpd.server_close()
+
+
+def test_socket_settings_for_keepalive_latency_and_bursts(server):
+    """TCP_NODELAY on every accepted connection, and a listen backlog that absorbs bursts."""
+    import socket
+    from ui.server import PortalServer
+    assert PortalServer.request_queue_size >= 128
+    handler = make_handler(PortalApp(Settings()))
+    assert handler.disable_nagle_algorithm is True
+    seen = []
+
+    class Probe(handler):
+        def setup(self):
+            super().setup()
+            seen.append(self.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+
+    httpd = PortalServer(("127.0.0.1", 0), Probe)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        assert get(httpd, "/api/health")[0].status == 200
+        assert seen and seen[0] != 0
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
