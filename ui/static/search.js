@@ -603,7 +603,7 @@
     // technicals card combines two stages; render once both are settled
     const line = $("#status-line");
     let msg;
-    if (snap.status === "queued") msg = `Queued — position ${snap.queue_position || 1}…`;
+    if (snap.status === "queued") msg = snap.note ? `${snap.note}…` : `Queued — position ${snap.queue_position || 1}…`;
     else if (snap.status === "running") msg = `Running ${STAGE_LABELS[snap.stage] || "analysis"}… ${Math.round(snap.elapsed_s || 0)}s`;
     else if (snap.status === "done") msg = snap.cached ? "Loaded from today's cache ⚡" : `Analysis complete in ${Math.round(snap.elapsed_s || 0)}s`;
     else if (snap.status === "nodata") msg = `No GARP valuation for ${snap.ticker}: ${d.reason || "insufficient data"}`;

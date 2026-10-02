@@ -31,7 +31,7 @@ try:
 except ImportError:  # pragma: no cover
     pd = None
 
-from ui.config import AUTO_WORKERS, REPO_ROOT, Settings  # noqa: E402
+from ui.config import CPU_WORKERS, WORKER_MB, REPO_ROOT, Settings, available_mb  # noqa: E402
 from ui import netguard  # noqa: E402
 from ui.netguard import is_allowed_host, is_local_client  # noqa: E402
 
@@ -386,7 +386,7 @@ def parse_args(argv=None):
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
     p.add_argument("--workers", type=int, default=s.workers,
                    help="tickers analysed at the same time, one process each (default 0 = auto: "
-                        f"1 with the AI overview, {AUTO_WORKERS} without)")
+                        f"1 with the AI overview, {CPU_WORKERS} without, fewer if free RAM is short)")
     a = p.parse_args(argv)
     s.host, s.port, s.lan = a.host, a.port, a.lan
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
@@ -434,6 +434,11 @@ def main(argv=None):
         print(f"📈 Growth enrichment: {'on' if settings.enrich_enabled else 'off'}", flush=True)
         print(f"📈 Analysis workers: {app.jobs.workers}"
               f"{' (one process each)' if app.jobs.processes else ''}", flush=True)
+        free = available_mb()
+        if settings.workers == 0 and app.llm is None and free is not None and app.jobs.workers < CPU_WORKERS:
+            print(f"⚠️  only {free} MB of RAM free: {app.jobs.workers} workers instead of {CPU_WORKERS} "
+                  f"(~{WORKER_MB} MB each). Free memory (e.g. unload the LM Studio model) or set --workers.",
+                  flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning}", flush=True)

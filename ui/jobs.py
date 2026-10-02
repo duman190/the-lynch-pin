@@ -12,6 +12,13 @@ exceeds ``deadline`` seconds it is marked ``error: timed out``, its worker is re
 leaves the live set) and a fresh worker takes its place in the pool; the retired worker's late
 results are discarded. A worker process is killed; a worker thread cannot be, so it stops at its
 next stage boundary.
+
+Yahoo rate limit (a circuit breaker): when an analysis reports ``rate_limited`` (ui/yahoo.py counts
+Yahoo's 429s), no new job starts for ``backoff`` seconds. A lookup that got nothing back is
+re-queued at the front instead of failing (up to ``RATE_LIMIT_RETRIES`` times); a partial one is
+returned but never cached. After the pause a single *probe* job runs; the others wait until it
+comes back clean. A throttled probe doubles the pause (30 s → 10 min). Queued snapshots carry a note
+and ``retry_after`` so the browser can say why it is waiting.
 """
 import collections
 import copy
@@ -23,6 +30,8 @@ import time
 from ui.analysis import STAGES, TickerAnalyzer
 
 FINAL = ("done", "nodata", "error")
+RATE_LIMIT_BACKOFF = (30.0, 600.0)  # first pause, longest pause (doubles per throttled probe)
+RATE_LIMIT_RETRIES = 2              # re-queues of a lookup that Yahoo throttled before it gives up
 
 
 class DayStore:
@@ -83,7 +92,8 @@ def public_view(data):
 
 
 class Job:
-    __slots__ = ("sym", "status", "stage", "data", "error", "created", "started", "finished", "gen", "day")
+    __slots__ = ("sym", "status", "stage", "data", "error", "created", "started", "finished", "gen", "day",
+                 "retries", "probe")
 
     def __init__(self, sym, now, day=None):
         self.sym = sym
@@ -96,6 +106,8 @@ class Job:
         self.finished = None
         self.gen = None
         self.day = day
+        self.retries = 0     # times re-queued after Yahoo throttled it
+        self.probe = False   # the one job allowed to test whether Yahoo is back
 
 
 class AIStream:
@@ -205,6 +217,12 @@ class JobManager:
         self._backends_spec = backends_spec  # "module:function" building the child's backends (tests)
         self._live = set()    # tokens of the workers that own the queue; a timed-out worker's is dropped
         self._token = 0
+        # Yahoo rate-limit circuit breaker (see module docstring)
+        self._limited = False
+        self._backoff = 0.0
+        self._cooldown_until = 0.0
+        self._probing = False
+        self.rate_limit_hits = 0
         # AI overview: a second single worker so LLM latency never blocks quant lookups
         self._ai_queue = collections.deque()
         self._ai_inflight = {}
@@ -513,6 +531,9 @@ class JobManager:
             st["queue"] = len(self._queue)
             st["running"] = ", ".join(sorted(j.sym for j in self._running.values())) or None
             st["workers"] = self.workers
+            st["rate_limited"] = self._limited
+            st["rate_limit_retry_s"] = self._retry_after() if self._limited else 0
+            st["rate_limit_hits"] = self.rate_limit_hits
             st["ai_queue"] = len(self._ai_queue)
             st["ai_running"] = self._ai_running.sym if self._ai_running else None
         return st
@@ -533,12 +554,46 @@ class JobManager:
 
     def _snapshot(self, job):
         now = self._clock()
-        return {
+        snap = {
             "ticker": job.sym, "status": job.status, "stage": job.stage, "cached": False,
             "queue_position": self._queue_position(job),
             "elapsed_s": round((job.finished or now) - (job.started or job.created), 1),
             "error": job.error, "data": public_view(job.data),
         }
+        if job.status == "queued" and self._limited:
+            wait = self._retry_after()
+            snap["retry_after"] = wait
+            snap["note"] = (f"Yahoo Finance is rate-limiting this server — retrying in {wait} s" if wait
+                            else "Yahoo Finance was rate-limiting this server — checking whether it is back")
+        return snap
+
+    # ── Yahoo rate-limit circuit breaker (lock held) ─────────────────────────
+    def _retry_after(self):
+        return max(0, int(round(self._cooldown_until - self._clock())))
+
+    def _may_start(self):
+        """A queued job may start now: always, unless Yahoo is throttling us (then one probe at a time,
+        after the pause)."""
+        if not self._queue:
+            return False
+        return not self._limited or (not self._probing and self._clock() >= self._cooldown_until)
+
+    def _note_outcome(self, job, throttled):
+        if throttled:
+            self.rate_limit_hits += 1
+            if not self._limited:
+                self._limited, self._backoff = True, RATE_LIMIT_BACKOFF[0]
+                print(f"⏳ Yahoo Finance rate limit ({job.sym}): pausing new lookups for {int(self._backoff)} s",
+                      flush=True)
+            elif job.probe:
+                self._backoff = min(self._backoff * 2, RATE_LIMIT_BACKOFF[1])
+                print(f"⏳ Yahoo Finance still rate-limiting ({job.sym}): pausing {int(self._backoff)} s", flush=True)
+            self._cooldown_until = max(self._cooldown_until, self._clock() + self._backoff)
+        elif job.probe and self._limited:
+            self._limited, self._backoff = False, 0.0
+            print(f"✅ Yahoo Finance answering again ({job.sym}): resuming all workers", flush=True)
+        if job.probe:
+            self._probing = job.probe = False
 
     @staticmethod
     def _cached_snapshot(data):
@@ -565,11 +620,13 @@ class JobManager:
         try:
             while True:
                 with self._cv:
-                    while not self._queue and not self._stop and token in self._live:
+                    while not self._may_start() and not self._stop and token in self._live:
                         self._cv.wait(1.0)
                     if self._stop or token not in self._live:
                         return
                     job = self._queue.popleft()
+                    if self._limited:
+                        job.probe = self._probing = True
                     job.status, job.gen, job.started = "running", token, self._clock()
                     job.day = self._today()
                     self._running[token] = job
@@ -600,6 +657,18 @@ class JobManager:
         with self._cv:
             if not live():  # timed out: the watchdog already finalised this job
                 return
+            throttled = bool(result and result.get("rate_limited"))
+            self._note_outcome(job, throttled)
+            if throttled and result.get("status") == "error" and job.retries < RATE_LIMIT_RETRIES:
+                # nothing came back: wait for Yahoo at the front of the queue instead of failing
+                job.retries += 1
+                job.status, job.stage, job.started, job.error = "queued", None, None, None
+                job.data = {"ticker": job.sym, "stages": {s: "pending" for s in STAGES}}
+                if self._running.get(job.gen) is job:
+                    del self._running[job.gen]
+                self._queue.appendleft(job)
+                self._cv.notify_all()
+                return
             job.finished = self._clock()
             if result is None:
                 job.status, job.error = "error", err or "analysis failed"
@@ -613,8 +682,11 @@ class JobManager:
                     result["cacheable"] = False
                 if job.status in ("done", "nodata") and result.get("cacheable", True):  # errors never cached
                     self.store.put(job.sym, result)
+                if throttled and job.status == "error":
+                    job.error = "Yahoo Finance is rate-limiting this server — try again in a few minutes"
             job.stage = None
             self._finish(job)
+            self._cv.notify_all()  # a clean probe reopens the queue for every worker
 
     def _finish(self, job):
         """Lock held: move a finalised job from in-flight to the short-lived recent map."""
@@ -651,6 +723,8 @@ class JobManager:
               f"{job.gen}, starting a fresh one")
         job.status, job.error, job.finished = "error", f"timed out after {int(self.deadline)}s", self._clock()
         job.stage = None
+        if job.probe:  # a hung probe proves nothing: let the next job probe
+            self._probing = job.probe = False
         self._live.discard(job.gen)
         self._finish(job)
         self._spawn_worker()

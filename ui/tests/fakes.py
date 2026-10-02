@@ -78,6 +78,24 @@ class AnyEngine(FakeEngine):
         return dict(MSFT_ROW, Ticker=self.symbol)
 
 
+class ThrottledEngine(FakeEngine):
+    """Yahoo answers 429 to the next ``budget`` quote requests (an empty quote, like the real engine)."""
+    budget = 0
+
+    def __init__(self, sym):
+        super().__init__(sym)
+        self.info = dict(MSFT_INFO, longName=f"{sym} Inc.")
+        if ThrottledEngine.budget > 0:
+            ThrottledEngine.budget -= 1
+            from ui import yahoo
+            yahoo.note_rate_limit()
+            self.info = {}
+
+    def get_ticker_stats(self, enrich=False):
+        self._growth_sources = ["yahoo_peg"]
+        return dict(MSFT_ROW, Ticker=self.symbol)
+
+
 def _edge_by_symbol(sym, idx, days):
     if sym.startswith("SLOW"):
         time.sleep(1.0)

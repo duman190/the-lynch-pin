@@ -16,6 +16,8 @@ import traceback
 
 import matplotlib
 
+from ui import yahoo
+
 matplotlib.use("Agg")
 
 STAGES = ("stats", "grades", "technicals", "edge", "plot")
@@ -119,6 +121,7 @@ class TickerAnalyzer:
     def backends(self):
         if self._backends is None:
             self._backends = _default_backends()
+            yahoo.install((self.settings.benchmark,))  # dedupe history downloads, count Yahoo 429s
         return self._backends
 
     def plot_dir(self, day=None):
@@ -141,6 +144,13 @@ class TickerAnalyzer:
         data = {"ticker": sym, "status": "running", "reason": None, "stages": {s: "pending" for s in STAGES},
                 "stage_ms": {}, "benchmark": self.settings.benchmark}
         ctx = {}
+        rate_limits = yahoo.rate_limit_events()
+
+        def throttled():
+            """Yahoo answered 429 during this analysis: its blocks may be missing, so never cache it."""
+            if yahoo.rate_limit_events() > rate_limits:
+                data["rate_limited"], data["cacheable"] = True, False
+            return data.get("rate_limited", False)
 
         def stage(name, fn):
             if stop():
@@ -167,7 +177,9 @@ class TickerAnalyzer:
             ctx["engine"] = engine
             info = engine.info or {}
             if not info:
-                data["status"], data["reason"] = "error", "quote unavailable (Yahoo Finance unreachable or rate-limited)"
+                data["status"] = "error"
+                data["reason"] = ("Yahoo Finance is rate-limiting this server" if throttled()
+                                  else "quote unavailable (Yahoo Finance unreachable or rate-limited)")
                 return "error"
             price = _extract_price(info)
             data.update({
@@ -206,6 +218,7 @@ class TickerAnalyzer:
         if data["status"] == "error" or data.get("reason") == "unknown symbol":
             for s in STAGES[1:]:
                 data["stages"][s] = "skipped"
+            throttled()
             return data
 
         ticker_obj = ctx["engine"].ticker
@@ -255,6 +268,7 @@ class TickerAnalyzer:
 
         if data["status"] == "running":
             data["status"] = "done"
+        throttled()
         data["generated_at"] = time.time()
         # Kept for the AI overview (step 4): the same inputs main.py hands the researcher
         data["_ai_inputs"] = {"row": ctx.get("row"), "g": ctx.get("g"), "b": ctx.get("b"),

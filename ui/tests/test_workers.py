@@ -6,7 +6,8 @@ import time
 import pytest
 
 from ui.analysis import TickerAnalyzer
-from ui.config import AUTO_WORKERS, Settings
+from ui import config
+from ui.config import CPU_WORKERS, Settings, auto_workers
 from ui.jobs import DayStore, JobManager
 from ui.server import parse_args
 from ui.tests import fakes
@@ -44,13 +45,22 @@ def overlap(a, b):
 
 
 # ── settings ────────────────────────────────────────────────────────────────
-def test_worker_count_defaults():
+def test_worker_count_defaults(monkeypatch):
+    monkeypatch.setattr(config, "available_mb", lambda: 64 * 1024)
     s = Settings()
     assert s.workers == 0
     assert s.analysis_workers(with_ai=True) == 1  # the local model is the bottleneck: one at a time
-    assert s.analysis_workers(with_ai=False) == AUTO_WORKERS
+    assert s.analysis_workers(with_ai=False) == CPU_WORKERS
     s.workers = 3
     assert s.analysis_workers(with_ai=True) == s.analysis_workers(with_ai=False) == 3
+
+
+def test_auto_workers_fit_in_free_memory(monkeypatch):
+    assert auto_workers(free_mb=64 * 1024) == CPU_WORKERS
+    assert auto_workers(free_mb=5 * config.WORKER_MB + 50) == min(5, CPU_WORKERS)
+    assert auto_workers(free_mb=100) == 2  # never below two
+    monkeypatch.setattr(config, "available_mb", lambda: None)  # psutil missing: CPU-based
+    assert auto_workers() == CPU_WORKERS
 
 
 def test_workers_flag_and_env(monkeypatch):

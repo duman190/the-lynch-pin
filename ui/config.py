@@ -20,10 +20,30 @@ def _env_bool(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
-# Analysis workers when the AI overview is off: each one is a process (~155 MB) analysing one ticker at
-# a time. A cold lookup is about half CPU, half waiting on Yahoo / SEC, so 1.5 workers per core keep
-# the cores busy (M1, 8 cores: 12 workers ≈ 117 cold tickers/min, 16 ≈ 125, 8 ≈ 82).
-AUTO_WORKERS = min(16, max(2, (os.cpu_count() or 4) * 3 // 2))
+# Analysis workers when the AI overview is off: each one is a process analysing one ticker at a time.
+# A cold lookup is about half CPU, half waiting on Yahoo / SEC, so 1.5 workers per core keep the cores
+# busy (M1, 8 cores: 12 workers ≈ 117 cold tickers/min, 16 ≈ 125, 8 ≈ 82)...
+CPU_WORKERS = min(16, max(2, (os.cpu_count() or 4) * 3 // 2))
+# ...as long as they fit in RAM: a worker is ~155 MB idle, ~200 MB mid-analysis. Once they swap, every
+# stage slows down several times (a model loaded in LM Studio can hold most of an 8 GB Mac).
+WORKER_MB = 200
+
+
+def available_mb():
+    """RAM available without swapping, in MB (None when psutil is missing)."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    return psutil.virtual_memory().available // (1024 * 1024)
+
+
+def auto_workers(free_mb=None):
+    """Workers for --no-ai: CPU_WORKERS, fewer when free RAM can't hold them (never below 2)."""
+    free_mb = available_mb() if free_mb is None else free_mb
+    if free_mb is None:
+        return CPU_WORKERS
+    return max(2, min(CPU_WORKERS, int(free_mb // WORKER_MB)))
 
 
 def _enrich_mode(value):
@@ -65,7 +85,7 @@ class Settings:
     # calls/day), so a bigger cache never adds FMP calls; it saves Yahoo calls (~12 per cold lookup).
     cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 500))
     # Tickers analysed at the same time. 0 = auto: 1 with the AI overview on (the local model is the
-    # bottleneck and shares the machine), AUTO_WORKERS with it off. Above 1, each worker is a process.
+    # bottleneck and shares the machine), auto_workers() with it off. Above 1, each worker is a process.
     workers: int = field(default_factory=lambda: _env_int("LYNCH_UI_WORKERS", 0))
 
     # Paths
@@ -79,7 +99,7 @@ class Settings:
     def analysis_workers(self, with_ai):
         if self.workers > 0:
             return self.workers
-        return 1 if with_ai else AUTO_WORKERS
+        return 1 if with_ai else auto_workers()
 
     @property
     def bind_host(self):
