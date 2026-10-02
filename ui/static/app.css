@@ -235,6 +235,8 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 .ai-reasoning { margin: 0; padding: 0 12px 10px; max-height: 220px; overflow: auto; white-space: pre-wrap;
   color: var(--dim); font: .8rem/1.5 var(--mono); }
 .ai-sec { margin-top: 14px; }
+.quick-flags { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-width: 90ch; }
+.quick-flags .badge { font-size: .7rem; vertical-align: 1px; margin-right: 2px; }
 .ai-sec h3 { font-size: .95rem; color: var(--sky); margin-bottom: 6px; }
 .ai-text { margin: 0 0 8px; max-width: 80ch; white-space: pre-line; }
 .ai-overview .ai-text { font-size: 1.08rem; color: var(--white); }

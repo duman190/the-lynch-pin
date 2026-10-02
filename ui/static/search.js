@@ -1,4 +1,5 @@
-/* The Lynch Pin · Quant Portal — ticker search, progressive result rendering, AI overview.
+/* The Lynch Pin · Quant Portal — ticker search, progressive result rendering, AI overview
+   (or, with the AI off, the rule-based Quick Overview).
    Depends on app.js helpers ($, el, getJSON, openLightbox, downloadLink). DOM is built with textContent only. */
 "use strict";
 
@@ -61,7 +62,8 @@
   function skeleton(sym) {
     const res = $("#result");
     const stages = ["stats", "grades", "technicals", "edge", "plot"];
-    if (S.app.health && S.app.health.features.ai) stages.push("ai");
+    const ai = !!(S.app.health && S.app.health.features.ai);
+    if (ai) stages.push("ai");
     put(res, 
       el("div", { class: "panel result-head", id: "card-head" },
         el("div", { class: "rh-main" },
@@ -76,7 +78,8 @@
       el("div", { class: "result-grid", id: "result-grid" },
         el("div", { class: "panel card card-valuation", id: "card-valuation" }, placeholder("Valuation")),
         el("figure", { class: "panel card card-plot", id: "card-plot" }, placeholder("PEG deviation chart")),
-        el("div", { class: "panel card card-ai", id: "card-ai", hidden: !stages.includes("ai") }, placeholder("AI overview")),
+        el("div", { class: "panel card card-ai", id: "card-ai", hidden: !ai }, placeholder("AI overview")),
+        el("div", { class: "panel card card-ai card-quick", id: "card-quick", hidden: ai }, placeholder("⚡ Quick overview")),
         el("div", { class: "panel card card-income", id: "card-income" }, placeholder("Income statement")),
         el("div", { class: "panel card card-credit", id: "card-credit" }, placeholder("Balance sheet")),
         el("div", { class: "panel card card-tech", id: "card-tech" }, placeholder("Technicals · 6M edge"))));
@@ -97,15 +100,21 @@
     const badges = [];
     const st = d.stats;
     if (st && st.history === "unavailable") {
-      badges.push(el("span", { class: "badge badge-amber", title: "The 5-year PEG history could not be fetched; refresh to retry" }, "PEG history unavailable"));
+      badges.push(el("span", { class: "badge badge-amber", title: `The 5-year PEG history could not be fetched; ${canRefresh() ? "refresh" : "search again"} to retry` }, "PEG history unavailable"));
     } else if (st && isNum(st.Dev_SD)) {
       badges.push(el("span", { class: `badge ${st.Dev_SD < 0 ? "badge-green" : "badge-red"}`, title: "Today's PEG vs its 5Y history, in standard deviations" }, `${st.Dev_SD > 0 ? "+" : ""}${st.Dev_SD.toFixed(2)} SD`));
     }
     if (d.flagged) badges.push(el("span", { class: "badge badge-amber", title: "Risk flag (*): growth > 99%, PEG ≥ 2.5, no SD, no trailing PE or base ROI < 9%" }, "⚠ risk flag"));
     if (d.status === "nodata") badges.push(el("span", { class: "badge badge-dim", text: "no GARP data" }));
     if (snap.cached) badges.push(el("span", { class: "badge badge-dim", title: "Served from today's cache" }, "⚡ cached"));
-    badges.push(el("button", { type: "button", class: "btn-ghost", title: "Re-run the analysis", "aria-label": `Refresh ${d.ticker}`, onclick: () => go(d.ticker, true) }, "↻ Refresh"));
+    if (canRefresh()) badges.push(el("button", { type: "button", class: "btn-ghost", title: "Re-run the analysis", "aria-label": `Refresh ${d.ticker}`, onclick: () => go(d.ticker, true) }, "↻ Refresh"));
     put($("#rh-badges"), ...badges);
+  }
+
+  /** ↻ Refresh is off with the AI overview off: a cached ticker stays cached until midnight. */
+  function canRefresh() {
+    const f = S.app.health && S.app.health.features;
+    return !f || f.refresh !== false;
   }
 
   function bellSVG(dev) {
@@ -173,7 +182,7 @@
           el("div", { class: "peg-num", text: fx(st.PEG, 2) }),
           el("div", { class: "peg-sub muted", text: `hist. mean ${fx(st.Mean, 2)} · σ ${fx(st.SD, 2)}` })),
         st.history === "unavailable"
-          ? el("p", { class: "hint-box", text: "PEG history unavailable (Yahoo/SEC data outage) — Mean/SD are placeholders. Use ↻ Refresh to retry." })
+          ? el("p", { class: "hint-box", text: `PEG history unavailable (Yahoo/SEC data outage) — Mean/SD are placeholders. ${canRefresh() ? "Use ↻ Refresh" : "Search the ticker again"} to retry.` })
           : bellSVG(st.Dev_SD)),
       statTable([
         ["PE", fx(st.PE)], ["Fwd PE", fx(st.FwdPE)], ["2Y Fwd PE", fx(st["2YFwd"])],
@@ -267,6 +276,31 @@
       parts.push(el("p", { class: "hint-box", text: hint }));
     } else parts.push(el("p", { class: "muted", text: "Backtest unavailable." }));
     put(card, ...parts);
+  }
+
+  /* ── Quick overview (AI off): the AI card's three sections, built by fixed rules ── */
+  function renderQuick(d) {
+    const card = $("#card-quick");
+    if (!card) return;
+    const q = d.quick;
+    if (!q) { card.hidden = true; return; }
+    const sec = (cls, title, ...body) => el("section", { class: `ai-sec ${cls}` }, el("h3", { text: title }), ...body);
+    const flags = q.stomach_test || [];
+    const verdict = { realistic: ["badge-green", "realistic"], achievable: ["badge-dim", "achievable"], stretch: ["badge-red", "stretch"] }[q.dcf_verdict];
+    put(card,
+      el("div", { class: "card-title-row" }, el("h2", { text: "⚡ Quick overview" }),
+        el("span", { class: "chip", title: "Computed from the numbers above by fixed rules; no AI model", text: "rule-based" })),
+      sec("ai-overview", "Overview", el("p", { class: "ai-text", text: q.overview })),
+      q.reverse_dcf ? sec("ai-dcf", "📊 Reverse 5Y DCF",
+        el("p", { class: "ai-text", text: q.reverse_dcf }),
+        verdict ? el("span", { class: `badge ${verdict[0]}`, title: "How demanding the base case's assumptions are (not whether the return is good)", text: `assumptions: ${verdict[1]}` }) : null) : null,
+      sec("ai-stomach", "🐻 Stomach test — why it can underperform for 5 years",
+        flags.length
+          ? el("ul", { class: "quick-flags" }, flags.map((f) => el("li", { class: `qf qf-${f.level}` },
+              el("span", { class: `badge ${f.level === "high" ? "badge-red" : "badge-amber"}`, text: f.level === "high" ? "risk" : "watch" }), " ", f.text)))
+          : el("p", { class: "ai-text", text: "No rule-based red flags. The bear case has to come from outside these numbers: competition, regulation, execution." })),
+      el("p", { class: "muted small", text: "Rule-based from the quant data above (thresholds: trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, …). Not financial advice." }));
+    card.hidden = false;
   }
 
   /* ── AI overview: typed live over Server-Sent Events ─────────────────────── */
@@ -617,6 +651,7 @@
       $("#result").setAttribute("aria-busy", "false");
       if (typeof refreshHealth === "function") refreshHealth();  // cache chip reflects this lookup now
       if (snap.status === "error" && !d.name) $("#rh-name").textContent = "—";
+      if (!(S.app.health && S.app.health.features.ai)) renderQuick(d);
       if (snap.status === "done" && S.app.health && S.app.health.features.ai) startAI(snap.ticker);
       else {
         setAIStep("skipped");

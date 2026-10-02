@@ -197,7 +197,7 @@ class AIJob:
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
-                 backends_spec=None):
+                 backends_spec=None, allow_refresh=True):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -212,6 +212,9 @@ class JobManager:
         self._running = {}    # worker token → its running Job
         self._recent = {}     # sym → finished Job, so pollers see the final state (errors aren't stored)
         self.recent_ttl = 300.0
+        # ↻ Refresh re-runs a cached ticker. Off (--no-ai): a cached ticker stays until the cache clears at
+        # midnight (or is evicted), so lookups never re-spend Yahoo calls on what is already known.
+        self.allow_refresh = allow_refresh
         self.workers = max(1, int(workers))
         self.processes = processes          # analyse in child processes (ui/workers.py)
         self._backends_spec = backends_spec  # "module:function" building the child's backends (tests)
@@ -261,6 +264,7 @@ class JobManager:
 
         A *lookup* (``poll=False``) counts as a cache use (LFU frequency, hit/miss); follow-up
         polls of the same lookup (``poll=True``) only peek, so polling never inflates frequencies."""
+        refresh = refresh and self.allow_refresh
         with self._cv:
             job = self._inflight.get(sym)
             if job is not None:  # dedup; refresh is ignored while in flight

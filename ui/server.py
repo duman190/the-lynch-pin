@@ -94,7 +94,8 @@ class PortalApp:
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark,
-               "features": {"search": self.jobs is not None, "ai": self.llm is not None}}
+               "features": {"search": self.jobs is not None, "ai": self.llm is not None,
+                            "refresh": self.jobs is not None and self.jobs.allow_refresh}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
         if self.jobs is not None:
@@ -352,7 +353,8 @@ def build_app(settings, with_search=True, with_ai=True):
         try:
             from ui.jobs import JobManager
             workers = settings.analysis_workers(with_ai=llm is not None)
-            jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1)
+            jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
+                              allow_refresh=llm is not None)  # --no-ai: cached tickers stay cached
         except ImportError:
             jobs = None
     if jobs is None:

@@ -17,6 +17,7 @@ import traceback
 import matplotlib
 
 from ui import yahoo
+from ui.quick import profile_from_info, quick_overview
 
 matplotlib.use("Agg")
 
@@ -188,6 +189,7 @@ class TickerAnalyzer:
                 "sector": info.get("sector"), "industry": info.get("industry"),
                 "quote_type": info.get("quoteType"), "exchange": info.get("exchange"),
                 "market_cap": _num(info.get("marketCap")),
+                "profile": profile_from_info(info),  # business summary, margins, analysts… (Quick Overview)
             })
             if price is None and not info.get("quoteType"):
                 data["status"], data["reason"] = "nodata", "unknown symbol"
@@ -269,6 +271,10 @@ class TickerAnalyzer:
         if data["status"] == "running":
             data["status"] = "done"
         throttled()
+        try:  # the --no-ai stand-in for the AI overview: rules over the numbers above, no model
+            data["quick"] = quick_overview(data)
+        except Exception as e:
+            print(f"⚠️  {sym} quick overview: {type(e).__name__}: {e}")
         data["generated_at"] = time.time()
         # Kept for the AI overview (step 4): the same inputs main.py hands the researcher
         data["_ai_inputs"] = {"row": ctx.get("row"), "g": ctx.get("g"), "b": ctx.get("b"),

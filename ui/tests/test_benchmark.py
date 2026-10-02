@@ -200,7 +200,8 @@ def serve(cache_dir):
     settings = Settings()
     settings.cache_dir = cache_dir
     settings.host, settings.port, settings.lan = "127.0.0.1", 0, False
-    jobs = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), llm=None)
+    jobs = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), llm=None,
+                      allow_refresh=False)  # as build_app() does with --no-ai
     app = PortalApp(settings, jobs=jobs, llm=None)  # AI overview off
     httpd = PortalServer(("127.0.0.1", 0), make_handler(app))
 
@@ -384,7 +385,7 @@ def test_ai_overview_is_off_on_the_benchmark_server(tmp_path):
     try:
         r, body = server.get("/api/health")
         h = json.loads(body)
-        assert r.status == 200 and h["features"] == {"search": True, "ai": False} and "ai" not in h
+        assert r.status == 200 and h["features"] == {"search": True, "ai": False, "refresh": False} and "ai" not in h
         assert h["cache"]["size"] == len(SYMS)  # warmed: every lookup below is a cache hit
         r, body = server.get("/api/ticker/MSFT/ai")
         assert r.status == 404 and json.loads(body)["error"] == "AI disabled"
