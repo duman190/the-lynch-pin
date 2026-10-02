@@ -4,11 +4,13 @@ UI can render each block as soon as it lands.
 
 Only engine/ and graphics/ modules are imported (never main.py, which pulls in the social
 publishers). matplotlib is forced onto the Agg backend before graphics.visualizer imports
-pyplot. All of this is meant to run on the JobManager's single worker thread.
+pyplot. Analyses run on a JobManager worker: a thread, or a child process per worker
+(ui/workers.py). pyplot state is process-global, so threads draw charts one at a time.
 """
 import datetime as _dt
 import os
 import re
+import threading
 import time
 import traceback
 
@@ -20,6 +22,7 @@ STAGES = ("stats", "grades", "technicals", "edge", "plot")
 
 _SIGNAL = {"🟢": "good", "🔵": "neutral", "🔴": "bad", "⚪": "na"}
 _PCT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*%\s*$")
+_PLOT_LOCK = threading.Lock()  # pyplot and the visualizer's rcParams are process-global
 
 
 def _extract_price(info):
@@ -234,8 +237,9 @@ class TickerAnalyzer:
         def do_plot():
             if "row" not in ctx:
                 return "skipped"
-            path = self._visualizer().plot_ticker_distribution(ctx["row"], ctx.get("g"), ctx.get("b"),
-                                                                ctx.get("t"), ctx.get("e"))
+            with _PLOT_LOCK:
+                path = self._visualizer().plot_ticker_distribution(ctx["row"], ctx.get("g"), ctx.get("b"),
+                                                                    ctx.get("t"), ctx.get("e"))
             if not path or not os.path.exists(path):
                 raise RuntimeError("chart was not written")
             data["plot_file"] = path

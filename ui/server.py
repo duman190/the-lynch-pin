@@ -31,7 +31,7 @@ try:
 except ImportError:  # pragma: no cover
     pd = None
 
-from ui.config import REPO_ROOT, Settings  # noqa: E402
+from ui.config import AUTO_WORKERS, REPO_ROOT, Settings  # noqa: E402
 from ui import netguard  # noqa: E402
 from ui.netguard import is_allowed_host, is_local_client  # noqa: E402
 
@@ -351,7 +351,8 @@ def build_app(settings, with_search=True, with_ai=True):
     if with_search:
         try:
             from ui.jobs import JobManager
-            jobs = JobManager(settings, llm=llm)
+            workers = settings.analysis_workers(with_ai=llm is not None)
+            jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1)
         except ImportError:
             jobs = None
     if jobs is None:
@@ -383,12 +384,16 @@ def parse_args(argv=None):
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
+    p.add_argument("--workers", type=int, default=s.workers,
+                   help="tickers analysed at the same time, one process each (default 0 = auto: "
+                        f"1 with the AI overview, {AUTO_WORKERS} without)")
     a = p.parse_args(argv)
     s.host, s.port, s.lan = a.host, a.port, a.lan
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
     s.llm_max_tokens, s.llm_autoload, s.llm_reasoning = a.llm_max_tokens, a.llm_autoload, a.llm_reasoning
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     s.enrich = a.enrich
+    s.workers = max(0, a.workers)
     return s, a
 
 
@@ -427,6 +432,8 @@ def main(argv=None):
         print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)
     if app.jobs is not None:
         print(f"📈 Growth enrichment: {'on' if settings.enrich_enabled else 'off'}", flush=True)
+        print(f"📈 Analysis workers: {app.jobs.workers}"
+              f"{' (one process each)' if app.jobs.processes else ''}", flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning}", flush=True)

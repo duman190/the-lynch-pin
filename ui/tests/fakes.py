@@ -1,6 +1,7 @@
 """Offline stand-ins for the Lynch Pin engine (no network, no yfinance)."""
 import os
 import threading
+import time
 
 MSFT_INFO = {"currentPrice": 430.0, "forwardPE": 21.8, "longName": "Microsoft Corporation", "currency": "USD",
              "sector": "Technology", "industry": "Software—Infrastructure", "quoteType": "EQUITY",
@@ -63,6 +64,38 @@ def backends(**overrides):
          "edge": lambda s, idx, days: EDGE, "visualizer": FakeVisualizer}
     b.update(overrides)
     return b
+
+
+class AnyEngine(FakeEngine):
+    """Every symbol is a Microsoft look-alike: worker-process tests cannot patch class data from the parent."""
+
+    def __init__(self, sym):
+        super().__init__(sym)
+        self.info = dict(MSFT_INFO, longName=f"{sym} Inc.")
+
+    def get_ticker_stats(self, enrich=False):
+        self._growth_sources = ["yahoo_peg"]
+        return dict(MSFT_ROW, Ticker=self.symbol)
+
+
+def _edge_by_symbol(sym, idx, days):
+    if sym.startswith("SLOW"):
+        time.sleep(1.0)
+    elif sym.startswith("HANG"):
+        time.sleep(120)
+    elif sym.startswith("CRASH"):
+        os._exit(3)
+    elif sym.startswith("ENV"):  # what the worker process's math libraries see
+        return dict(EDGE, env={k: os.environ.get(k) for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                                                              "VECLIB_MAXIMUM_THREADS")})
+    return EDGE
+
+
+def process_backends():
+    """Backends for a worker process (``JobManager(backends_spec="ui.tests.fakes:process_backends")``):
+    the symbol picks the behaviour of the edge stage (SLOW… 1 s, HANG… hangs, CRASH… kills the process,
+    ENV… reports the process's thread-count variables)."""
+    return backends(engine=AnyEngine, edge=_edge_by_symbol)
 
 
 class Gate:

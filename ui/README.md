@@ -7,6 +7,7 @@ python -m ui.server                  # http://127.0.0.1:8765, this machine only
 python -m ui.server --lan            # phones/PCs on the same private network (prints the URL to open)
 python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Studio), incl. a quick benchmark
 python ui/tests/test_benchmark.py    # throughput benchmark: req/s and latency per endpoint (AI off)
+python ui/tests/cold_bench.py --base http://127.0.0.1:8765 --clients 24 --count 48   # cold lookups/min (real Yahoo)
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
@@ -19,6 +20,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 - **Price levels** in the Technicals card, computed with the experimental trade assistant's toolkit (`experimental/quant_engine.py`): support and resistance from clustered pivots (6 months), the volume point of control (3 months), a 1-month expected range from realised volatility, and the 52-week range. Each level shows its chance of being touched within a month.
 - **Deep Dive Prompt** (above *How to read*): a research brief to paste into Claude, ChatGPT or Gemini. It casts the model as a hedge-fund portfolio manager and walks it through the last two earnings reports, call transcripts, the 10-Q, news, management's answers and red flags. It then makes the model loop, stress-testing its bull and bear case until another pass changes nothing, and asks for a verdict against the S&P 500 with price levels and signals to watch. The quant data, the price levels and the local AI overview are attached at the end. **Copy** works on plain-http LAN and Tailscale URLs too; **Show / Hide** toggles the full text.
 - The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
+- **Concurrent lookups** with the AI overview off: several users' tickers are analysed at the same time, each in its own worker process (1.5 per CPU core, at most 16; `--workers` to change). On an 8-core M1 this takes cold lookups from ~11 to ~117 tickers/min (`ui/tests/cold_bench.py`). With the AI overview on, tickers are analysed one at a time unless `--workers` is set. Yahoo throttles at a few hundred tickers in a short burst (each cold lookup makes ~12 Yahoo calls), so the cache below does the heavy lifting under sustained load.
 - A daily LFU cache of 250 tickers. Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
 
 ## Configuration (CLI flag or env var)
@@ -35,6 +37,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 | `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `250` |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
+| `--workers` | `LYNCH_UI_WORKERS` | `0` = auto: 1 with the AI overview, 1.5 × CPU cores (max 16) without; above 1, one process each |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
 | `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |
 

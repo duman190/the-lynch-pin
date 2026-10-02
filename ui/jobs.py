@@ -1,14 +1,17 @@
-"""Job model for ticker lookups: one analysis worker, a bounded FIFO queue, a per-job
+"""Job model for ticker lookups: ``workers`` analysis workers, a bounded FIFO queue, a per-job
 watchdog and a pluggable result store.
 
-Why one worker: pyplot and LynchPinVisualizer's rcParams are process-global, the engine's
-lazy SEC CIK map is not thread-safe, and Yahoo / EDGAR punish parallel scraping. HTTP
+Workers: one by default (the server's choice with the AI overview on). With ``processes=True`` each worker
+runs its analyses in its own child process (ui/workers.py), so several users' tickers are analysed
+at once: pyplot, the engine's globals and the GIL are per process. In-process workers (threads) are
+for tests and single-worker setups; the chart stage is serialised there (ui/analysis.py). HTTP
 threads only enqueue, poll snapshots and read the store.
 
-Watchdog: an engine call can hang (yfinance retries, EDGAR, backtest downloads) and a Python
-thread cannot be killed. When a running job exceeds ``deadline`` seconds it is marked
-``error: timed out``, the worker *generation* is bumped and a fresh worker takes over the
-queue; the orphaned thread's late results are discarded because its generation is stale.
+Watchdog: an engine call can hang (yfinance retries, EDGAR, backtest downloads). When a running job
+exceeds ``deadline`` seconds it is marked ``error: timed out``, its worker is retired (its token
+leaves the live set) and a fresh worker takes its place in the pool; the retired worker's late
+results are discarded. A worker process is killed; a worker thread cannot be, so it stops at its
+next stage boundary.
 """
 import collections
 import copy
@@ -181,7 +184,8 @@ class AIJob:
 
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
-                 clock=time.monotonic, today=_dt.date.today, start=True):
+                 clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
+                 backends_spec=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -193,10 +197,14 @@ class JobManager:
         self._cv = threading.Condition()
         self._queue = collections.deque()
         self._inflight = {}   # sym → Job (queued or running)
-        self._running = None
+        self._running = {}    # worker token → its running Job
         self._recent = {}     # sym → finished Job, so pollers see the final state (errors aren't stored)
         self.recent_ttl = 300.0
-        self._gen = 0
+        self.workers = max(1, int(workers))
+        self.processes = processes          # analyse in child processes (ui/workers.py)
+        self._backends_spec = backends_spec  # "module:function" building the child's backends (tests)
+        self._live = set()    # tokens of the workers that own the queue; a timed-out worker's is dropped
+        self._token = 0
         # AI overview: a second single worker so LLM latency never blocks quant lookups
         self._ai_queue = collections.deque()
         self._ai_inflight = {}
@@ -209,7 +217,8 @@ class JobManager:
         self._stop = False
         self._threads = []
         if start:
-            self._spawn_worker()
+            for _ in range(self.workers):
+                self._spawn_worker()
             if self.llm is not None:
                 self._spawn_ai_worker()
             wd = threading.Thread(target=self._watchdog, name="lynch-watchdog", daemon=True)
@@ -502,7 +511,8 @@ class JobManager:
         st = dict(self.store.stats())
         with self._cv:
             st["queue"] = len(self._queue)
-            st["running"] = self._running.sym if self._running else None
+            st["running"] = ", ".join(sorted(j.sym for j in self._running.values())) or None
+            st["workers"] = self.workers
             st["ai_queue"] = len(self._ai_queue)
             st["ai_running"] = self._ai_running.sym if self._ai_running else None
         return st
@@ -539,28 +549,41 @@ class JobManager:
 
     # ── worker ───────────────────────────────────────────────────────────────
     def _spawn_worker(self):
-        self._gen += 1
-        t = threading.Thread(target=self._worker, args=(self._gen,), name=f"lynch-worker-{self._gen}",
-                             daemon=True)
+        self._token += 1
+        token = self._token
+        self._live.add(token)
+        t = threading.Thread(target=self._worker, args=(token,), name=f"lynch-worker-{token}", daemon=True)
         t.start()
         self._threads.append(t)
 
-    def _worker(self, gen):
-        while True:
-            with self._cv:
-                while not self._queue and not self._stop and gen == self._gen:
-                    self._cv.wait(1.0)
-                if self._stop or gen != self._gen:
-                    return
-                job = self._queue.popleft()
-                job.status, job.gen, job.started = "running", gen, self._clock()
-                job.day = self._today()
-                self._running = job
-            self._run_job(job, gen)
+    def _new_runner(self):
+        from ui.workers import ProcessRunner
+        return ProcessRunner(self.settings, self._backends_spec)
 
-    def _run_job(self, job, gen):
+    def _worker(self, token):
+        runner = self._new_runner() if self.processes else None  # warm before the first job arrives
+        try:
+            while True:
+                with self._cv:
+                    while not self._queue and not self._stop and token in self._live:
+                        self._cv.wait(1.0)
+                    if self._stop or token not in self._live:
+                        return
+                    job = self._queue.popleft()
+                    job.status, job.gen, job.started = "running", token, self._clock()
+                    job.day = self._today()
+                    self._running[token] = job
+                if runner is not None and not runner.alive():  # crashed during the previous job
+                    runner.close()
+                    runner = self._new_runner()
+                self._run_job(job, runner)
+        finally:
+            if runner is not None:
+                runner.close()
+
+    def _run_job(self, job, runner=None):
         def live():
-            return job.gen == self._gen and job.status == "running"
+            return job.gen in self._live and job.status == "running"
 
         def on_stage(name, state, data):
             with self._cv:
@@ -568,8 +591,9 @@ class JobManager:
                     job.stage = name
                     job.data = copy.deepcopy({k: v for k, v in data.items() if k != "_ai_inputs"})
 
+        run = runner.run if runner is not None else self.analyzer.run
         try:
-            result = self.analyzer.run(job.sym, on_stage=on_stage, cancelled=lambda: not live())
+            result = run(job.sym, on_stage=on_stage, cancelled=lambda: not live())
             err = None
         except Exception as e:
             result, err = None, f"{type(e).__name__}: {e}"
@@ -596,18 +620,17 @@ class JobManager:
         """Lock held: move a finalised job from in-flight to the short-lived recent map."""
         self._inflight.pop(job.sym, None)
         self._recent[job.sym] = job
-        if self._running is job:
-            self._running = None
+        if self._running.get(job.gen) is job:
+            del self._running[job.gen]
 
     def _watchdog(self):
         while True:
             with self._cv:
                 if self._stop:
                     return
-                job = self._running
-                if job is not None and job.started is not None and \
-                        self._clock() - job.started > self.deadline:
-                    self._expire(job)
+                for job in list(self._running.values()):
+                    if job.started is not None and self._clock() - job.started > self.deadline:
+                        self._expire(job)
                 aj = self._ai_running
                 if aj is not None and aj.started is not None and self._clock() - aj.started > self.ai_deadline:
                     print(f"⏱️  {aj.sym}: AI overview exceeded {int(self.ai_deadline)}s — abandoning ai worker "
@@ -619,14 +642,16 @@ class JobManager:
                 self._cv.wait(1.0)
 
     def _expire(self, job):
-        """Called with the lock held: fail the hung job and hand the queue to a new worker.
+        """Called with the lock held: fail the hung job and replace its worker.
 
-        The hung thread cannot be killed; it stops at its next stage boundary (``cancelled``) and
-        its result is discarded. Until then a refresh of the same symbol may overlap with it."""
+        A worker process is killed by its thread within a poll interval. A worker thread cannot be
+        killed; it stops at its next stage boundary (``cancelled``) and its result is discarded.
+        Until then a refresh of the same symbol may overlap with it."""
         print(f"⏱️  {job.sym}: analysis exceeded {int(self.deadline)}s — abandoning worker "
               f"{job.gen}, starting a fresh one")
         job.status, job.error, job.finished = "error", f"timed out after {int(self.deadline)}s", self._clock()
         job.stage = None
+        self._live.discard(job.gen)
         self._finish(job)
         self._spawn_worker()
         self._cv.notify_all()

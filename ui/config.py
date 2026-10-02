@@ -20,6 +20,12 @@ def _env_bool(name, default=False):
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Analysis workers when the AI overview is off: each one is a process (~155 MB) analysing one ticker at
+# a time. A cold lookup is about half CPU, half waiting on Yahoo / SEC, so 1.5 workers per core keep
+# the cores busy (M1, 8 cores: 12 workers ≈ 117 cold tickers/min, 16 ≈ 125, 8 ≈ 82).
+AUTO_WORKERS = min(16, max(2, (os.cpu_count() or 4) * 3 // 2))
+
+
 def _enrich_mode(value):
     v = (value or "auto").strip().lower()
     if v in ("1", "true", "yes", "on"):
@@ -56,6 +62,9 @@ class Settings:
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
     # 250 = the FMP free plan's daily calls (one per enriched ticker)
     cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 250))
+    # Tickers analysed at the same time. 0 = auto: 1 with the AI overview on (the local model is the
+    # bottleneck and shares the machine), AUTO_WORKERS with it off. Above 1, each worker is a process.
+    workers: int = field(default_factory=lambda: _env_int("LYNCH_UI_WORKERS", 0))
 
     # Paths
     static_dir: str = os.path.join(UI_DIR, "static")
@@ -64,6 +73,11 @@ class Settings:
     @property
     def enrich_enabled(self):
         return self.enrich == "on" or (self.enrich == "auto" and bool(os.environ.get("FMP_API_KEY")))
+
+    def analysis_workers(self, with_ai):
+        if self.workers > 0:
+            return self.workers
+        return 1 if with_ai else AUTO_WORKERS
 
     @property
     def bind_host(self):
