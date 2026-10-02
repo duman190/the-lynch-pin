@@ -48,6 +48,36 @@ function initLightbox() {
   dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
 }
 
+/* ── chart download ──────────────────────────────────────────────────────── */
+/* An iOS home-screen app has no browser chrome: following a download link strands the user on a file
+   preview with no way back. There, hand the PNG to the share sheet ("Save Image") instead. */
+let pngFetch = { url: null, promise: null };
+function fetchPng(url) {
+  if (pngFetch.url !== url) {
+    const promise = fetch(url).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); });
+    promise.catch(() => { if (pngFetch.promise === promise) pngFetch = { url: null, promise: null }; });
+    pngFetch = { url, promise };
+  }
+  return pngFetch.promise;
+}
+function downloadLink(url, filename, alt) {
+  const a = el("a", { href: url, download: filename }, "download PNG");
+  if (navigator.standalone !== true) return a;  // browsers honour the download attribute
+  a.addEventListener("pointerdown", () => { fetchPng(url).catch(() => {}); });  // head start: share needs a fresh tap
+  a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    try {
+      const file = new File([await fetchPng(url)], filename, { type: "image/png" });
+      if (!navigator.canShare || !navigator.canShare({ files: [file] })) throw new Error("file sharing unsupported");
+      await navigator.share({ files: [file] });
+    } catch (err) {
+      if (err && err.name === "AbortError") return;  // share sheet dismissed
+      openLightbox(url, alt);  // fallback: press and hold the image to save it
+    }
+  });
+  return a;
+}
+
 /* ── health / feature chips ──────────────────────────────────────────────── */
 const state = { health: null };
 

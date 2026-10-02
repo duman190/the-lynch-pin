@@ -1,5 +1,5 @@
 /* The Lynch Pin · Quant Portal — ticker search, progressive result rendering, AI overview.
-   Depends on app.js helpers ($, el, getJSON, openLightbox). DOM is built with textContent only. */
+   Depends on app.js helpers ($, el, getJSON, openLightbox, downloadLink). DOM is built with textContent only. */
 "use strict";
 
 (() => {
@@ -196,7 +196,7 @@
     put(fig, 
       el("button", { type: "button", class: "plot-btn", "aria-label": `Enlarge ${d.ticker} chart`, onclick: () => openLightbox(d.plot_url, alt) },
         el("img", { src: d.plot_preview_url, alt, width: 1568, height: 915, decoding: "async" })),
-      el("figcaption", { class: "muted small" }, "Tap to enlarge · ", el("a", { href: d.plot_url, download: `${d.ticker}_valuation.png` }, "download PNG")));
+      el("figcaption", { class: "muted small" }, "Tap to enlarge · ", downloadLink(d.plot_url, `${d.ticker}_valuation.png`, alt)));
   }
 
   function renderIncome(d) {
