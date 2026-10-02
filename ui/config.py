@@ -60,8 +60,10 @@ class Settings:
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
     # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
-    # 250 = the FMP free plan's daily calls (one per enriched ticker)
-    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 250))
+    # Tickers cached per day. An entry is ~21 KB of RAM plus ~560 KB of chart files on disk (swept at
+    # midnight), so 500 costs ~10 MB RAM / ~280 MB disk. FMP is only called on a miss (free plan: 250
+    # calls/day), so a bigger cache never adds FMP calls; it saves Yahoo calls (~12 per cold lookup).
+    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 500))
     # Tickers analysed at the same time. 0 = auto: 1 with the AI overview on (the local model is the
     # bottleneck and shares the machine), AUTO_WORKERS with it off. Above 1, each worker is a process.
     workers: int = field(default_factory=lambda: _env_int("LYNCH_UI_WORKERS", 0))

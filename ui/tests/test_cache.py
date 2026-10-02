@@ -1,4 +1,4 @@
-"""Step 5: daily LFU cache (250 tickers/day) and its integration with the job manager."""
+"""Step 5: daily LFU cache (500 tickers/day) and its integration with the job manager."""
 import datetime as dt
 import os
 import threading
@@ -79,14 +79,14 @@ def test_hit_miss_stats_and_top():
     assert [k for k, _ in st["top"][2:]] == ["AMD", "GOOG", "META"]  # deterministic tie order
 
 
-def test_default_capacity_is_250_tickers():
+def test_default_capacity_is_500_tickers():
     s = Settings()
-    assert s.cache_capacity == 250
+    assert s.cache_capacity == 500 and DailyLFUCache().capacity == 500
     c = DailyLFUCache(s.cache_capacity)
-    for i in range(300):
+    for i in range(550):
         c.put(f"T{i}", i)
-    assert len(c) == 250 and c.stats()["evictions"] == 50
-    assert "T299" in c and "T0" not in c
+    assert len(c) == 500 and c.stats()["evictions"] == 50
+    assert "T549" in c and "T0" not in c
 
 
 def test_rollover_clears_entries_counters_and_old_plot_dirs(tmp_path):
@@ -264,8 +264,21 @@ def test_http_polls_do_not_touch_lfu(tmp_path):
         snap = get("/api/ticker/MSFT")
         after = get("/api/cache")
         assert snap["cached"] is True and after["hits"] == before["hits"] + 1
-        assert after["capacity"] == 250 and after["policy"] == "lfu" and after["top"][0][0] == "MSFT"
+        assert after["capacity"] == 500 and after["policy"] == "lfu" and after["top"][0][0] == "MSFT"
     finally:
         httpd.shutdown()
         httpd.server_close()
         m.shutdown()
+
+
+@pytest.mark.parametrize("argv", [["--no-ai"], []])
+def test_server_caches_500_tickers_with_and_without_ai(tmp_path, argv):
+    from ui.server import build_app, parse_args
+    s, a = parse_args(argv + ["--workers", "1", "--llm-url", "http://127.0.0.1:1"])
+    s.cache_dir = str(tmp_path / "cache")
+    app = build_app(s, with_ai=not a.no_ai)
+    try:
+        assert (app.llm is not None) == (not a.no_ai)
+        assert app.jobs.store.capacity == 500 and app.jobs.cache_stats()["capacity"] == 500
+    finally:
+        app.jobs.shutdown()

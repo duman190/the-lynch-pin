@@ -379,7 +379,7 @@ def parse_args(argv=None):
                    else "off", help="thinking for reasoning models: off sends reasoning_effort=none (default off)")
     p.add_argument("--llm-autoload", action="store_true", default=s.llm_autoload,
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
-    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 250)")
+    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 500)")
     p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
