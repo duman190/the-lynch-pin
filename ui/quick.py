@@ -30,10 +30,20 @@ RULES = {
     "edge": 60.0,          # 6M bear-signal accuracy above this
     "int_cov": 3.0,        # interest coverage below this
     "nd_ebitda": 3.0,      # net debt / EBITDA above this
+    "credit_min": "A",     # synthetic credit rating below this: balance-sheet risk (junk: high)
+    "income_min": "A",     # income grade below this: income statement subpar (C/D: high)
 }
-_JUNK = ("BB+", "BB", "BB-", "B+", "B", "B-", "CCC+", "CCC", "CCC-", "CC", "C", "D")
-_LOW_IG = ("BBB+", "BBB", "BBB-")
+# Best first: engine/balance_sheet_grader.py (Damodaran synthetic ratings), engine/income_statement_grader.py
+CREDIT_SCALE = ("AAA", "AA+", "AA", "AA-", "A+", "A", "A-", "BBB+", "BBB", "BBB-", "BB+", "BB", "BB-", "B+", "B", "B-",
+                "CCC+", "CCC", "CCC-", "CC", "C", "D")
+INCOME_SCALE = ("A++", "A+", "A", "B+", "B", "B-", "C", "D")
+_JUNK = CREDIT_SCALE[CREDIT_SCALE.index("BB+"):]
 _WEAK_GRADES = ("C", "D")
+
+
+def _below(grade, floor, scale):
+    """True when ``grade`` ranks below ``floor`` on ``scale`` (unknown grades, e.g. NR, are never flagged)."""
+    return grade in scale and scale.index(grade) > scale.index(floor)
 
 
 def _num(v):
@@ -210,6 +220,9 @@ def _flags(d):
         add("high", f"Revenue is shrinking: {rev * 100:+.0f}% vs the same quarter last year.")
     if inc.get("grade") in _WEAK_GRADES:
         add("high", f"Income grade {inc['grade']}: the income statement is not converting growth into profit.")
+    elif _below(inc.get("grade"), r["income_min"], INCOME_SCALE):
+        add("watch", f"Income grade {inc['grade']} (below {r['income_min']}): the income statement is subpar; "
+                     f"operating income and EPS are not outgrowing revenue cleanly.")
     reds = [i["label"] for i in items.values() if i.get("signal") == "bad" and i["label"] != "Revenue"]
     if reds:
         add("watch", f"Costs running ahead of revenue: {', '.join(reds)}.")
@@ -217,8 +230,9 @@ def _flags(d):
     metrics = {m["label"]: _num(m.get("value")) for m in cr.get("metrics") or []}
     if cr.get("rating") in _JUNK:
         add("high", f"Credit rating {cr['rating']} (junk): debt can squeeze equity holders in a downturn.")
-    elif cr.get("rating") in _LOW_IG:
-        add("watch", f"Credit rating {cr['rating']}: investment grade, but only just.")
+    elif _below(cr.get("rating"), r["credit_min"], CREDIT_SCALE):
+        add("watch", f"Credit rating {cr['rating']} (below {r['credit_min']}): balance-sheet risk; debt service "
+                     f"leaves less room in a downturn.")
     if metrics.get("IntCov") is not None and metrics["IntCov"] < r["int_cov"]:
         add("watch", f"Interest coverage {metrics['IntCov']:.1f}x (below {r['int_cov']:.0f}x).")
     if metrics.get("ND/EBITDA") is not None and metrics["ND/EBITDA"] > r["nd_ebitda"]:

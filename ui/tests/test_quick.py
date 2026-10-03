@@ -129,6 +129,28 @@ def test_balance_sheet_income_technical_and_market_rules(msft):
     assert levels == sorted(levels, key=lambda lv: lv != "high")  # serious ones first
 
 
+@pytest.mark.parametrize("rating,level", [("AAA", None), ("A", None), ("A-", "watch"), ("BBB", "watch"),
+                                          ("BB+", "high"), ("D", "high"), ("NR", None)])
+def test_credit_below_A_is_balance_sheet_risk(msft, rating, level):
+    d = copy.deepcopy(msft)
+    d["credit"]["rating"] = rating
+    hits = [f for f in quick.quick_overview(d)["stomach_test"] if f["text"].startswith(f"Credit rating {rating} ")]
+    assert [f["level"] for f in hits] == ([level] if level else [])
+    if level == "watch":
+        assert "(below A): balance-sheet risk" in hits[0]["text"]
+
+
+@pytest.mark.parametrize("grade,level", [("A++", None), ("A", None), ("B+", "watch"), ("B-", "watch"),
+                                         ("C", "high"), ("D", "high")])
+def test_income_grade_below_A_is_subpar(msft, grade, level):
+    d = copy.deepcopy(msft)
+    d["income"]["grade"] = grade
+    hits = [f for f in quick.quick_overview(d)["stomach_test"] if f["text"].startswith(f"Income grade {grade}")]
+    assert [f["level"] for f in hits] == ([level] if level else [])
+    if level == "watch":
+        assert "(below A): the income statement is subpar" in hits[0]["text"]
+
+
 def test_profile_keeps_only_usable_values():
     p = quick.profile_from_info(dict(KO_INFO, beta=float("nan"), website="  ", state=None, numberOfAnalystOpinions=True))
     assert "beta" not in p and "website" not in p and "state" not in p and "analysts" not in p

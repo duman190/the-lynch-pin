@@ -299,7 +299,7 @@
           ? el("ul", { class: "quick-flags" }, flags.map((f) => el("li", { class: `qf qf-${f.level}` },
               el("span", { class: `badge ${f.level === "high" ? "badge-red" : "badge-amber"}`, text: f.level === "high" ? "risk" : "watch" }), " ", f.text)))
           : el("p", { class: "ai-text", text: "No rule-based red flags. The bear case has to come from outside these numbers: competition, regulation, execution." })),
-      el("p", { class: "muted small", text: "Rule-based from the quant data above (thresholds: trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, …). Not financial advice." }));
+      el("p", { class: "muted small", text: "Rule-based from the quant data above (thresholds: trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, income grade or credit rating below A, …). Not financial advice." }));
     card.hidden = false;
   }
 
