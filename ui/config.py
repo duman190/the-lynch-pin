@@ -61,6 +61,9 @@ class Settings:
     host: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: _env_int("LYNCH_UI_PORT", 8765))
     lan: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_LAN"))
+    # Served to the internet through a tunnel on this machine (e.g. cloudflared → 127.0.0.1): any Host
+    # header, the visitor's IP from CF-Connecting-IP, one analysis at a time per visitor, less metadata.
+    public: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_PUBLIC"))
 
     # Local LLM (LM Studio, OpenAI-compatible). Empty model = use the first model the server lists.
     llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:1234"))

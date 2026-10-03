@@ -11,7 +11,25 @@ python ui/tests/cold_bench.py --base http://127.0.0.1:8765 --clients 24 --count 
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
-**Security:** `--lan` listens on all interfaces **without authentication**, so every device on your Wi-Fi or your Tailscale tailnet can use the portal. The portal is read-only. Clients outside loopback, RFC 1918, ULA, link-local and Tailscale (`100.64.0.0/10`) ranges get a 403, and so do requests with a foreign `Host` header, which blocks DNS rebinding. The server log says why a request was refused. Do not port-forward it to the internet.
+**Security:** `--lan` listens on all interfaces **without authentication**, so every device on your Wi-Fi or your Tailscale tailnet can use the portal. The portal is read-only. Clients outside loopback, RFC 1918, ULA, link-local and Tailscale (`100.64.0.0/10`) ranges get a 403, and so do requests with a foreign `Host` header, which blocks DNS rebinding. The server log says why a request was refused. Do not port-forward it to the internet; use `--public` behind a tunnel instead (below).
+
+**Public access (`--public`):** run a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) on this machine and point it at the portal only:
+
+```yaml
+# ~/.cloudflared/config.yml
+tunnel: <tunnel-id>
+credentials-file: /Users/<you>/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: lynch.example.com
+    service: http://localhost:8765
+  - service: http_status:404      # nothing else on this machine is reachable
+```
+
+```bash
+python -m ui.server --public --no-ai   # then: cloudflared tunnel run
+```
+
+`--public` listens on 127.0.0.1 only (it refuses `--lan` or another `--host`), so the tunnel is the only way in and no router port is opened. It accepts any `Host` name, reads each visitor's IP from Cloudflare's `CF-Connecting-IP` header (trusted only from the local tunnel), allows **one analysis at a time per visitor** (a second ticker gets "busy" and the page retries; cached tickers, polls and joining a ticker someone else is already analysing are free), turns `/api/cache` off and leaves other visitors' tickers, the LAN setting and the local model's address out of `/api/health`. What the portal can serve stays the same as on the LAN: its own pages, charts by ticker and analysis JSON — never other files on this machine. There is still no login: put Cloudflare Access in front of the hostname to choose who can use it. Visitors' lookups use this machine's Yahoo quota (and FMP's, with enrichment on).
 
 ## Features
 - Hero artwork built from the Lynch Pin badge.
@@ -39,6 +57,7 @@ python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpe
 | `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `500` |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
+| `--public` | `LYNCH_UI_PUBLIC=1` | off (see *Public access* above) |
 | `--workers` | `LYNCH_UI_WORKERS` | `0` = auto: 1 with the AI overview, 1.5 × CPU cores (max 16, capped by free RAM at ~200 MB each) without; above 1, one process each |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
 | `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |

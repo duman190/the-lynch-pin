@@ -93,7 +93,7 @@ def public_view(data):
 
 class Job:
     __slots__ = ("sym", "status", "stage", "data", "error", "created", "started", "finished", "gen", "day",
-                 "retries", "probe")
+                 "retries", "probe", "owner")
 
     def __init__(self, sym, now, day=None):
         self.sym = sym
@@ -108,6 +108,7 @@ class Job:
         self.day = day
         self.retries = 0     # times re-queued after Yahoo throttled it
         self.probe = False   # the one job allowed to test whether Yahoo is back
+        self.owner = None    # client (IP) whose lookup started it, for max_per_client
 
 
 class AIStream:
@@ -197,7 +198,7 @@ class AIJob:
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
-                 backends_spec=None, allow_refresh=True):
+                 backends_spec=None, allow_refresh=True, max_per_client=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -215,6 +216,9 @@ class JobManager:
         # ↻ Refresh re-runs a cached ticker. Off (--no-ai): a cached ticker stays until the cache clears at
         # midnight (or is evicted), so lookups never re-spend Yahoo calls on what is already known.
         self.allow_refresh = allow_refresh
+        # --public: analyses one client may have queued or running at once (None = no limit). Cached
+        # tickers, polls and joining a ticker someone else is already analysing are never limited.
+        self.max_per_client = max_per_client
         self.workers = max(1, int(workers))
         self.processes = processes          # analyse in child processes (ui/workers.py)
         self._backends_spec = backends_spec  # "module:function" building the child's backends (tests)
@@ -259,11 +263,12 @@ class JobManager:
                              plots_root=os.path.join(settings.cache_dir, "plots"))
 
     # ── public API (HTTP threads) ─────────────────────────────────────────────
-    def request(self, sym, refresh=False, poll=False):
+    def request(self, sym, refresh=False, poll=False, client=None):
         """Snapshot for ``sym``; enqueues an analysis when nothing usable is cached.
 
         A *lookup* (``poll=False``) counts as a cache use (LFU frequency, hit/miss); follow-up
-        polls of the same lookup (``poll=True``) only peek, so polling never inflates frequencies."""
+        polls of the same lookup (``poll=True``) only peek, so polling never inflates frequencies.
+        ``client`` identifies the visitor for ``max_per_client``."""
         refresh = refresh and self.allow_refresh
         with self._cv:
             job = self._inflight.get(sym)
@@ -286,10 +291,16 @@ class JobManager:
                     # a poll must never start work: the lookup it belongs to expired (tab hidden > TTL,
                     # midnight rollover or eviction) — the client re-issues a real lookup
                     return {"ticker": sym, "status": "expired", "error": "lookup expired — searching again"}
+            if client is not None and self.max_per_client:
+                mine = [j.sym for j in self._inflight.values() if j.owner == client]
+                if len(mine) >= self.max_per_client:
+                    return {"ticker": sym, "status": "busy", "retry_after": 5,
+                            "error": f"one analysis at a time per visitor — waiting for {', '.join(mine)} to finish"}
             if len(self._queue) >= self.max_queue:
                 return {"ticker": sym, "status": "busy", "retry_after": 10,
                         "error": f"analysis queue is full ({self.max_queue} tickers) — try again shortly"}
             job = Job(sym, self._clock(), self._today())
+            job.owner = client
             self._inflight[sym] = job
             self._queue.append(job)
             self._cv.notify_all()

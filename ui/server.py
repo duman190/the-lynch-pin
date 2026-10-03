@@ -33,12 +33,13 @@ except ImportError:  # pragma: no cover
 
 from ui.config import CPU_WORKERS, WORKER_MB, REPO_ROOT, Settings, available_mb  # noqa: E402
 from ui import netguard  # noqa: E402
-from ui.netguard import is_allowed_host, is_local_client  # noqa: E402
+from ui.netguard import _ip, is_allowed_host, is_local_client  # noqa: E402
 
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 STATIC_FILE_RE = re.compile(r"^(?:[a-z0-9_\-]+/)?[A-Za-z0-9_\-]+\.(?:html|css|js|png|jpg|jpeg|webp|svg|webmanifest|ico)$")
 
 SECURITY_HEADERS = {
@@ -91,6 +92,10 @@ class PortalApp:
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
         self.started = time.time()
 
+    @property
+    def public(self):
+        return self.settings.public
+
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark,
@@ -100,6 +105,23 @@ class PortalApp:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
         if self.jobs is not None:
             out["cache"] = self.jobs.cache_stats()
+        return self._public_health(out) if self.public else out
+
+    @staticmethod
+    def _public_health(out):
+        """What the page needs, minus what visitors have no business seeing: other visitors' tickers
+        (cache top / running), this machine's LAN setting and the local model's address."""
+        out.pop("lan", None)
+        cache = out.get("cache")
+        if cache:
+            for k in ("top", "running", "ai_running"):
+                cache.pop(k, None)
+        ai = out.get("ai")
+        if ai:
+            out["ai"] = {k: ai[k] for k in ("available", "checking", "model", "model_short", "ctx", "reasoning")
+                         if k in ai}
+            if not ai.get("available"):
+                out["ai"]["reason"] = "local model unavailable"
         return out
 
 
@@ -119,7 +141,18 @@ def make_handler(app):
         def log_message(self, fmt, *args):  # quieter, single-line access log
             line = (fmt % args).encode("ascii", "backslashreplace").decode("ascii")
             line = "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in line)
-            sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_address[0]} {line}\n")
+            sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_ip()} {line}\n")
+
+        def client_ip(self):
+            """The visitor's IP. With --public the peer is always the local tunnel (cloudflared), which
+            passes the real address in CF-Connecting-IP; the header is only trusted from loopback."""
+            peer = self.client_address[0]
+            headers = getattr(self, "headers", None)  # unset when the request line itself was malformed
+            if app.public and headers is not None and (_ip(peer) is not None and _ip(peer).is_loopback):
+                ip = _ip((headers.get("CF-Connecting-IP") or "").strip())
+                if ip is not None:
+                    return str(ip)
+            return peer
 
         def _send(self, status, body, ctype, cache="no-store", extra=None):
             self.send_response(status)
@@ -188,6 +221,11 @@ def make_handler(app):
 
         def _guard(self):
             ip = self.client_address[0]
+            if app.public:  # only the tunnel on this machine; any public host name
+                if _ip(ip) is None or not _ip(ip).is_loopback:
+                    return self._refuse("served through the local tunnel only (--public)",
+                                        "point cloudflared at http://localhost:<port>")
+                return True
             if not is_local_client(ip):
                 return self._refuse("local network only",
                                     f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)")
@@ -236,7 +274,7 @@ def make_handler(app):
             if path.startswith("/plots/"):
                 return self.route_plot(path[len("/plots/"):])
             if path == "/api/cache":
-                if app.jobs is None:
+                if app.jobs is None or app.public:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
                 return self.send_json(app.jobs.cache_stats())
             if path.startswith("/static/"):
@@ -277,7 +315,8 @@ def make_handler(app):
                                       extra={"Retry-After": str(snap.get("retry_after", 15))})
                 return self.send_json(snap)
             refresh = query.get("refresh", ["0"])[0] == "1"
-            snap = app.jobs.request(sym, refresh=refresh, poll=query.get("poll", ["0"])[0] == "1")
+            snap = app.jobs.request(sym, refresh=refresh, poll=query.get("poll", ["0"])[0] == "1",
+                                    client=self.client_ip() if app.public else None)
             if snap.get("status") == "busy":
                 return self._send(HTTPStatus.TOO_MANY_REQUESTS, to_json(snap), "application/json; charset=utf-8",
                                   extra={"Retry-After": str(snap.get("retry_after", 10))})
@@ -354,7 +393,8 @@ def build_app(settings, with_search=True, with_ai=True):
             from ui.jobs import JobManager
             workers = settings.analysis_workers(with_ai=llm is not None)
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
-                              allow_refresh=llm is not None)  # --no-ai: cached tickers stay cached
+                              allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
+                              max_per_client=1 if settings.public else None)  # --public: one per visitor
         except ImportError:
             jobs = None
     if jobs is None:
@@ -386,6 +426,10 @@ def parse_args(argv=None):
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
+    p.add_argument("--public", action="store_true", default=s.public,
+                   help="serve the internet through a tunnel on this machine (e.g. cloudflared → localhost): any "
+                        "Host name, visitor IPs from CF-Connecting-IP, one analysis at a time per visitor, "
+                        "no /api/cache. Loopback only: not with --lan")
     p.add_argument("--workers", type=int, default=s.workers,
                    help="tickers analysed at the same time, one process each (default 0 = auto: "
                         f"1 with the AI overview, {CPU_WORKERS} without, fewer if free RAM is short)")
@@ -396,6 +440,9 @@ def parse_args(argv=None):
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     s.enrich = a.enrich
     s.workers = max(0, a.workers)
+    s.public = a.public
+    if s.public and (s.lan or s.host not in LOOPBACK_HOSTS):
+        p.error("--public listens on 127.0.0.1 only (the tunnel runs on this machine): drop --lan / --host")
     return s, a
 
 
@@ -429,6 +476,10 @@ def main(argv=None):
         for a in _lan_addresses():
             where = "over Tailscale" if a.startswith("100.") else "on your Wi-Fi"
             print(f"   📱 open http://{a}:{settings.port} {where}", flush=True)
+    if settings.public:
+        print("🌐 --public: only the local tunnel can connect; any Host name; visitor IPs from CF-Connecting-IP; "
+              "one analysis at a time per visitor; /api/cache off. No login: put Cloudflare Access in front "
+              "to restrict who can use it.", flush=True)
     nets, hosts = netguard.extra_allowed()
     if nets or hosts:
         print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)
