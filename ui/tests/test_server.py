@@ -72,13 +72,14 @@ def test_health(server):
     assert r.status == 200
     h = json.loads(body)
     assert h["ok"] is True
-    assert h["features"] == {"search": False, "ai": False, "refresh": False}
+    assert h["features"] == {"search": False, "ai": False, "refresh": False, "scans": True}
     assert r.getheader("Cache-Control") == "no-store"
 
 
-def test_latest_scan_section_removed(server):
+def test_old_scan_gallery_removed(server):
+    """The old chart gallery is gone (its successor, Latest scans, is tested in test_scans.py)."""
     _, body = get(server, "/")
-    assert b"Latest scan" not in body and b'id="gallery"' not in body
+    assert b'id="gallery"' not in body
     for path in ["/api/scan", "/scan/MSFT_valuation.png", "/scan/thumb/MSFT_valuation.png"]:
         assert get(server, path)[0].status == 404, path
 

@@ -97,6 +97,9 @@ class Settings:
     # Paths
     static_dir: str = os.path.join(UI_DIR, "static")
     cache_dir: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_CACHE_DIR", os.path.join(UI_DIR, ".cache")))
+    # "Latest scans": the threads main.py archives per scan kind (scans/<kind>/scan.json), newest first
+    scans_dir: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_SCANS_DIR", os.path.join(REPO_ROOT, "scans")))
+    scans_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_SCANS", 7))
 
     @property
     def enrich_enabled(self):

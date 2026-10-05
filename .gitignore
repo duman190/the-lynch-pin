@@ -6,6 +6,9 @@ __pycache__/
 # tmp files
 tmp/
 
+# scan archive for the portal's Latest scans (main.py writes it; images/ is the Threads upload area)
+scans/
+
 # C extensions
 *.so
 

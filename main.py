@@ -14,6 +14,7 @@ from engine.portfolio import parse_portfolio_file, compute_weights, weighted_met
 from graphics.visualizer import LynchPinVisualizer
 from social.x_publisher import XPublisher
 from social.threads_publisher import ThreadsPublisher
+from social.scan_archive import SCAN_DIR, save_scan, scan_kind, split_ai_overviews
 
 IDX_MAP = {
     "mag7": "MAGS", "mags": "MAGS",
@@ -363,10 +364,10 @@ def main():
             sym = row['Ticker'].replace('*', '')
             viz.plot_ticker_distribution(row, grader_data.get(sym), bs_data.get(sym), tech_data.get(sym), edge_data.get(sym))
 
-    # 5. X (Twitter) Posting Support
-    if args.post:
+    # 5. X (Twitter) thread: built for every published scan, archived for the portal's
+    #    "Latest scans" widget, then posted with --post
+    if args.post or args.post_threads:
         print("\n🐦 PREPARING X THREAD...")
-        x_client = XPublisher()
 
         idx_name = _resolve_idx_name(args)
 
@@ -437,12 +438,31 @@ def main():
                           "⚠️ DISCLAIMER: Quant scans, not financial advice. Math can be mistaken. "
                           "Investing involves risk. Always DYOR. 🫶")
 
-        x_client.post_thread(
-            main_tweet=main_tweet,
-            sub_tweets=ticker_sub_tweets,
-            comparison_img=comparison_img,
-            disclaimer=disclaimer
-        )
+        # Archived in scans/<kind>/, one folder per scan kind, so Monday's GOOGL chart (mags/) survives
+        # Saturday's (fintwit/). Not images/: that folder is the Threads upload area, cleared every run.
+        # The run's raw AI overview goes next to the posts (X truncates long replies; this does not).
+        kind = scan_kind(idx_name, args.src, args.weekly, bool(args.portfolio))
+        bench_name = "portfolio_allocation.png" if args.portfolio else f"{idx_name.lower()}_benchmark.png"
+        ai_overview = {"sentiment": sentiment_text,
+                       "tickers": split_ai_overviews(bulk_ai_text, [sub["ticker"] for sub in ticker_sub_tweets])}
+        if portfolio_narrative:
+            ai_overview["portfolio"] = portfolio_narrative
+        try:
+            archived = save_scan(SCAN_DIR, kind,
+                                 [{"text": main_tweet, "image": comparison_img, "name": bench_name}]
+                                 + [dict(sub) for sub in ticker_sub_tweets] + [{"text": disclaimer}],
+                                 ai=ai_overview)
+            print(f"🗂️  Scan archived in {archived}/")
+        except (OSError, ValueError) as e:  # the portal's archive must never block posting
+            print(f"  ⚠️ Could not archive the scan: {e}")
+
+        if args.post:
+            XPublisher().post_thread(
+                main_tweet=main_tweet,
+                sub_tweets=ticker_sub_tweets,
+                comparison_img=comparison_img,
+                disclaimer=disclaimer
+            )
 
     # 6. Threads Posting Support
     if args.post_threads:

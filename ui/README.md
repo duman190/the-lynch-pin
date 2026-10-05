@@ -1,6 +1,6 @@
 # Lynch Pin Quant Portal (web UI)
 
-Dark-mode web UI for the Lynch Pin engine, for PC and phone. Everything lives in `ui/`; no file outside it is modified. It uses only the standard library plus the project's existing dependencies.
+Dark-mode web UI for the Lynch Pin engine, for PC and phone. Everything lives in `ui/`; outside it, the portal only reads the scan archive that `main.py` writes to `scans/<kind>/` (see *Latest scans*). It uses only the standard library plus the project's existing dependencies.
 
 ```bash
 python -m ui.server                  # http://127.0.0.1:8765, this machine only
@@ -33,6 +33,11 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 
 ## Features
 - Hero artwork built from the Lynch Pin badge.
+- **Latest scans** (home page, under the ticker search): an iOS-style widget for each of the last 7 daily `run_lynch.sh` scans (MAGS, QQQ, SCHD, SMH, IGV, X Favorite 100, Portfolio X-Ray), oldest to newest, opening on the newest. Each widget previews the scan's first post and chart; swipe (phone), use the ‹ › arrows, or tap a day in the date strip above to switch scans. Tapping a widget opens the whole thread at `?scan=mags`, laid out like the X post, with each reply's chart (tap to enlarge) and an *Analyze $TICKER* shortcut; ‹ › links at the bottom step to the neighbouring days.
+  - **Storage:** with `--post` / `--post_threads`, `main.py` archives the thread in its own folder per scan kind: `scans/<kind>/scan.json` (every post's text plus the run's raw AI overview: sentiment, portfolio thesis, each ticker's untruncated overview) and that run's charts. Monday's `scans/mags/GOOGL_valuation.png` is never overwritten by Saturday's `scans/fintwit/GOOGL_valuation.png`; the next MAGS run replaces only `scans/mags/`. `scans/` is local and git-ignored; `images/` stays the Threads upload area that each run clears and pushes to GitHub.
+  - **Caching:** the scan index is held in memory, re-read daily after 3 PM (the 1 PM run is archived by then) and as soon as a `scan.json` changes on disk (checked at most once a minute). Chart URLs carry the scan's version, so browsers keep them until next week's run replaces them.
+  - `python -m social.scan_archive --backfill logs/run_YYYYMMDD.log ...` rebuilds a scan folder from a run log and the charts that run pushed to git.
+- **Home button:** on a ticker page or a scan thread, the ⌂ Home pill in the top bar (or the logo) returns to the home page (search, Latest scans) without reloading; Back/Forward work as usual.
 - Ticker search at `?t=MSFT`, which you can bookmark and share. It shows valuation (PEG, Dev SD bell, 5Y Bull/Base/Bear ROI), the same chart `main.py` renders, the income grade, the credit rating, technicals and the 6M edge. Results stream in stage by stage.
 - An AI overview from a local LM Studio server that types in real time (Server-Sent Events), with live time to first token, tokens/s, token count and thinking tokens; a reasoning model's thinking streams into a collapsible box. The prompt is a static system message (the task) plus a terse, pre-computed data block for the ticker (company profile, analysts' target, the reverse-DCF math and the Quick Overview's red flags), answered in three 2-3 sentence sections (see *Local AI tuning*). Each ticker's overview is generated once and cached with its analysis for the day. When no model is loaded, the UI shows "AI offline" and keeps working.
 - **Quick Overview** with `--no-ai`: the AI overview's three sections built by fixed rules from the same data, no model involved (`ui/quick.py`). *Overview*: name, sector, HQ, employees, market cap, Yahoo's business summary, margins, dividend, analyst consensus and a valuation snapshot. *Reverse 5Y DCF*: "X% base ROI requires EPS to compound at Y%/yr for 5 years and a re-rating from Zx forward PE to a terminal ZZx" (the daily scan's Base ROI math), split into the EPS and multiple contributions, with how demanding those assumptions are. *Stomach test*: red flags from thresholds such as trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, PEG > 1 SD above its mean, base ROI < 9%, a losing bear case, shrinking revenue, an income grade below A (subpar; C/D are serious), a credit rating below A (balance-sheet risk; junk is serious), negative free cash flow, an uncovered dividend, a falling trend, high beta or short interest.
@@ -56,6 +61,7 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 | `--llm-autoload` | `LYNCH_LLM_AUTOLOAD=1` | off (asks LM Studio to load the model with `--llm-ctx`) |
 | `--llm-parallel` | `LYNCH_LLM_PARALLEL` | `1` AI overviews generated at once (see *Local AI tuning*) |
 | `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `500` |
+| | `LYNCH_UI_SCANS_DIR` / `LYNCH_UI_SCANS` | `scans/` / `7`: the scan archive and how many scans *Latest scans* shows |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
 | `--public` | `LYNCH_UI_PUBLIC=1` | off (see *Public access* above) |

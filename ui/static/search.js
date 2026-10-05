@@ -726,6 +726,7 @@
       const url = `?t=${encodeURIComponent(sym)}`;
       if (location.search !== url) history.pushState({ t: sym }, "", url);
     }
+    applyView();
     document.title = `$${sym} · The Lynch Pin`;
     if (window.matchMedia("(max-width: 700px)").matches) input.blur();  // drop the phone keyboard
     $("#result").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
@@ -759,6 +760,7 @@
       });
       fromURL();
     },
+    go,
     _test: { applySnapshot, go },
   };
 })();

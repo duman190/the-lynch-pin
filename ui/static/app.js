@@ -78,6 +78,39 @@ function downloadLink(url, filename, alt) {
   return a;
 }
 
+/* ── views: home (search + Latest scans), ?t=SYM (ticker), ?scan=KIND (thread) ── */
+function currentView() {
+  const q = new URLSearchParams(location.search);
+  return q.get("t") ? "ticker" : q.get("scan") ? "scan" : "home";
+}
+/** Shows what belongs to the URL's view: body[data-view] drives the CSS, the Home button leaves home. */
+function applyView() {
+  const v = currentView();
+  document.body.dataset.view = v;
+  $("#home-btn").hidden = v === "home";
+  return v;
+}
+/** Same-page navigation: push the URL, then let every module react as on Back/Forward. */
+function navigate(url) {
+  if (location.pathname + location.search !== url) history.pushState({}, "", url);
+  window.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
+}
+function goHome() {
+  navigate("/");
+  window.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+function initViews() {
+  window.addEventListener("popstate", applyView);
+  for (const a of document.querySelectorAll(".js-home")) {
+    a.addEventListener("click", (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;  // new tab / window
+      e.preventDefault();
+      goHome();
+    });
+  }
+  applyView();
+}
+
 /* ── health / feature chips ──────────────────────────────────────────────── */
 const state = { health: null };
 
@@ -119,7 +152,9 @@ async function refreshHealth() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   initLightbox();
+  initViews();
   await refreshHealth();
   if (window.LynchSearch) window.LynchSearch.init(state);
+  if (window.LynchScans) window.LynchScans.init(state);
   setInterval(refreshHealth, 30000);
 });

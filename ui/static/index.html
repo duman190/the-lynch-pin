@@ -16,16 +16,21 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/search.js" defer></script>
+  <script src="/static/scans.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="topbar" role="banner">
-    <a class="brand" href="/" aria-label="The Lynch Pin Quant Portal home">
+    <a class="brand js-home" href="/" aria-label="The Lynch Pin Quant Portal home">
       <img src="/static/img/logo.png" alt="" width="40" height="40">
       <span class="brand-text"><strong>THE LYNCH PIN</strong><span>Quant Portal</span></span>
     </a>
     <div class="chips">
+      <a class="home-btn js-home" id="home-btn" href="/" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 11.2 12 4l9 7.2V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1z" fill="currentColor"/></svg>
+        <span>Home</span>
+      </a>
       <span class="chip" id="chip-ai" hidden><span class="dot"></span><span class="chip-label">AI</span></span>
       <span class="chip" id="chip-cache" hidden><span class="chip-label">Cache</span></span>
     </div>
@@ -55,7 +60,22 @@
       <div class="recent" id="recent" aria-label="Recent lookups"></div>
     </section>
 
+    <section class="scans" id="scans" hidden aria-labelledby="scans-title">
+      <div class="scans-head">
+        <h2 id="scans-title">Latest scans</h2>
+        <div class="scans-nav">
+          <button type="button" class="scan-arrow" id="scan-prev" aria-label="Earlier scan">‹</button>
+          <button type="button" class="scan-arrow" id="scan-next" aria-label="Later scan">›</button>
+        </div>
+      </div>
+      <div class="scan-tabs" id="scan-tabs" aria-label="Choose a scan by day"></div>
+      <div class="scan-track" id="scan-track" role="region" aria-roledescription="carousel" aria-label="Daily scans, oldest to newest" tabindex="0"></div>
+      <div class="scan-dots" id="scan-dots" aria-hidden="true"></div>
+    </section>
+
     <section id="result" class="result" hidden aria-live="polite" aria-busy="false"></section>
+
+    <section id="thread" class="thread" hidden aria-labelledby="thread-title"></section>
 
 
     <section class="panel deepdive" id="deepdive" hidden aria-labelledby="dd-title">

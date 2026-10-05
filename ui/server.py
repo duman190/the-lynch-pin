@@ -86,10 +86,14 @@ def to_json(payload):
 class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
-    def __init__(self, settings=None, jobs=None, llm=None):
+    def __init__(self, settings=None, jobs=None, llm=None, scans=None):
         self.settings = settings or Settings()
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
+        if scans is None:
+            from ui.scans import ScanArchive
+            scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
+        self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
         self.started = time.time()
 
     @property
@@ -99,7 +103,7 @@ class PortalApp:
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark,
-               "features": {"search": self.jobs is not None, "ai": self.llm is not None,
+               "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
                             "refresh": self.jobs is not None and self.jobs.allow_refresh}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
@@ -273,6 +277,15 @@ def make_handler(app):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
             if path.startswith("/plots/"):
                 return self.route_plot(path[len("/plots/"):])
+            if path == "/api/scans":
+                return self.send_json(app.scans.summaries())
+            if path.startswith("/api/scans/"):
+                scan = app.scans.get(path[len("/api/scans/"):])
+                if scan is None:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "no such scan")
+                return self.send_json(scan)
+            if path.startswith("/scans/"):
+                return self.route_scan_image(path[len("/scans/"):])
             if path == "/api/cache":
                 if app.jobs is None or app.public:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
@@ -358,6 +371,15 @@ def make_handler(app):
             if not path:
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "no plot yet")
             return self.send_file(path, "private, max-age=86400")
+
+        def route_scan_image(self, rest):
+            """/scans/KIND/NAME.png = archived chart (lightbox), /scans/KIND/NAME.jpg = smaller preview.
+            URLs carry ?v=<scan version>, so a browser may keep them; next week's scan gets a new URL."""
+            kind, _, name = rest.partition("/")
+            path = app.scans.image_path(kind, name)
+            if not path:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+            return self.send_file(path, "public, max-age=604800")
 
     return Handler
 
