@@ -29,8 +29,10 @@ static      GET /static/search.js (37 KB, 200 with ETag)
 revalidate  GET /static/search.js with If-None-Match (304: what a reload costs)
 image       GET /static/img/hero_wide.webp (116 KB)
 plot        GET /plots/SYM.jpg (chart preview; the fake charts are simpler, so smaller than real ones)
-page        a first page view: index, CSS, JS, logo, hero, health, ticker, plot preview, deep dive
+page        a first ticker page view: index, CSS, JS, logo, hero, health, ticker, plot preview, deep dive
             (10 requests each; the table also shows page views/s)
+home        a first home page view: index, CSS, scripts, logo, hero, health, Latest scans (7 scans and
+            their chart previews), Socials (5 X posts and their images): 24 requests each
 connect     GET /api/health with a new TCP connection per request (Connection: close)
 
 The pytest run is a smoke benchmark: short cells, every request must succeed and every cell must clear
@@ -62,6 +64,9 @@ SYMS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "AMD", 
 PAGE = ["/?t={s}", "/static/app.css", "/static/app.js", "/static/search.js", "/static/img/logo.png",
         "/static/img/hero_wide.webp", "/api/health", "/api/ticker/{s}", "/plots/{s}.jpg",
         "/api/ticker/{s}/deepdive"]
+HOME = ["/", "/static/app.css", "/static/app.js", "/static/search.js", "/static/scans.js", "/static/socials.js",
+        "/static/img/logo.png", "/static/img/hero_wide.webp", "/api/health", "/api/scans", "/api/socials"]
+SCAN_KINDS = ["mags", "qqq", "schd", "smh", "igv", "fintwit", "portfolio"]
 
 
 # ── scenarios ───────────────────────────────────────────────────────────────
@@ -77,8 +82,15 @@ def scenarios(etag):
         "image": dict(paths=["/static/img/hero_wide.webp"]),
         "plot": dict(paths=per_sym("/plots/{s}.jpg")),
         "page": dict(paths=[p.format(s=s) for s in SYMS for p in PAGE], stride=len(PAGE)),
+        "home": dict(paths=home_paths(), stride=len(home_paths())),
         "connect": dict(paths=["/api/health"], close=True),
     }
+
+
+def home_paths():
+    """The home page's requests; the image URLs match what serve() archives and caches."""
+    imgs = [f"/scans/{k}/{k}_benchmark.jpg" for k in SCAN_KINDS] + [f"/social/x_{i}.jpg" for i in range(1, 6)]
+    return HOME + imgs
 
 
 # ── load generator (child process; stdlib only so it starts fast) ───────────
@@ -202,7 +214,29 @@ def serve(cache_dir):
     settings.host, settings.port, settings.lan = "127.0.0.1", 0, False
     jobs = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), llm=None,
                       allow_refresh=False)  # as build_app() does with --no-ai
-    app = PortalApp(settings, jobs=jobs, llm=None)  # AI overview off
+    # Home page content: 7 archived scans (real-size chart PNGs) and a Socials feed of 5 posts, offline
+    from PIL import Image
+    from social.scan_archive import save_scan
+    from ui.socials import SocialFeed
+    src = os.path.join(cache_dir, "src")
+    os.makedirs(src, exist_ok=True)
+    chart = os.path.join(src, "chart.png")
+    Image.new("RGB", (3600, 2100), (18, 18, 18)).save(chart)
+    settings.scans_dir = os.path.join(cache_dir, "scans")
+    for k in SCAN_KINDS:
+        save_scan(settings.scans_dir, k, [{"text": f"🚨 MARKET CLOSE: ${k.upper()} #LynchPin Detector", "image": chart,
+                                           "name": f"{k}_benchmark.png"}, {"text": "⚠️ DISCLAIMER"}])
+    posts = [{"id": str(i), "text": f"$T{i} post", "url": f"https://x.com/lynch_pin_quant/status/{i}", "time": "",
+              "image_src": "fake"} for i in range(1, 6)]
+    socials = SocialFeed(cache_dir, os.path.join(cache_dir, "no-tokens"), fetch=lambda tok, uid=None: ("1", posts),
+                         download=lambda url, dest: Image.new("RGB", (640, 373)).save(dest, "JPEG"))
+    socials._feed = {"x": [dict(p) for p in posts]}
+    socials.refresh = lambda: None  # never re-read during the run
+    os.makedirs(socials.dir, exist_ok=True)
+    for p in socials._feed["x"]:
+        socials._download(p["image_src"], os.path.join(socials.dir, f"x_{p['id']}.jpg"))
+        p["image"] = f"x_{p['id']}.jpg"
+    app = PortalApp(settings, jobs=jobs, llm=None, socials=socials)  # AI overview off
     httpd = PortalServer(("127.0.0.1", 0), make_handler(app))
 
     for s in SYMS:  # warm the daily cache and the chart previews before the clock starts
@@ -214,6 +248,8 @@ def serve(cache_dir):
         time.sleep(0.02)
     for s in SYMS:
         jobs.plot_path(s, preview=True)
+    for k in SCAN_KINDS:  # and the scan chart previews
+        app.scans.image_path(k, f"{k}_benchmark.jpg")
 
     def control():  # "cpu" → process CPU seconds; EOF → exit
         for line in sys.stdin:
@@ -342,8 +378,9 @@ def format_table(rows, seconds):
         cpu = f"{r['server_cpu'] * 100:.0f}%" if r["server_cpu"] is not None else "—"
         line = (f"{r['scenario']:<11}{r['conc']:>5}{r['rps']:>10,.0f}{f(r['p50']):>9}{f(r['p95']):>9}{f(r['p99']):>9}"
                 f"{r['kb']:>9.1f}{r['errors']:>8}{cpu:>9}{f(r.get('connect_max')):>10}")
-        if r["scenario"] == "page":
-            line += f"   ({r['rps'] / len(PAGE):,.0f} page views/s)"
+        per_view = {"page": len(PAGE), "home": len(home_paths())}.get(r["scenario"])
+        if per_view:
+            line += f"   ({r['rps'] / per_view:,.0f} page views/s)"
         lines.append(line)
     lines += ["", "srv CPU = server process CPU time / wall time (all threads, user + system). Python code runs on",
               "one core at a time (GIL); values above 100% are socket I/O done outside the GIL. A high srv CPU",
