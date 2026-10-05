@@ -220,7 +220,7 @@ body[data-view="scan"] .about { display: none !important; }
 
 /* ── Socials: app-icon widget + Latest on X ──────────────────────────────── */
 .socials { display: grid; gap: 12px; }
-.socials-grid { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 14px; align-items: stretch; }
+.socials-grid { display: grid; grid-template-columns: minmax(220px, 250px) 1fr; gap: 14px; align-items: stretch; }
 .widget {
   border-radius: 26px; padding: 18px; min-width: 0;
   background: linear-gradient(180deg, rgba(44,44,46,.96), rgba(28,28,30,.98));
@@ -259,17 +259,17 @@ body[data-view="scan"] .about { display: none !important; }
 .xw-follow { margin-left: auto; color: var(--sky); font: 700 .85rem var(--sans); }
 .xw-list { list-style: none; margin: 0; padding: 0; }
 .xw-list li + li { border-top: 1px solid rgba(255,255,255,.07); }
-.xw-post { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px 0;
+.xw-post { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 9px 0;
   text-decoration: none; color: var(--text); }
 .xw-post:hover .xw-text { color: var(--white); }
 .xw-main { min-width: 0; display: grid; gap: 4px; }
 .xw-meta { color: var(--dim); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .xw-meta strong { color: var(--muted); }
-.xw-text { margin: 0; white-space: pre-line; font-size: .92rem; line-height: 1.4; overflow: hidden;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
+.xw-text { margin: 0; font-size: .92rem; line-height: 1.4; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .xw-metrics { display: flex; gap: 14px; color: var(--dim); font: 700 .74rem/1 var(--mono); }
 .xw-m { display: inline-flex; gap: 4px; align-items: center; }
-.xw-img { width: 112px; height: 112px; object-fit: cover; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); background: #121212; }
+.xw-img { width: 76px; height: 76px; object-fit: cover; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); background: #121212; }
 
 /* ── ?scan=KIND: the thread, X style ─────────────────────────────────────── */
 .thread { display: grid; gap: 16px; max-width: 760px; width: 100%; margin: 0 auto; }
@@ -497,7 +497,8 @@ dialog#lightbox img { width: 100%; height: auto; }
   .sa-label { justify-items: center; }
   .sa-name { font-weight: 600; color: var(--text); }
   .sa-icon { width: 60px; height: 60px; }
-  .xw-img { width: 84px; height: 84px; }
+  .xw-text { -webkit-line-clamp: 3; line-clamp: 3; }  /* narrower: one more line */
+  .xw-img { width: 72px; height: 72px; }
   .scan-card { padding: 16px 16px 14px; border-radius: 24px; }
   .sc-title { font-size: 1.35rem; }
   .x-thread { padding: 4px 10px; }

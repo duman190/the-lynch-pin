@@ -124,10 +124,30 @@ def test_background_thread_reads_on_schedule(tmp_path, env_file):
         feed.stop()
 
 
-def test_page_shows_the_3_latest_of_5(tmp_path, env_file):
-    feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=FakeX([post(i) for i in range(1, 6)]), download=fake_download)
+def test_page_shows_at_most_5_posts(tmp_path, env_file):
+    feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=FakeX([post(i) for i in range(1, 8)]), download=fake_download)
     feed.refresh()
-    assert [p["url"][-4:] for p in feed.snapshot()["x"]] == ["1001", "1002", "1003"]
+    assert [p["url"][-4:] for p in feed.snapshot()["x"]] == ["1001", "1002", "1003", "1004", "1005"]
+
+
+def test_x_text_is_unescaped(monkeypatch):
+    import sys
+    import types
+
+    class Resp:
+        includes = {}
+        data = [types.SimpleNamespace(id=7, text="R&amp;D &lt;3 &gt; $AMD", created_at=None, attachments=None,
+                                      public_metrics={"like_count": 1})]
+
+    class Client:
+        def __init__(self, **kw):
+            pass
+
+        def get_users_tweets(self, *a, **kw):
+            return Resp()
+    monkeypatch.setitem(sys.modules, "tweepy", types.SimpleNamespace(Client=Client))
+    _, posts = soc.fetch_x({k: "t" for k in soc.TOKEN_NAMES}, user_id="42")
+    assert posts[0]["text"] == "R&D <3 > $AMD" and posts[0]["url"].endswith("/status/7")
 
 
 def test_old_images_are_removed(tmp_path, env_file):

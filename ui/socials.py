@@ -10,6 +10,7 @@ as JPEG here, because the page may only load images from this server (CSP img-sr
 Tokens come from venv/bin/activate (where main.py's posting tokens live), else from the environment.
 They are never sent to the page.
 """
+import html
 import io
 import json
 import os
@@ -25,7 +26,7 @@ import datetime
 HANDLE = "lynch_pin_quant"  # the profile links (X, Instagram, Threads) are in static/index.html
 TOKEN_NAMES = ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")
 POSTS = 5  # the fewest X returns per request
-SHOW = 3   # posts on the page
+SHOW = 5   # posts on the page
 RETRY_S = 3600
 READ_AT = "09:00"               # daily X read time...
 READ_TZ = "America/Los_Angeles"  # ...in this time zone (PDT / PST), whatever the server's clock says
@@ -82,6 +83,7 @@ def fetch_x(tok, user_id=None):
                       access_token=tok["X_ACCESS_TOKEN"], access_token_secret=tok["X_ACCESS_SECRET"])
     if not user_id:
         user_id = str(c.get_me(user_auth=True).data.id)
+    # X returns post text HTML-escaped ("R&amp;D"); the page sets it as text, so it is unescaped here
     r = c.get_users_tweets(user_id, max_results=POSTS, exclude=["retweets"], user_auth=True,
                            tweet_fields=["created_at", "public_metrics"], expansions=["attachments.media_keys"],
                            media_fields=["url", "preview_image_url", "type"])
@@ -90,7 +92,7 @@ def fetch_x(tok, user_id=None):
     for t in r.data or []:
         keys = (t.attachments or {}).get("media_keys") or []
         pm = t.public_metrics or {}
-        posts.append({"id": str(t.id), "text": t.text, "time": t.created_at.isoformat() if t.created_at else "",
+        posts.append({"id": str(t.id), "text": html.unescape(t.text), "time": t.created_at.isoformat() if t.created_at else "",
                       "url": f"https://x.com/{HANDLE}/status/{t.id}",
                       "image_src": next((media[k] for k in keys if media.get(k)), None),
                       "likes": pm.get("like_count"), "replies": pm.get("reply_count"),

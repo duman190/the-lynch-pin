@@ -22,7 +22,7 @@
   }
 
   function row(p, handle) {
-    const text = (p.text || "").replace(/\n\s*\n+/g, "\n");  // blank lines would eat the 3-line preview
+    const text = (p.text || "").replace(/\s*\n+\s*/g, " ");  // one paragraph: a "$NVDA" line would eat the preview
     return el("li", {},
       el("a", { class: "xw-post", href: p.url, target: "_blank", rel: "noopener noreferrer" },
         el("div", { class: "xw-main" },
