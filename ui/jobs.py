@@ -230,12 +230,15 @@ class JobManager:
         self._cooldown_until = 0.0
         self._probing = False
         self.rate_limit_hits = 0
-        # AI overview: a second single worker so LLM latency never blocks quant lookups
+        # AI overview: its own worker pool (--llm-parallel streams at once) so LLM latency never blocks
+        # quant lookups
         self._ai_queue = collections.deque()
         self._ai_inflight = {}
         self._recent_ai = {}
-        self._ai_running = None
-        self._ai_gen = 0
+        self._ai_running = {}   # ai worker token → its running AIJob
+        self._ai_live = set()   # tokens of the AI workers that own the queue; a timed-out worker's is dropped
+        self._ai_token = 0
+        self.ai_workers = max(1, int(getattr(settings, "llm_parallel", 1) or 1))
         # ≤2 generate attempts (+connect), optional model autoload (≤300 s), probe + slack
         self.ai_deadline = 2 * (float(getattr(settings, "llm_timeout", 600)) + 3) + \
             (300 if getattr(settings, "llm_autoload", False) else 0) + 30
@@ -245,7 +248,8 @@ class JobManager:
             for _ in range(self.workers):
                 self._spawn_worker()
             if self.llm is not None:
-                self._spawn_ai_worker()
+                for _ in range(self.ai_workers):
+                    self._spawn_ai_worker()
             wd = threading.Thread(target=self._watchdog, name="lynch-watchdog", daemon=True)
             wd.start()
             self._threads.append(wd)
@@ -397,7 +401,7 @@ class JobManager:
         pos = 0
         if job.status == "queued":
             try:
-                pos = self._ai_queue.index(job) + 1 + (1 if self._ai_running else 0)
+                pos = self._ai_queue.index(job) + 1 + (1 if len(self._ai_running) >= self.ai_workers else 0)
             except ValueError:
                 pos = None
         out = {"ticker": job.sym, "status": job.status, "queue_position": pos, "cached": False,
@@ -486,25 +490,26 @@ class JobManager:
         yield "error", {"ticker": job.sym, "status": "error", "error": "AI stream closed — reload to continue"}
 
     def _spawn_ai_worker(self):
-        self._ai_gen += 1
-        t = threading.Thread(target=self._ai_worker, args=(self._ai_gen,), name=f"lynch-ai-{self._ai_gen}",
-                             daemon=True)
+        self._ai_token += 1
+        token = self._ai_token
+        self._ai_live.add(token)
+        t = threading.Thread(target=self._ai_worker, args=(token,), name=f"lynch-ai-{token}", daemon=True)
         t.start()
         self._threads.append(t)
 
-    def _ai_worker(self, gen):
+    def _ai_worker(self, token):
         from ui.llm import LLMCancelled, LLMError, LLMUnavailable, ticker_narrative
         while True:
             with self._cv:
-                while not self._ai_queue and not self._stop and gen == self._ai_gen:
+                while not self._ai_queue and not self._stop and token in self._ai_live:
                     self._cv.wait(1.0)
-                if self._stop or gen != self._ai_gen:
+                if self._stop or token not in self._ai_live:
                     return
                 job = self._ai_queue.popleft()
-                job.status, job.gen, job.started = "running", gen, self._clock()
-                self._ai_running = job
-            def cancelled(job=job, gen=gen):
-                return self._stop or gen != self._ai_gen or job.status != "running"
+                job.status, job.gen, job.started = "running", token, self._clock()
+                self._ai_running[token] = job
+            def cancelled(job=job, token=token):
+                return self._stop or token not in self._ai_live or job.status != "running"
 
             try:
                 result = ticker_narrative(self.llm, job.entry, self.settings.benchmark, sink=job.stream,
@@ -518,7 +523,7 @@ class JobManager:
             except Exception as e:  # never let the AI worker die
                 result = {"status": "error", "error": f"{type(e).__name__}: {e}"}
             with self._cv:
-                if job.gen != self._ai_gen or job.status != "running":
+                if token not in self._ai_live or job.status != "running":
                     continue  # timed out meanwhile; result discarded
                 job.finished = self._clock()
                 job.status = result.get("status", "error")
@@ -536,8 +541,8 @@ class JobManager:
         """Lock held: retire a finalised AI job and publish its final snapshot to stream readers."""
         self._ai_inflight.pop(job.sym, None)
         self._recent_ai[job.sym] = job
-        if self._ai_running is job:
-            self._ai_running = None
+        if self._ai_running.get(job.gen) is job:
+            del self._ai_running[job.gen]
         job.stream.finish(self._ai_snapshot(job))
 
     def cache_stats(self):
@@ -550,7 +555,8 @@ class JobManager:
             st["rate_limit_retry_s"] = self._retry_after() if self._limited else 0
             st["rate_limit_hits"] = self.rate_limit_hits
             st["ai_queue"] = len(self._ai_queue)
-            st["ai_running"] = self._ai_running.sym if self._ai_running else None
+            st["ai_running"] = ", ".join(sorted(j.sym for j in self._ai_running.values())) or None
+            st["ai_workers"] = self.ai_workers
         return st
 
     def shutdown(self):
@@ -718,12 +724,14 @@ class JobManager:
                 for job in list(self._running.values()):
                     if job.started is not None and self._clock() - job.started > self.deadline:
                         self._expire(job)
-                aj = self._ai_running
-                if aj is not None and aj.started is not None and self._clock() - aj.started > self.ai_deadline:
+                for aj in list(self._ai_running.values()):
+                    if aj.started is None or self._clock() - aj.started <= self.ai_deadline:
+                        continue
                     print(f"⏱️  {aj.sym}: AI overview exceeded {int(self.ai_deadline)}s — abandoning ai worker "
                           f"{aj.gen}, starting a fresh one")
                     aj.status, aj.finished = "error", self._clock()
                     aj.error = "local model timed out; LM Studio may still be busy — retry in a minute"
+                    self._ai_live.discard(aj.gen)
                     self._finish_ai(aj)
                     self._spawn_ai_worker()
                 self._cv.wait(1.0)

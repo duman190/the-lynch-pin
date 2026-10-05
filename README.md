@@ -269,6 +269,17 @@ The AI prompt's "Base ROI math" line uses the same scenario logic, so the implie
 
 This prevents hypergrowth companies (LYFT, CELH) from producing fantasy ROIs by capping terminal PE at realistic levels (~32–39x), while leaving mature compounders (MSFT, PEP) unchanged.
 
+## Web Portal & Local AI Overview
+
+`python -m ui.server` serves a dark-mode web UI for single-ticker lookups, with an optional AI overview streamed from a local LM Studio server. See [ui/README.md](ui/README.md). Its **Local AI tuning** section has the measurements behind the overview prompt and the settings to use on new hardware:
+- prefill vs decode speed for a dense 27B and a 3B-active MoE on Splash
+- the prefix-cache behaviour
+- the prompt rules
+- the model comparison
+- why one request at a time (`--llm-parallel 1`) is optimal on LM Studio's Splash engine
+
+`python ui/tests/llm_bench.py --llm-url http://HOST:1234 --llm-model MODEL --conc 1,2,4` re-runs the benchmark.
+
 ## Testing
 
 ```bash

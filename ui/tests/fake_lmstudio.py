@@ -25,7 +25,8 @@ REASONING = "Let me weigh the PEG against its history, then the income waterfall
 
 
 def canned_reply(prompt, sloppy=False):
-    m = re.search(r"^- ([A-Z][A-Z0-9.\-]*)\*?(?: \[|:)", prompt, re.MULTILINE)
+    # the daily scan's "- MSFT: …" DATASET line, or the portal's "$MSFT Microsoft…" data block
+    m = re.search(r"^(?:- |\$)([A-Z][A-Z0-9.\-]*)\*?(?: \[|:| )", prompt, re.MULTILINE)
     s = m.group(1) if m else "XYZ"
     b = "**" if sloppy else ""
     return (f"{b}🤖:{b} {s} is a sleep-well compounder: PEG near its mean with an A+ waterfall. Conviction beats risk here.\n\n"
@@ -58,6 +59,8 @@ def make_handler(state):
             if self.path == "/v1/models":
                 return self._json(200, {"object": "list", "data": [{"id": MODEL}, {"id": "text-embedding-nomic"}]})
             if self.path == "/api/v0/models":
+                state["native_probes"] = state.get("native_probes", 0) + 1
+            if self.path == "/api/v0/models" and not state.get("no_native"):  # no_native: e.g. standalone Splash
                 return self._json(200, {"data": [
                     {"id": MODEL, "type": "llm", "state": state.get("state", "loaded"),
                      "max_context_length": 131072, "loaded_context_length": state.get("loaded_ctx", 65536)},

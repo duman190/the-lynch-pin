@@ -5,11 +5,11 @@ the UI can type the overview in real time and show time-to-first-token / tokens-
 ("thinking") tokens are kept apart from the answer whether the server sends them as
 ``delta.reasoning_content`` / ``delta.reasoning`` or inline ``<think>…</think>`` in the content.
 
-The prompt reuses the daily scan's DATASET block verbatim (``LynchPinResearcher.build_prompt`` —
-static, the researcher is never instantiated, so no Gemini/OpenRouter key is needed) but replaces the
-Twitter-thread task with a lean per-ticker one: no index SENTIMENT line (meaningless for one ticker
-and a local model has no market feed) and no character limits, just "one paragraph" per section,
-so the model spends no tokens counting.
+The prompt is a static system message (the three-section task, kept in the server's prefix cache: the
+client primes it once, see ``LocalLLMClient._prime``) plus a terse per-ticker data block built from the portal's own analysis: the company profile, the
+analysts' price target and the Quick Overview's reverse-DCF math and red flags arrive pre-computed, so
+a small model only has to write. Time to first token is the data's prefill; total time is mostly the
+reply's length, hence "2-3 sentences" per section (see "Local AI tuning" in ui/README.md).
 
 For thinking models keep LM Studio's "Reasoning Section Parsing" (Developer settings) on so reasoning
 arrives separately; inline and prefilled ``<think>`` blocks are handled too, just less precisely.
@@ -189,6 +189,7 @@ def _short(model_id):
 
 class LocalLLMClient:
     STATUS_TTL = 15.0
+    PRIME_EVERY = 60.0  # seconds between system-prompt primes (see _prime)
 
     def __init__(self, settings, session=None, clock=time.monotonic):
         self.settings = settings
@@ -201,6 +202,8 @@ class LocalLLMClient:
         self._autoloaded = False
         self._refreshing = False
         self._reasoning_field_ok = True  # flips to False if the server rejects reasoning_effort
+        self._native_ok = True           # flips to False if the server has no LM Studio /api/v0
+        self._primed, self._primed_at = None, -1e9  # (model, system prompt) the server's prefix cache holds
 
     # ── discovery ────────────────────────────────────────────────────────────
     def _probe(self):
@@ -246,11 +249,16 @@ class LocalLLMClient:
         return out
 
     def _native_models(self):
-        """LM Studio's native REST API (state / loaded context). Empty list when unsupported."""
+        """LM Studio's native REST API (state / loaded context). Empty list when unsupported; a 404 (another
+        OpenAI-compatible server, e.g. standalone Splash) is remembered so it is not asked again."""
+        if not self._native_ok:
+            return []
         try:
             r = self.http.get(f"{self.base}/api/v0/models", timeout=(2, 2))
             if r.status_code == 200:
                 return [m for m in (r.json().get("data") or []) if isinstance(m, dict) and m.get("id")]
+            if r.status_code == 404:
+                self._native_ok = False
         except (requests.RequestException, ValueError):
             pass
         return []
@@ -321,7 +329,8 @@ class LocalLLMClient:
         return bool(self.settings.llm_autoload and not self._autoloaded)
 
     def generate(self, prompt, max_tokens=None, on_delta=None, cancelled=None, on_rewind=None):
-        """Streams a chat completion and returns ``(content, meta)``.
+        """Streams a chat completion and returns ``(content, meta)``. ``prompt`` is a user message, or a
+        list of chat messages (a static system message first lets the server reuse its KV cache).
 
         ``on_delta(reasoning, content, metrics)`` is called for every chunk; ``on_rewind()`` when
         content already delivered turns out to have been reasoning (prefilled ``<think>``);
@@ -332,13 +341,16 @@ class LocalLLMClient:
         if not st.get("available"):
             raise LLMUnavailable(st.get("reason") or "local model unavailable")
         model, ctx = st["model"], int(st.get("ctx") or self.settings.llm_ctx)
-        est = estimate_tokens(prompt)
+        messages = [{"role": "user", "content": prompt}] if isinstance(prompt, str) else list(prompt)
+        est = estimate_tokens("\n".join(m["content"] for m in messages))
         if est + PROMPT_MARGIN > ctx:
             raise LLMError(f"prompt (~{est} tokens) does not fit the {ctx}-token context window")
         budget = max(256, min(max_tokens or self.settings.llm_max_tokens, ctx - est - 256))
         self._autoload(model)
+        if messages[0].get("role") == "system":
+            self._prime(model, messages[0])
         meter = StreamMeter()
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+        payload = {"model": model, "messages": messages,
                    "temperature": 0.6, "max_tokens": budget,
                    "stream": True, "stream_options": {"include_usage": True}}
         if self.reasoning_mode() == "off":
@@ -363,6 +375,10 @@ class LocalLLMClient:
         finally:
             r.close()
         meter.finish(usage)
+        cached = ((usage or {}).get("prompt_tokens_details") or {}).get("cached_tokens")
+        if cached == 0 and messages[0].get("role") == "system":
+            with self._lock:  # the server reports it lost the system prompt (restart / eviction): prime again
+                self._primed = None
         self._mark(True, model=model)
         if st.get("ctx_loaded") is None:
             with self._lock:  # JIT-loaded just now: re-probe so the real context window is used next
@@ -372,6 +388,26 @@ class LocalLLMClient:
                 "ctx": ctx, "usage": usage or {}, "metrics": meter.metrics(),
                 "elapsed_s": meter.metrics()["elapsed_s"]}
         return content.strip(), meta
+
+    def _prime(self, model, system):
+        """Sends the system prompt alone (empty user message, one token) once per prompt, and again after the
+        server reports a miss (at most once a minute). Splash keeps a request's reusable state at the end of its
+        prompt, so only a request that *ends* with the shared instructions leaves a state every ticker can resume
+        from: after it each overview prefills just its data ("cached 224"). Harmless elsewhere (LM Studio caches a
+        prefix seen twice anyway). Best effort: errors are ignored."""
+        key = (model, system["content"])
+        with self._lock:
+            if self._primed == key or self._clock() - self._primed_at < self.PRIME_EVERY:
+                return
+            self._primed, self._primed_at = key, self._clock()
+        payload = {"model": model, "messages": [system, {"role": "user", "content": ""}], "max_tokens": 1,
+                   "temperature": 0, "stream": False}
+        if self.reasoning_mode() == "off":
+            payload["reasoning_effort"] = "none"
+        try:
+            self.http.post(f"{self.base}/v1/chat/completions", json=payload, timeout=(3, 60)).close()
+        except requests.RequestException:
+            pass
 
     def _post_chat(self, payload):
         try:
@@ -453,59 +489,129 @@ class LocalLLMClient:
 
 
 # ── portal prompt ───────────────────────────────────────────────────────────
-_DATASET_RE = re.compile(r"DATASET:\n(.*?)\n\nTASK:", re.DOTALL)
+# The instructions are a static system message and the ticker's data the user message: LM Studio reuses the KV
+# cache of a prefix it has seen twice, so after warm-up only the data is prefilled. Prefill is the TTFT (~100
+# tok/s for a 27B on an M3 Pro: every 100 data tokens ≈ 1 s), so the data is pre-digested and terse: the
+# reverse-DCF sentence, the analysts' upside and the red flags come computed (ui/quick.py), never left to the
+# model's arithmetic. See "Local AI tuning" in ui/README.md.
+PORTAL_SYSTEM = """You are Peter Lynch talking to a friend over coffee: wise, plain-spoken, slightly witty. Write a \
+research note on the one stock in the data for a long-term value investor.
 
-PORTAL_TASK = """TASK: Write about {sym} in exactly three paragraphs, in this order. Start each paragraph with its \
-label exactly as shown ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:"). Plain text, no markdown, nothing before the \
-first label.
+Reply with exactly three paragraphs of 2-3 sentences, plain text, no markdown, each starting with its label:
+🤖: Start with what the company does and its moat, then conviction vs risk from the valuation and income grade; \
+end with the analysts' price target sentence copied word for word.
+📊 Reverse DCF: Only the math: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx to Nx \
+forward PE", what that demands operationally (revenue growth, margins) and whether those assumptions are \
+realistic, achievable or a stretch (as given).
+🧪 Stomach Test: The specific bear case: why it could lag the market for 5 years, built on the red flags, with numbers.
+Quote numbers exactly as given, never add or combine them, and never mention "the data" or these instructions."""
 
-🤖: One short paragraph weighing conviction against risk, using the valuation and the Income Grade.
-
-📊 Reverse DCF: One paragraph. What the company does and its moat; then the math, citing the "Base ROI math" \
-numbers: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx FwdPE to Nx implied PE at \
-maturity" (no decay exponents or terminal PEG formulas); what that requires operationally (revenue growth, margins, \
-share gains); and your verdict: realistic, achievable or a stretch.
-
-🧪 Stomach Test: One paragraph with the specific bear case: why it could underperform the market for 5 years, with \
-numbers.
-
-Guidance (apply only what the data supports, and never restate these rules):
-- Income Grade A/A+ with an accelerating waterfall: a "sleep well" compounder. Costs growing faster than revenue \
-(RED items): say what could go wrong. Low PEG but a poor grade: judge trap vs opportunity.
-- Credit rating AA+ or AAA: a fortress balance sheet that softens the bear case. BBB or below: debt is a key risk \
-(cite interest coverage, net debt/EBITDA or debt service/FCF).
-- Technicals BEARISH or price below SMA200: warn about catching a falling knife. ACCUMULATION: favorable entry timing.
-- 6M Directional Edge: BULL above 60% fits selling cash-secured puts on dips; BEAR above 60% fits covered calls on \
-bounces; neither above 55% means low conviction for options income.
-
-Tone: wise, slightly witty, Peter Lynch talking to a friend over coffee."""
+_INCOME_KEEP = ("Revenue", "OpIncome", "EPS")  # plus any RED line
+_INCOME_NAMES = {"Revenue": "revenue", "OpIncome": "op income", "NetIncome": "net income"}
+_VERDICTS = {"realistic": "realistic", "achievable": "achievable", "stretch": "a stretch"}
+_DUP_FLAGS = ("Analysts' mean target", "Costs running ahead")  # already in the PT / income lines
 
 
-def build_portal_prompt(row, g=None, b=None, t=None, e=None, benchmark="SPY"):
-    """Per-ticker prompt: the daily scan's DATASET block + the lean three-paragraph task."""
-    from engine.ai_research import LynchPinResearcher as R
-    sym = str(row["Ticker"]).replace("*", "")
-    row = dict(row, Ticker=sym)  # the "*" risk flag means nothing to the model; keep DATASET and TASK aligned
-    wrap = lambda x: {sym: x} if x else None  # noqa: E731  (the formatters are not None-safe)
-    full = R.build_prompt([row], wrap(g), benchmark, wrap(b), wrap(t), wrap(e))
-    m = _DATASET_RE.search(full)
-    if not m:  # upstream prompt layout changed — fail loudly rather than send the thread task
-        raise LLMError("could not extract the DATASET block from LynchPinResearcher.build_prompt")
-    return ("Act as Peter Lynch analysing one stock for a value investor.\n\n"
-            f"DATASET:\n{m.group(1).strip()}\n\n" + PORTAL_TASK.format(sym=f"${sym}"))
+def _flag_headline(text):
+    """'Forward PE 57.9x (above 40x): even next year's…' → 'Forward PE 57.9x (above 40x)'."""
+    head, _, rest = text.partition(": ")
+    return text.rstrip(".") if len(rest) < 40 else head
+
+
+def portal_data(d):
+    """The ticker's analysis (``ui.analysis`` result) as a terse, pre-digested data block."""
+    from ui.quick import _first_sentences, _money, _num, implied_terminal_pe, quick_overview
+    sym, p, st, cur = d["ticker"], d.get("profile") or {}, d.get("stats") or {}, d.get("currency")
+    quick = d.get("quick") or quick_overview(d)
+    out = [f"${sym} {d.get('name') or sym}" + (f", {d['industry']}" if d.get("industry") else "")
+           + (f", {_money(d['market_cap'], cur)} cap" if _num(d.get("market_cap")) else "")]
+    biz = _first_sentences(p.get("summary"))  # what the company does: small models may not know it
+    if biz:
+        out.append(biz)
+    money = []
+    if _num(p.get("operating_margin")) is not None:
+        money.append(f"op margin {p['operating_margin'] * 100:.0f}%")
+    if _num(p.get("profit_margin")) is not None:
+        money.append(f"net {p['profit_margin'] * 100:.0f}%")
+    if _num(p.get("free_cashflow")) is not None:
+        money.append(f"FCF {_money(p['free_cashflow'], cur)}")
+    if _num(p.get("dividend_yield")):
+        money.append(f"dividend {p['dividend_yield']:.1f}%")
+    if money:
+        out.append(", ".join(money))
+    target, price = _num(p.get("target_mean")), _num(d.get("price"))
+    if target and price:
+        up, rec = (target / price - 1) * 100, (p.get("recommendation") or "").replace("_", " ")
+        # the whole sentence, for 🤖 to copy: small models skipped it or wrote "(-2% downside)" from a template
+        out.append(f"Analysts' average price target is ${target:,.2f} ({abs(up):.0f}% "
+                   f"{'upside' if up >= 0 else 'downside'} from today's ${price:,.2f})." + (f" Consensus: {rec}." if rec else ""))
+    pe, fwd, g, peg = (_num(st.get(k)) for k in ("PE", "FwdPE", "growth_pct", "PEG"))
+    if fwd and g and peg is not None:
+        v = (f"PE {pe:.1f}" if pe else "no trailing earnings") + f", FwdPE {fwd:.1f}, growth {g:.1f}%/yr, PEG {peg:.2f}"
+        if st.get("history") == "ok" and _num(st.get("Mean")) is not None:
+            v += f" (5Y mean {st['Mean']:.2f})"
+        out.append(v)
+        bull, base, bear = (_num(st.get(k)) for k in ("Bull", "Base", "Bear"))
+        if None not in (bull, base, bear):
+            out.append(f"5Y ROI/yr: bull {bull:.1f}%, base {base:.1f}%, bear {bear:.1f}%")
+            math = implied_terminal_pe(st)
+            if math:
+                verdict = _VERDICTS.get(quick.get("dcf_verdict"))  # rule-based: small models muddle it
+                out.append(f"Reverse DCF: {base:.1f}% base ROI requires EPS +{math[0]:.1f}%/yr for 5 years, "
+                           f"re-rating {fwd:.1f}x to {math[1]:.1f}x forward PE" + (f"; assumptions: {verdict}" if verdict else ""))
+    inc = d.get("income") or {}
+    if inc.get("grade"):
+        items = [f"{_INCOME_NAMES.get(i['label'], i['label'])} {i['growth'] * 100:+.0f}%"
+                 + (" RED" if i.get("signal") == "bad" else "")
+                 for i in inc.get("items") or [] if _num(i.get("growth")) is not None
+                 and (i["label"] in _INCOME_KEEP or i.get("signal") == "bad")]
+        out.append(f"Income grade {inc['grade']}" + (": " + ", ".join(items) if items else ""))
+    cr = d.get("credit") or {}
+    if cr.get("rating"):
+        ms = {m["label"]: m["value"] for m in cr.get("metrics") or [] if _num(m.get("value")) is not None}
+        bits = [f"{name} {ms[k]:.1f}x" for k, name in (("IntCov", "interest cover"), ("ND/EBITDA", "net debt/EBITDA"))
+                if k in ms]
+        out.append(f"Credit {cr['rating']}" + (" (fortress)" if cr["rating"] in ("AAA", "AA+") else "")
+                   + (": " + ", ".join(bits) if bits else ""))
+    t = d.get("technicals") or {}
+    if t.get("signal") and _num(t.get("price_vs_sma200")) is not None and _num(t.get("rsi")) is not None:
+        line = f"Technicals {t['signal']}, {t['price_vs_sma200']:+.0f}% vs SMA200, RSI {t['rsi']:.0f}"
+        zone = t.get("accumulation_zone")
+        if t["signal"] == "ACCUMULATION" and zone and _num(zone[0]) and _num(zone[1]):
+            line += f", buy zone ${zone[0]:.0f}-{zone[1]:.0f}"
+        out.append(line)
+    e = d.get("edge") or {}
+    bull_acc, bear_acc = _num(e.get("bull_acc")), _num(e.get("bear_acc"))
+    if bull_acc is not None and bear_acc is not None:
+        use = ("fits cash-secured puts" if bull_acc > 60 and bull_acc >= bear_acc else
+               "fits covered calls" if bear_acc > 60 else
+               "low conviction for options" if max(bull_acc, bear_acc) <= 55 else "no clear options edge")
+        out.append(f"6M edge: bull {bull_acc:.0f}% / bear {bear_acc:.0f}% right, {use}")
+    flags = [_flag_headline(f["text"]) for f in quick.get("stomach_test") or [] if not f["text"].startswith(_DUP_FLAGS)]
+    out.append("Red flags: " + ("; ".join(flags) if flags else "none"))
+    return "\n".join(out)
+
+
+def build_portal_messages(data):
+    """Chat messages for one ticker's AI overview: the static instructions, then its data."""
+    return [{"role": "system", "content": PORTAL_SYSTEM}, {"role": "user", "content": portal_data(data)}]
 
 
 # ── reply parsing ───────────────────────────────────────────────────────────
 SECTION_KEYS = ("overview", "reverse_dcf", "stomach_test")
 _BOL = r"(?:^|\n)[ \t>*#_-]*"  # start of a line, ignoring markdown bullets / quotes / bold remnants
+# The label words at the start of a line after a wrong emoji or none ("🧧 Stomach Test:", seen from a 3B-active MoE)
+_ANY_EMOJI = r"[^\w\s:]{0,3}[ \t]*"
 _LABELS = (
     # Either the emoji at the start of a line (label text and colon optional — small models often write
     # "🤖 Let's look…" or "📊 Caterpillar makes…"), or the full label with its colon anywhere.
     ("overview", re.compile(_BOL + r"🤖[ \t]*(?:Overview\b)?[ \t]*:?|🤖[ \t]*(?:Overview[ \t]*)?:", re.IGNORECASE)),
     ("reverse_dcf", re.compile(_BOL + r"📊[ \t]*(?:Reverse[ \t]*(?:5Y[ \t]*)?DCF\b)?[ \t]*:?"
-                               r"|📊[ \t]*Reverse[ \t]*(?:5Y[ \t]*)?DCF[ \t]*:", re.IGNORECASE)),
+                               r"|📊[ \t]*Reverse[ \t]*(?:5Y[ \t]*)?DCF[ \t]*:"
+                               r"|" + _BOL + _ANY_EMOJI + r"Reverse[ \t]*(?:5Y[ \t]*)?DCF[ \t]*:", re.IGNORECASE)),
     ("stomach_test", re.compile(_BOL + r"(?:🧪|🐻)[ \t]*(?:\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:)?[ \t]*:?"
-                                r"|(?:🧪|🐻)[ \t]*\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:", re.IGNORECASE)),
+                                r"|(?:🧪|🐻)[ \t]*\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:"
+                                r"|" + _BOL + _ANY_EMOJI + r"\"?Stomach[ \t]*Test\"?[^:\n]{0,60}:", re.IGNORECASE)),
 )
 _LABEL_WORDS = {"🤖": ("overview",), "📊": ("reverse dcf", "reverse 5y dcf"),
                 "🧪": ("stomach test",), "🐻": ("stomach test",)}
@@ -541,7 +647,8 @@ def _trim_partial_label(text):
 
 def parse_sections(text, partial=False):
     """Splits a reply into overview / reverse_dcf / stomach_test (tolerates **bold**, a leading
-    ``$SYM:`` header, 🐻 instead of 🧪 and template brackets). Unlabelled text becomes the overview."""
+    ``$SYM:`` header, 🐻 instead of 🧪 and template brackets). Unlabelled text before the first label (or the
+    whole reply, without labels) becomes the overview."""
     text = strip_thinking(text or "").replace("**", "").replace("__", "")
     if partial:
         text = _trim_partial_label(text)
@@ -555,9 +662,15 @@ def parse_sections(text, partial=False):
     for i, (start, end, key) in enumerate(hits):
         stop = hits[i + 1][0] if i + 1 < len(hits) else len(text)
         out[key] = _clean(text[end:stop])
-    if not hits:
-        body = re.sub(r"^\s*\$?[A-Z][A-Z0-9.\-]{0,9}\s*:\s*\n", "", text)  # bare "$MSFT:" header
-        out["overview"] = _clean(body)
+    lead = text[:hits[0][0]] if hits else text
+    if not out["overview"]:  # no 🤖 label: unlabelled text before the first label is the overview (qwen2.5-7b)
+        lead = re.sub(r"^\s*\$?[A-Z][A-Z0-9.\-]{0,9}\s*:\s*\n", "", lead)  # bare "$MSFT:" header
+        out["overview"] = _clean(lead)
+    if not hits:  # no labels at all, but the three paragraphs in order (qwen3.6-35b-a3b, ~1 in 30)
+        paras = [p for p in re.split(r"\n[ \t]*\n", out["overview"]) if p.strip()]
+        if len(paras) == 3 or (partial and len(paras) == 2):
+            for key, para in zip(SECTION_KEYS, paras):
+                out[key] = _clean(para)
     return out
 
 
@@ -577,16 +690,13 @@ class NullSink:
 
 
 def ticker_narrative(client, data, benchmark="SPY", sink=None, cancelled=None):
-    """Streams the AI overview for one analysed ticker. Returns a result dict (status done | error)."""
-    inp = data.get("_ai_inputs") or {}
-    row = inp.get("row")
+    """Streams the AI overview for one analysed ticker. Returns a result dict (status done | error).
+    ``benchmark`` is unused (the 6M edge in ``data`` already names it); kept for callers."""
+    row = (data.get("_ai_inputs") or {}).get("row")
     if not row:
         return {"status": "error", "error": "AI overview needs GARP data (no valuation row)"}
-    try:
-        prompt = build_portal_prompt(row, inp.get("g"), inp.get("b"), inp.get("t"), inp.get("e"), benchmark)
-    except ImportError as e:  # engine.ai_research imports google-genai at module top
-        return {"status": "error", "error": f"engine.ai_research unavailable ({e})"}
-    sym = str(row["Ticker"]).replace("*", "")
+    prompt = build_portal_messages(data)
+    sym = data.get("ticker") or str(row["Ticker"]).replace("*", "")
     sink = sink or NullSink()
     best, best_score, best_meta, meta, attempts, max_tokens = None, -1, {}, {}, 0, None
     for attempt in range(2):  # one retry, only for an unusable or token-starved reply

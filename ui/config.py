@@ -76,6 +76,9 @@ class Settings:
     # OpenAI-style servers; retried without it if the server rejects the field), "on" leaves the
     # server default.
     llm_reasoning: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_REASONING", "off").strip().lower())
+    # AI overviews streamed at once (one AI worker each). LM Studio batches parallel requests: more streams
+    # raise total tokens/s but slow each stream down (see "Local AI tuning" in ui/README.md).
+    llm_parallel: int = field(default_factory=lambda: _env_int("LYNCH_LLM_PARALLEL", 1))
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
 

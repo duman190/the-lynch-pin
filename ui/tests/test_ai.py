@@ -271,6 +271,35 @@ def test_parse_sections_emoji_only_labels_from_real_qwen_output():
     assert L.parse_sections("🤖: one line with 📊 inside the text")["reverse_dcf"] == ""  # mid-line emoji ≠ label
 
 
+def test_parse_sections_label_words_after_wrong_or_missing_emoji():
+    # qwen3.6-35b-a3b wrote "🧧 Stomach Test:" — the words still mark the section
+    sec = L.parse_sections("🤖: a\n\n📊 Reverse DCF: b\n\n🧧 Stomach Test: c")
+    assert sec == {"overview": "a", "reverse_dcf": "b", "stomach_test": "c"}
+    sec = L.parse_sections("🤖: a\nReverse DCF: b\nStomach Test: c")
+    assert sec == {"overview": "a", "reverse_dcf": "b", "stomach_test": "c"}
+    assert L.parse_sections("🤖: The Stomach Test: stays mid-line")["stomach_test"] == ""
+
+
+def test_parse_sections_unlabelled_overview_before_labels():
+    # qwen2.5-7b skipped "🤖:" but labelled the rest: the overview used to vanish ("partial reply")
+    text = "$META:\nMeta owns the social graph.\n\n📊 Reverse 5Y DCF: the math\n\n🐻 Stomach test: the bear case"
+    assert L.parse_sections(text) == {"overview": "Meta owns the social graph.", "reverse_dcf": "the math",
+                                      "stomach_test": "the bear case"}
+    live = L.parse_sections("Meta owns the social graph.\n\n📊 Rever", partial=True)
+    assert live["overview"] == "Meta owns the social graph." and live["reverse_dcf"] == ""
+    # a labelled overview still wins over stray text before it
+    assert L.parse_sections("Sure!\n🤖: real overview\n📊 Reverse DCF: b")["overview"] == "real overview"
+
+
+def test_parse_sections_three_unlabelled_paragraphs_in_order():
+    text = "Walmart runs stores.\n\n-2.7% base ROI requires EPS +9.1%/yr.\n\nThe bear case is the PEG."
+    assert L.parse_sections(text) == {"overview": "Walmart runs stores.", "reverse_dcf": "-2.7% base ROI requires EPS +9.1%/yr.",
+                                      "stomach_test": "The bear case is the PEG."}
+    assert L.parse_sections("One.\n\nTwo.")["overview"] == "One.\n\nTwo."  # final: only exactly three
+    assert L.parse_sections("One.\n\nTwo.", partial=True)["reverse_dcf"] == "Two."  # streaming: in order
+    assert L.parse_sections("A.\n\nB.\n\nC.\n\nD.")["reverse_dcf"] == ""
+
+
 def test_parse_sections_partial_hides_half_arrived_label():
     live = L.parse_sections("🤖: Solid compounder.\n\n📊 Rever", partial=True)
     assert live == {"overview": "Solid compounder.", "reverse_dcf": "", "stomach_test": ""}
@@ -281,27 +310,46 @@ def test_parse_sections_partial_hides_half_arrived_label():
     assert L.parse_sections("🤖: a\n\n📊 Reverse DCF: b", partial=True)["reverse_dcf"] == "b"
 
 
-def test_portal_prompt_is_per_ticker_without_sentiment_or_char_limits(settings):
+def test_portal_messages_static_system_then_terse_data(settings):
     data = _analysed(settings)
-    inp = data["_ai_inputs"]
-    p = L.build_portal_prompt(inp["row"], inp["g"], inp["b"], inp["t"], inp["e"])
-    low = p.lower()
-    for banned in ("sentiment", "character", "strict max", "250", "100-150", "twitter", "tweet", "section 1",
-                   "index: $spy", "sentences"):
+    sys_msg, user = L.build_portal_messages(data)
+    assert sys_msg == {"role": "system", "content": L.PORTAL_SYSTEM}  # identical for every ticker → KV-cached
+    assert user["role"] == "user" and "MSFT" not in sys_msg["content"]
+    low = sys_msg["content"].lower()
+    for banned in ("sentiment", "character", "twitter", "tweet", "markdown formatting"):
         assert banned not in low, banned
-    assert p.count("paragraph") >= 4 and "$MSFT" in p
-    assert "never restate these rules" in p and 'label exactly as shown ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:")' in p
-    # the DATASET block is the daily scan's, verbatim
-    assert "- MSFT: PE 28.7, FwdPE 21.8" in p and "Base ROI math:" in p
-    assert "Income Grade: A+" in p and "Credit Rating: AAA" in p and "6M Directional Edge: BULL" in p
     for label in ("🤖:", "📊 Reverse DCF:", "🧪 Stomach Test:"):
-        assert label in p
+        assert label in sys_msg["content"]
+    text = user["content"]
+    assert text.startswith("$MSFT Microsoft Corporation")
+    # pre-computed: the reverse-DCF sentence, fortress tag, RED cost lines, the red-flag verdict
+    assert ("Reverse DCF: 13.5% base ROI requires EPS +13.0%/yr for 5 years, re-rating 21.8x to 22.4x forward PE; "
+            "assumptions: realistic") in text  # Quick Overview's rule-based verdict
+    assert "Income grade A+: revenue +18%, op income +18%, G&A +40% RED" in text
+    assert "Credit AAA (fortress)" in text and text.endswith("Red flags: none")
+    assert len(text) < 750
 
 
-def test_portal_prompt_strips_risk_flag(settings):
-    inp = _analysed(settings)["_ai_inputs"]
-    p = L.build_portal_prompt(dict(inp["row"], Ticker="MSFT*"), inp["g"], inp["b"], inp["t"], inp["e"])
-    assert "MSFT*" not in p and "- MSFT: PE" in p
+def test_portal_data_profile_analyst_target_and_flags():
+    d = {"ticker": "INTC", "name": "Intel Corporation", "industry": "Semiconductors", "price": 119.33,
+         "market_cap": 6.3e11, "currency": "USD",
+         "profile": {"summary": "Intel Corporation designs and makes chips. It operates through three segments. "
+                                "Founded in 1968.", "target_mean": 116.37, "recommendation": "buy",
+                     "operating_margin": 0.12, "profit_margin": -0.2},
+         "stats": {"PE": 0.0, "FwdPE": 57.9, "growth_pct": 42.6, "PEG": 1.36, "Mean": 0.77, "Dev_SD": 0.71,
+                   "Bull": 30.9, "Base": 21.2, "Bear": 6.7, "history": "ok"},
+         "quick": {"stomach_test": [
+             {"level": "high", "text": "Forward PE 57.9x (above 40x): even next year's earnings look expensive."},
+             {"level": "watch", "text": "Analysts' mean target (116.37) is below today's price (119.33)."},
+             {"level": "watch", "text": "RSI 72: overbought in the short term."}]}}
+    text = L.portal_data(d)
+    assert "Intel Corporation designs and makes chips. It operates through three segments." in text
+    assert "Founded" not in text  # the Quick Overview's first two sentences
+    # a whole sentence for the model to copy (sign spelled out: small models flipped or doubled it)
+    assert ("Analysts' average price target is $116.37 (2% downside from today's $119.33). "
+            "Consensus: buy.") in text  # sign spelled out for small models
+    assert "no trailing earnings, FwdPE 57.9" in text and "op margin 12%, net -20%" in text
+    assert text.endswith("Red flags: Forward PE 57.9x (above 40x); RSI 72: overbought in the short term")
 
 
 def test_autoload_note_while_model_loads(settings, lm):
@@ -318,15 +366,6 @@ def test_autoload_note_while_model_loads(settings, lm):
     assert notes == ["loading the model in LM Studio"] and c.autoload_pending() is False
 
 
-def test_portal_prompt_is_much_shorter_than_the_daily_scan_prompt(settings):
-    from engine.ai_research import LynchPinResearcher as R
-    inp = _analysed(settings)["_ai_inputs"]
-    wrap = lambda x: {"MSFT": x}  # noqa: E731
-    daily = R.build_prompt([inp["row"]], wrap(inp["g"]), "SPY", wrap(inp["b"]), wrap(inp["t"]), wrap(inp["e"]))
-    portal = L.build_portal_prompt(inp["row"], inp["g"], inp["b"], inp["t"], inp["e"])
-    assert len(portal) < len(daily) * 0.85
-
-
 def _analysed(settings):
     return TickerAnalyzer(settings, backends=fakes.backends()).run("MSFT")
 
@@ -340,8 +379,9 @@ def test_ticker_narrative_end_to_end(settings, lm):
     assert n["reverse_dcf"].startswith("MSFT sells") and n["stomach_test"].startswith("AI capex")
     assert set(n) == {"overview", "reverse_dcf", "stomach_test"}  # no sentiment any more
     assert out["metrics"]["ttft_s"] is not None and out["metrics"]["tokens"] > 0
-    prompt = lm[1]["requests"][-1][1]["messages"][0]["content"]
-    assert "SENTIMENT" not in prompt and "Income Grade: A+" in prompt and "6M Directional Edge: BULL" in prompt
+    system, user = lm[1]["requests"][-1][1]["messages"]
+    assert system == {"role": "system", "content": L.PORTAL_SYSTEM} and user["role"] == "user"
+    assert "SENTIMENT" not in user["content"] and "Income grade A+" in user["content"] and "6M edge" in user["content"]
 
 
 def test_sloppy_small_model_is_normalised(settings, lm):
@@ -503,6 +543,34 @@ def test_configured_model_missing_without_native_api(settings, lm, monkeypatch):
     assert c.status()["available"] is False
 
 
+def test_server_without_lmstudio_api_is_probed_once(settings, lm):
+    lm[1]["no_native"] = True  # an OpenAI-compatible server only (standalone Splash 404s /api/v0/models)
+    c = L.LocalLLMClient(settings)
+    for _ in range(3):
+        st = c.status(force=True)
+        assert st["available"] and st["ctx_loaded"] is None and st["model"]
+    assert lm[1]["native_probes"] == 1
+
+
+def test_system_prompt_is_primed_once_then_again_after_a_reported_miss(settings, lm):
+    c = L.LocalLLMClient(settings)
+    msgs = L.build_portal_messages(_analysed(settings))
+    c.generate(msgs)
+    c.generate(msgs)
+    chats = [r for path, r in lm[1]["requests"] if path == "/v1/chat/completions"]
+    primes = [r for r in chats if r["messages"][-1]["content"] == ""]
+    assert len(chats) == 3 and len(primes) == 1 and chats[0] is primes[0]  # primed before the first only
+    assert primes[0]["messages"][0] == msgs[0] and primes[0]["max_tokens"] == 1 and not primes[0]["stream"]
+    c._primed_at -= c.PRIME_EVERY  # a minute later the server reports it lost the prefix (Splash: cached_tokens 0)
+    c._primed = None
+    c.generate(msgs)
+    chats = [r for path, r in lm[1]["requests"] if path == "/v1/chat/completions"]
+    assert sum(r["messages"][-1]["content"] == "" for r in chats) == 2
+    lm[1]["requests"].clear()
+    c.generate("- MSFT: x")  # a bare user prompt has nothing to prime
+    assert all(r["messages"][-1]["content"] for _, r in lm[1]["requests"])
+
+
 def test_jit_warning_when_not_loaded(settings, lm):
     lm[1]["state"] = "not-loaded"
     st = L.LocalLLMClient(settings).status()
@@ -534,6 +602,32 @@ def test_refresh_during_ai_does_not_attach_stale_narrative(settings, lm):
     assert "ai" not in store.peek("MSFT")  # fresh analysis → fresh AI on next request
     assert old_entry["ai"]["status"] == "done"
     jm.shutdown()
+
+
+def test_llm_parallel_streams_overviews_at_once(settings, monkeypatch):
+    monkeypatch.setitem(fakes.FakeEngine.infos, "AAPL", dict(fakes.MSFT_INFO))
+    monkeypatch.setitem(fakes.FakeEngine.rows, "AAPL", dict(fakes.MSFT_ROW, Ticker="AAPL"))
+    both = threading.Barrier(2, timeout=5)  # only passes when two generations run at the same time
+
+    class PairClient(ScriptedClient):
+        def generate(self, prompt, **kw):
+            both.wait()
+            return super().generate(prompt, **kw)
+
+    settings.llm_parallel = 2
+    c = PairClient([fake_lmstudio.canned_reply("- MSFT: x")] * 2)
+    jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), store=DayStore(), llm=c)
+    try:
+        for sym in ("MSFT", "AAPL"):
+            wait(lambda: jm.request(sym, poll=bool(jm.lookup(sym))), lambda s: s["status"] == "done")
+        assert jm.ai_workers == 2
+        for sym in ("MSFT", "AAPL"):
+            jm.request_ai(sym)
+        for sym in ("MSFT", "AAPL"):
+            assert wait(lambda: jm.request_ai(sym), lambda s: s["status"] in ("done", "error"))["status"] == "done"
+        assert jm.cache_stats()["ai_workers"] == 2 and jm.cache_stats()["ai_running"] is None
+    finally:
+        jm.shutdown()
 
 
 def read_sse(port, path, timeout=15):
