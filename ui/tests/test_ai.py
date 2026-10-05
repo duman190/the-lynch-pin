@@ -352,6 +352,24 @@ def test_portal_data_profile_analyst_target_and_flags():
     assert text.endswith("Red flags: Forward PE 57.9x (above 40x); RSI 72: overbought in the short term")
 
 
+def test_portal_data_accumulation_signal_shows_buy_zone():
+    """The engine labels it ACCUMUL; the brief spells it out and adds the buy zone."""
+    d = {"ticker": "AMZN", "stats": {}, "quick": {"stomach_test": []},
+         "technicals": {"signal": "ACCUMUL", "price_vs_sma200": 4.2, "rsi": 54.0, "accumulation_zone": [236.4, 247.9]}}
+    assert "Technicals ACCUMULATION, +4% vs SMA200, RSI 54, buy zone $236-248" in L.portal_data(d)
+    d["technicals"]["signal"] = "BULLISH"
+    assert "Technicals BULLISH, +4% vs SMA200, RSI 54\n" in L.portal_data(d)  # the zone only matters when buying
+
+
+def test_scan_brief_matches_the_portal_data_block(settings):
+    """main.py's AI prompt describes a ticker with exactly the portal's AI-overview data block."""
+    from ui.tests import fakes
+    portal = L.portal_data(_analysed(settings))
+    scan = L.scan_brief(dict(fakes.MSFT_ROW), fakes.MSFT_INFO, fakes.INCOME, fakes.CREDIT, fakes.TECH, fakes.EDGE)
+    assert scan == portal
+    assert L.scan_brief(dict(fakes.MSFT_ROW, Ticker="MSFT*"), fakes.MSFT_INFO).startswith("$MSFT Microsoft")
+
+
 def test_autoload_note_while_model_loads(settings, lm):
     settings.llm_autoload = True
     notes = []

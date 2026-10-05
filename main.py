@@ -71,6 +71,22 @@ def _extract_portfolio_narrative(bulk_text):
     return narrative, remaining
 
 
+def _ticker_briefs(df, engines, grader_data, bs_data, tech_data, edge_data):
+    """Each ticker's data block for the AI prompt, the same one the portal's AI overview reads
+    (ui.llm.scan_brief): business description, analysts' price target, margins, reverse-DCF verdict,
+    red flags... A ticker whose brief fails falls back to the raw metrics in the prompt."""
+    from ui.llm import scan_brief
+    briefs = {}
+    for row in df.to_dict('records'):
+        sym = row['Ticker'].replace('*', '')
+        try:
+            briefs[sym] = scan_brief(row, getattr(engines.get(sym), 'info', None), grader_data.get(sym),
+                                     bs_data.get(sym), tech_data.get(sym), edge_data.get(sym))
+        except Exception as e:  # never lose the thread over the richer prompt
+            print(f"  ⚠️ {sym}: no AI brief ({type(e).__name__}: {e}); using the raw metrics")
+    return briefs
+
+
 def _grok_portfolio_question(n_positions):
     """Closing X post: asks Grok for an opinion on the whole portfolio.
 
@@ -326,7 +342,9 @@ def main():
 
         raw_ai = researcher.get_batch_narrative(df.to_dict('records'), grader_data, idx_name, bs_data,
                                                 tech_data, edge_data,
-                                                portfolio_summary=portfolio_summary or None)
+                                                portfolio_summary=portfolio_summary or None,
+                                                ticker_briefs=_ticker_briefs(df, engines, grader_data, bs_data,
+                                                                             tech_data, edge_data))
 
         # Parse sentiment from response
         sent_match = re.search(r'SENTIMENT:\s*(.+)', raw_ai)

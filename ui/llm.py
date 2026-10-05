@@ -575,9 +575,10 @@ def portal_data(d):
                    + (": " + ", ".join(bits) if bits else ""))
     t = d.get("technicals") or {}
     if t.get("signal") and _num(t.get("price_vs_sma200")) is not None and _num(t.get("rsi")) is not None:
-        line = f"Technicals {t['signal']}, {t['price_vs_sma200']:+.0f}% vs SMA200, RSI {t['rsi']:.0f}"
+        signal = "ACCUMULATION" if t["signal"].startswith("ACCUMUL") else t["signal"]  # the engine says ACCUMUL
+        line = f"Technicals {signal}, {t['price_vs_sma200']:+.0f}% vs SMA200, RSI {t['rsi']:.0f}"
         zone = t.get("accumulation_zone")
-        if t["signal"] == "ACCUMULATION" and zone and _num(zone[0]) and _num(zone[1]):
+        if signal == "ACCUMULATION" and zone and _num(zone[0]) and _num(zone[1]):
             line += f", buy zone ${zone[0]:.0f}-{zone[1]:.0f}"
         out.append(line)
     e = d.get("edge") or {}
@@ -590,6 +591,23 @@ def portal_data(d):
     flags = [_flag_headline(f["text"]) for f in quick.get("stomach_test") or [] if not f["text"].startswith(_DUP_FLAGS)]
     out.append("Red flags: " + ("; ".join(flags) if flags else "none"))
     return "\n".join(out)
+
+
+def scan_brief(row, info, grade=None, credit=None, technicals=None, edge=None):
+    """The daily scan's ticker as the same data block the portal's AI overview reads (main.py passes it
+    to the scan's thread prompt): the engine row, the Yahoo quote the engine already holds, the grades."""
+    from ui.formats import _extract_price, _num, format_credit, format_income, format_stats, format_technicals
+    from ui.quick import profile_from_info
+    info = info or {}
+    sym = str(row.get("Ticker", "")).replace("*", "")
+    return portal_data({
+        "ticker": sym, "status": "done", "name": info.get("longName") or info.get("shortName") or sym,
+        "sector": info.get("sector"), "industry": info.get("industry"), "currency": info.get("currency") or "USD",
+        "market_cap": _num(info.get("marketCap")), "price": _extract_price(info),
+        "profile": profile_from_info(info), "stats": format_stats(row), "flagged": str(row.get("Ticker", "")).endswith("*"),
+        "income": format_income(grade), "credit": format_credit(credit),
+        "technicals": format_technicals(technicals), "edge": dict(edge) if edge else None,
+    })
 
 
 def build_portal_messages(data):

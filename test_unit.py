@@ -2537,6 +2537,24 @@ class TestMainPortfolioHelpers(unittest.TestCase):
         # Absent block → empty narrative, text untouched
         self.assertEqual(_extract_portfolio_narrative("$AAPL:\nx"), ("", "$AAPL:\nx"))
 
+    def test_build_prompt_uses_ticker_briefs_in_portal_layout(self):
+        """A ticker with a brief (the portal's data block) is described by it alone, and the sections
+        follow the portal's AI overview: company + analysts' target in 🤖, the math first in 📊."""
+        from engine.ai_research import LynchPinResearcher
+        rows = [{'Ticker': 'AMZN'}, {'Ticker': 'MSFT', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '15.0%',
+                                     'PEG': 1.33, 'Mean': 1.5, 'Dev_SD': -0.5, 'Bull': '20%', 'Base': '15%', 'Bear': '8%'}]
+        brief = ("$AMZN Amazon.com, Inc., Internet Retail, $2.7T cap\n"
+                 "Analysts' average price target is $330.59 (32% upside from today's $251.40).")
+        p = LynchPinResearcher.build_prompt(rows, idx_name='MAGS', ticker_briefs={'AMZN': brief})
+        self.assertIn("- AMZN:\n" + brief, p)
+        self.assertIn('- MSFT: PE 25.0', p)                  # no brief → raw metrics as before
+        self.assertIn('STRICT MAX 250 characters', p)
+        self.assertIn('Start with what the company does and its moat', p)
+        self.assertIn('"Analysts\' target $X (Y% upside)" (or "downside"). Never add today\'s price.', p)
+        self.assertIn('never write it as a label ("Assumptions: achievable", "Verdict: ...")', p)
+        self.assertIn('📊 Reverse DCF: [Only the math, and start with it: "X% base ROI requires EPS', p)
+        self.assertIn('Do not describe the company here; that belongs in 🤖.', " ".join(p.split()))
+
     def test_build_prompt_portfolio_mode(self):
         from engine.ai_research import LynchPinResearcher
         rows = [{'Ticker': 'AAPL', 'PE': 30, 'FwdPE': 25, '2YFwd': 22, '5YGrowth': '10%', 'PEG': 2.5,

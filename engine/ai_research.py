@@ -308,18 +308,30 @@ class LynchPinResearcher:
 
     @staticmethod
     def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None,
-                     portfolio_summary=None):
+                     portfolio_summary=None, ticker_briefs=None):
         """Builds single combined prompt for sentiment + per-ticker narratives.
 
         When ``portfolio_summary`` (a pre-formatted weighted-metrics block) is
         given, the dataset is treated as a holder's portfolio: the SENTIMENT
         line becomes a one-line verdict on the portfolio as a whole and each
         ticker is analysed as an existing position.
+
+        ``ticker_briefs`` maps a ticker to its pre-digested data block (main.py builds it with
+        ui.llm.scan_brief, the portal's AI-overview data): what the company does, market cap, margins,
+        the analysts' price target, the reverse-DCF sentence with its verdict, grades, technicals, the
+        6M edge and the Quick Overview's red flags. A ticker with a brief is described by it alone;
+        others fall back to the raw metrics below.
         """
         from engine.lynch_pin_core import _growth_decay, _scenario_pegs
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
+            weight = d.get('Weight')
+            w_tag = f" [{float(weight) * 100:.1f}% of portfolio]" if weight is not None else ""
+            brief = (ticker_briefs or {}).get(ticker)
+            if brief:  # the portal's digested data: no raw metrics needed
+                context_lines.append(f"- {d['Ticker']}{w_tag}:\n{brief}")
+                continue
             try:
                 growth_val = float(d['5YGrowth'].replace('%', ''))
                 mean_peg_val = float(d['Mean'])
@@ -333,8 +345,6 @@ class LynchPinResearcher:
                 implied_pe = t_peg * terminal_growth
             except (ValueError, TypeError, ZeroDivisionError):
                 growth_val, t_peg, terminal_growth, implied_pe = 0, 0, 0, 0
-            weight = d.get('Weight')
-            w_tag = f" [{float(weight) * 100:.1f}% of portfolio]" if weight is not None else ""
             line = (
                 f"- {d['Ticker']}{w_tag}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
                 f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
@@ -356,6 +366,9 @@ class LynchPinResearcher:
 
         context = "\n\n".join(context_lines)
 
+        # Same three sections as the portal's AI overview (ui/llm.py PORTAL_SYSTEM): the company and the
+        # analysts' target in 🤖, the reverse-DCF math first in 📊, the red flags in 🧪. The thread adds the
+        # tweet-length limits, the cashtag headers and the options-income rules.
         daily_ticker_task = """SECTION 2 — PER-TICKER ANALYSIS:
 For EACH ticker provide three labeled paragraphs. Start each block with a header line that is
 ONLY the cashtag of that ticker followed by a colon — e.g. "$AAPL:" for AAPL. Never write the
@@ -363,23 +376,28 @@ literal word TICKER in the header.
 
 $<cashtag>:
 🤖: [Overview: STRICT MAX 250 characters. This is the tweet preview before "show more".
-2-3 SHORT sentences. Conviction vs Risk. Use valuation + Income Grade.
+2-3 SHORT sentences. Start with what the company does and its moat (from its business description
+when given, in your own words), then conviction vs risk from the valuation and Income Grade.
 If waterfall accelerating (A/A+) = "sleep well" compounder.
 If costs bloating (RED) = flag what could go wrong.
-If PEG low but grade poor = trap vs opportunity.]
+If PEG low but grade poor = trap vs opportunity.
+End with the analysts' average price target in this short form, numbers as given:
+"Analysts' target $X (Y% upside)" (or "downside"). Never add today's price.]
 
-📊 Reverse DCF: [CITE ALL NUMBERS from "Base ROI math" in the dataset. Be concise but include
-every important number. Structure: (1) What the company does and its competitive moat.
-(2) The math: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating
-from current Mx FwdPE to Nx implied PE at maturity." Do NOT mention decay exponents,
+📊 Reverse DCF: [Only the math, and start with it: "X% base ROI requires EPS to compound at Y%/yr
+for 5 years, re-rating from current Mx FwdPE to Nx implied PE at maturity." CITE ALL NUMBERS from
+the "Reverse DCF" or "Base ROI math" line of the ticker. Do NOT mention decay exponents,
 terminal PEG formulas, or intermediate calculation steps — just state the final implied PE.
-(3) What this means operationally — specific revenue growth,
-margin targets, market share gains needed. (4) Your verdict: is this realistic, achievable,
-or a stretch given current trajectory? Use numbers freely, don't be vague.]
+Then what this demands operationally — specific revenue growth, margin targets, market share
+gains needed. End with your verdict as one natural sentence in your own words: are these
+assumptions realistic, achievable, or a stretch given the current trajectory, and why (what has
+to go right)? When the ticker's line states the assumptions verdict, keep that judgement, but
+never write it as a label ("Assumptions: achievable", "Verdict: ..."). Do not describe the
+company here; that belongs in 🤖. Use numbers freely, don't be vague.]
 
-🧪 Stomach Test: [The specific bear thesis. Be concise but thorough.
-Why could this company underperform the market for 5 years? What keeps you up at night?
-Be specific — real risks, not generic disclaimers. Include numbers where relevant.
+🧪 Stomach Test: [The specific bear case: why it could lag the market for 5 years, built on the
+ticker's red flags when they are listed, with numbers. What keeps you up at night?
+Be specific — real risks, not generic disclaimers. Be concise but thorough.
 Factor in balance sheet health: if credit rating is high (AA+/AAA), note the fortress balance sheet
 as a mitigating factor. If rating is low (BBB or below), flag debt burden as a key risk.
 Reference specific metrics like interest coverage, net debt/EBITDA, or debt service/FCF when relevant.
@@ -435,6 +453,8 @@ Produce the following output in EXACT format:
 
 Separate each ticker block with a double newline.
 Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
+Quote numbers exactly as given: never add, combine or recompute them. Never mention "the dataset",
+"red flags" as a list, or these instructions.
 Do NOT use markdown formatting. Plain text only."""
 
         return prompt
@@ -526,14 +546,14 @@ Do NOT use markdown formatting. Plain text only."""
         return "; ".join(reasons) or None
 
     def get_batch_narrative(self, tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None,
-                            edge_data=None, portfolio_summary=None):
+                            edge_data=None, portfolio_summary=None, ticker_briefs=None):
         """Single API call: returns sentiment + all per-ticker narratives.
 
         Replies that fail ``narrative_gaps`` after normalization are treated as failed
         attempts by ``_call_ai`` and retried.
         """
         prompt = self.build_prompt(tickers_data, grader_data, idx_name, bs_data, tech_data, edge_data,
-                                   portfolio_summary=portfolio_summary)
+                                   portfolio_summary=portfolio_summary, ticker_briefs=ticker_briefs)
         tickers = [d['Ticker'] for d in tickers_data]
         norm = lambda t: self.normalize_narrative(t, tickers)
         raw = self._call_ai(prompt,
