@@ -220,7 +220,8 @@ body[data-view="scan"] .about { display: none !important; }
 
 /* ── Socials: app-icon widget + Latest on X ──────────────────────────────── */
 .socials { display: grid; gap: 12px; }
-.socials-grid { display: grid; grid-template-columns: minmax(220px, 250px) 1fr; gap: 14px; align-items: stretch; }
+/* the link widget is as narrow as "@lynch_pin_quant" plus the widget padding on both sides */
+.socials-grid { display: grid; grid-template-columns: max-content 1fr; gap: 14px; align-items: stretch; }
 .widget {
   border-radius: 26px; padding: 18px; min-width: 0;
   background: linear-gradient(180deg, rgba(44,44,46,.96), rgba(28,28,30,.98));
@@ -232,25 +233,24 @@ body[data-view="scan"] .about { display: none !important; }
 .sa-handle { color: var(--white); font: 800 1.05rem/1.2 var(--mono); }
 /* laptop: an iOS list of the three apps, spread over the X widget's height; phone: a row of icons */
 .sa-icons { display: grid; grid-template-columns: 1fr; align-content: space-evenly; gap: 6px; }
-.sa-app {
-  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px;
-  padding: 10px 12px; border-radius: 18px; text-decoration: none; color: var(--text); font-size: .95rem;
+.sa-app {  /* icons line up with the handle; the hover highlight reaches 8px past them */
+  display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px;
+  margin: 0 -8px; padding: 8px; border-radius: 16px; text-decoration: none; color: var(--text); font-size: .95rem;
   transition: background .15s;
 }
-.sa-app::after { content: "›"; color: var(--dim); font-size: 1.4rem; line-height: 1; }
 .sa-app:hover { background: rgba(255,255,255,.05); }
 .sa-label { display: grid; gap: 2px; min-width: 0; }
 .sa-sub { color: var(--dim); font: .78rem var(--mono); }
 .sa-icon {
-  width: 52px; height: 52px; border-radius: 15px; display: grid; place-items: center; color: #fff;
+  width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; color: #fff;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 6px 16px rgba(0,0,0,.45); transition: transform .15s ease;
 }
-.sa-icon svg { width: 30px; height: 30px; }
+.sa-icon svg { width: 26px; height: 26px; }
 .sa-app:hover .sa-icon { transform: translateY(-2px); }
 .sa-app:active .sa-icon { transform: scale(.94); }
 .sa-x { background: #000; border: 1px solid #2F3336; }
 .sa-ig { background: radial-gradient(circle at 30% 107%, #FDF497 0%, #FD5949 45%, #D6249F 60%, #285AEB 90%); }
-.sa-threads { background: #000; border: 1px solid #2F3336; font: 700 2.1rem/1 var(--sans); padding-bottom: 4px; }
+.sa-threads { background: #000; border: 1px solid #2F3336; font: 700 1.8rem/1 var(--sans); padding-bottom: 3px; }
 .sa-name { font-weight: 700; color: var(--white); }
 .x-widget { padding: 14px 18px 8px; }
 .xw-head { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--white); padding-bottom: 6px; }
@@ -491,12 +491,14 @@ dialog#lightbox img { width: 100%; height: auto; }
   .scans-nav { display: none; }  /* swipe on phones */
   .socials-grid { grid-template-columns: 1fr; }
   .sa-icons { grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .sa-app { grid-template-columns: 1fr; justify-items: center; gap: 8px; padding: 0; font-size: .78rem; }
-  .sa-app::after, .sa-sub { display: none; }
+  .sa-app { grid-template-columns: 1fr; justify-items: center; gap: 8px; margin: 0; padding: 0; font-size: .78rem; }
+  .sa-sub { display: none; }
   .sa-app:hover { background: none; }
   .sa-label { justify-items: center; }
   .sa-name { font-weight: 600; color: var(--text); }
-  .sa-icon { width: 60px; height: 60px; }
+  .sa-icon { width: 60px; height: 60px; border-radius: 15px; }
+  .sa-icon svg { width: 30px; height: 30px; }
+  .sa-threads { font-size: 2.1rem; }
   .xw-text { -webkit-line-clamp: 3; line-clamp: 3; }  /* narrower: one more line */
   .xw-img { width: 72px; height: 72px; }
   .scan-card { padding: 16px 16px 14px; border-radius: 24px; }
