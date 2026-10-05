@@ -105,7 +105,8 @@ Rules that got there:
 - **Static instructions first, data last.** The old prompt put the data first, so no tokens were ever reused across tickers.
 - **Compute in Python, let the model write.** The data block hands the model these, already computed:
   - the reverse-DCF sentence and the Quick Overview's verdict on its assumptions (`assumptions: a stretch`)
-  - the whole analyst price-target sentence ("Analysts' average price target is $116.37 (2% downside from today's $119.33)."), which 🤖 is told to copy word for word. With only a template, small models skipped it (4/32) or wrote "(-2% downside)"; copying, the A3B included it 32/32 with no sign errors
+  - the whole analyst price-target sentence ("Analysts' target $116.37 (2% downside)."), which 🤖 is told to copy word for word. With only a template, small models skipped it (4/32) or wrote "(-2% downside)"; copying, the A3B included it 32/32 with no sign errors (measured with the longer "Analysts' average price target is $116.37 (2% downside from today's $119.33)." it replaced on 2026-10-05, to match the daily scan's thread)
+  - the reverse-DCF verdict is asked for as one plain sentence with its reason, never a label like "Assumptions: achievable"
   - "(fortress)" next to an AAA/AA+ credit rating
   - the options-edge reading
   - the Quick Overview's red-flag headlines

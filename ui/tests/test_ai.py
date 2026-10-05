@@ -346,8 +346,7 @@ def test_portal_data_profile_analyst_target_and_flags():
     assert "Intel Corporation designs and makes chips. It operates through three segments." in text
     assert "Founded" not in text  # the Quick Overview's first two sentences
     # a whole sentence for the model to copy (sign spelled out: small models flipped or doubled it)
-    assert ("Analysts' average price target is $116.37 (2% downside from today's $119.33). "
-            "Consensus: buy.") in text  # sign spelled out for small models
+    assert "Analysts' target $116.37 (2% downside). Consensus: buy." in text  # 🤖 copies it
     assert "no trailing earnings, FwdPE 57.9" in text and "op margin 12%, net -20%" in text
     assert text.endswith("Red flags: Forward PE 57.9x (above 40x); RSI 72: overbought in the short term")
 

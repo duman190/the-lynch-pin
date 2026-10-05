@@ -499,10 +499,10 @@ research note on the one stock in the data for a long-term value investor.
 
 Reply with exactly three paragraphs of 2-3 sentences, plain text, no markdown, each starting with its label:
 🤖: Start with what the company does and its moat, then conviction vs risk from the valuation and income grade; \
-end with the analysts' price target sentence copied word for word.
+end with the analysts' target sentence ("Analysts' target $X (Y% upside)") copied word for word.
 📊 Reverse DCF: Only the math: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx to Nx \
-forward PE", what that demands operationally (revenue growth, margins) and whether those assumptions are \
-realistic, achievable or a stretch (as given).
+forward PE", what that demands operationally (revenue growth, margins), then one plain sentence on whether \
+those assumptions are realistic, achievable or a stretch (as given) and why, never a label like "Assumptions: achievable".
 🧪 Stomach Test: The specific bear case: why it could lag the market for 5 years, built on the red flags, with numbers.
 Quote numbers exactly as given, never add or combine them, and never mention "the data" or these instructions."""
 
@@ -543,8 +543,8 @@ def portal_data(d):
     if target and price:
         up, rec = (target / price - 1) * 100, (p.get("recommendation") or "").replace("_", " ")
         # the whole sentence, for 🤖 to copy: small models skipped it or wrote "(-2% downside)" from a template
-        out.append(f"Analysts' average price target is ${target:,.2f} ({abs(up):.0f}% "
-                   f"{'upside' if up >= 0 else 'downside'} from today's ${price:,.2f})." + (f" Consensus: {rec}." if rec else ""))
+        out.append(f"Analysts' target ${target:,.2f} ({abs(up):.0f}% {'upside' if up >= 0 else 'downside'})."
+                   + (f" Consensus: {rec}." if rec else ""))
     pe, fwd, g, peg = (_num(st.get(k)) for k in ("PE", "FwdPE", "growth_pct", "PEG"))
     if fwd and g and peg is not None:
         v = (f"PE {pe:.1f}" if pe else "no trailing earnings") + f", FwdPE {fwd:.1f}, growth {g:.1f}%/yr, PEG {peg:.2f}"

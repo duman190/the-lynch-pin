@@ -2544,7 +2544,7 @@ class TestMainPortfolioHelpers(unittest.TestCase):
         rows = [{'Ticker': 'AMZN'}, {'Ticker': 'MSFT', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '15.0%',
                                      'PEG': 1.33, 'Mean': 1.5, 'Dev_SD': -0.5, 'Bull': '20%', 'Base': '15%', 'Bear': '8%'}]
         brief = ("$AMZN Amazon.com, Inc., Internet Retail, $2.7T cap\n"
-                 "Analysts' average price target is $330.59 (32% upside from today's $251.40).")
+                 "Analysts' target $330.59 (32% upside). Consensus: strong buy.")
         p = LynchPinResearcher.build_prompt(rows, idx_name='MAGS', ticker_briefs={'AMZN': brief})
         self.assertIn("- AMZN:\n" + brief, p)
         self.assertIn('- MSFT: PE 25.0', p)                  # no brief → raw metrics as before
