@@ -43,13 +43,6 @@ def env_file(tmp_path):
     return str(p)
 
 
-def wait_idle(feed):
-    for _ in range(200):
-        if not feed._running:
-            return
-        time.sleep(0.01)
-
-
 def test_read_tokens_file_first_then_env(tmp_path, monkeypatch):
     p = tmp_path / "activate"
     p.write_text('export X_API_KEY="from file"\nexport OTHER=1\nexport X_API_SECRET=\n')
@@ -76,22 +69,59 @@ def test_refresh_stores_posts_and_images(tmp_path, env_file):
     # a new server process starts from the disk cache, without calling X
     again = SocialFeed(str(tmp_path / "cache"), env_file, fetch=FakeX(fail=True), download=fake_download)
     assert [p["text"] for p in again.snapshot()["x"]] == [p["text"] for p in snap["x"]]
-    wait_idle(again)
+    assert again.tick() is False  # today's read is on disk
 
 
-def test_one_x_read_per_scan_day(tmp_path, env_file, monkeypatch):
+def test_read_day_rolls_over_at_9am_pacific():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    assert soc.read_day("09:00", dt.datetime(2026, 10, 5, 8, 59)) == "2026-10-04"
+    assert soc.read_day("09:00", dt.datetime(2026, 10, 5, 9, 0)) == "2026-10-05"
+    utc = ZoneInfo("UTC")  # a server clock in another zone still reads at 9 AM Pacific (16:00 UTC in PDT)
+    assert soc.read_day(now=dt.datetime(2026, 10, 5, 15, 59, tzinfo=utc).astimezone(ZoneInfo(soc.READ_TZ))) == "2026-10-04"
+    assert soc.read_day(now=dt.datetime(2026, 10, 5, 16, 0, tzinfo=utc).astimezone(ZoneInfo(soc.READ_TZ))) == "2026-10-05"
+    assert soc.read_day() in {(dt.datetime.now(ZoneInfo(soc.READ_TZ)) - dt.timedelta(days=d)).date().isoformat() for d in (0, 1)}
+    assert soc.read_day("6:30", dt.datetime(2026, 10, 5, 6, 29)) == "2026-10-04"
+    assert soc.read_day("6:30", dt.datetime(2026, 10, 5, 6, 30)) == "2026-10-05"
+    for bad in ["25:00", "9:60", "noon", ""]:
+        with pytest.raises(ValueError):
+            soc.parse_hhmm(bad)
+    with pytest.raises(Exception):
+        SocialFeed("/tmp/x", "/tmp/y", tz="Mars/Olympus_Mons")
+
+
+def test_page_views_never_call_x(tmp_path, env_file):
     x = FakeX()
     feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=x, download=fake_download)
-    first = feed.snapshot()
-    assert first["refreshing"] is True and first["x"] == []
-    wait_idle(feed)
     for _ in range(5):
-        assert len(feed.snapshot()["x"]) == 2
+        assert feed.snapshot()["x"] == []
+    assert x.calls == []
+
+
+def test_one_x_read_per_day(tmp_path, env_file, monkeypatch):
+    x = FakeX()
+    feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=x, download=fake_download)
+    assert feed.tick() is True  # startup: no read yet today
+    for _ in range(5):
+        assert feed.tick() is False and len(feed.snapshot()["x"]) == 2
     assert len(x.calls) == 1
-    monkeypatch.setattr(soc, "scan_day", lambda: "2099-01-01")  # 3 PM the next day
-    feed.snapshot()
-    wait_idle(feed)
+    monkeypatch.setattr(soc, "read_day", lambda read_at, tz: "2099-01-01")  # 9 AM the next day
+    assert feed.tick() is True and feed.tick() is False
     assert len(x.calls) == 2 and x.calls[1][1] == "42"  # user id remembered: no second get_me
+
+
+def test_background_thread_reads_on_schedule(tmp_path, env_file):
+    x = FakeX()
+    feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=x, download=fake_download).start(every_s=0.01)
+    try:
+        for _ in range(300):
+            if feed.snapshot()["x"]:
+                break
+            time.sleep(0.01)
+        time.sleep(0.05)
+        assert len(feed.snapshot()["x"]) == 2 and len(x.calls) == 1  # once, despite many checks
+    finally:
+        feed.stop()
 
 
 def test_old_images_are_removed(tmp_path, env_file):
@@ -108,14 +138,14 @@ def test_failed_read_keeps_last_posts_and_waits_an_hour(tmp_path, env_file, monk
     feed.refresh()
     failing = FakeX(fail=True)
     feed._fetch = failing
-    monkeypatch.setattr(soc, "scan_day", lambda: "2099-01-01")
-    feed.snapshot()
-    wait_idle(feed)
+    monkeypatch.setattr(soc, "read_day", lambda read_at, tz: "2099-01-01")
+    feed.tick()
     assert len(failing.calls) == 1 and len(feed.snapshot()["x"]) == 2
-    wait_idle(feed)
-    feed.snapshot()
-    wait_idle(feed)
+    feed.tick()
     assert len(failing.calls) == 1  # no retry within the hour
+    feed._failed_at -= soc.RETRY_S + 1
+    feed.tick()
+    assert len(failing.calls) == 2
 
 
 def test_failed_image_still_shows_the_post(tmp_path, env_file):

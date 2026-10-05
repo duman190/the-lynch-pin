@@ -102,6 +102,9 @@ class Settings:
     scans_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_SCANS", 7))
     # Socials: profile links + the latest X posts, read with the posting tokens (from this file, else the environment)
     socials: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_SOCIALS", True))
+    # Daily "Latest on X" read: 9 AM Pacific, before the 1 PM scan posts
+    social_read_at: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_SOCIAL_READ_AT", "09:00"))
+    social_tz: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_SOCIAL_TZ", "America/Los_Angeles"))
     social_env_file: str = field(default_factory=lambda: os.environ.get(
         "LYNCH_UI_SOCIAL_ENV", os.path.join(REPO_ROOT, "venv", "bin", "activate")))
 

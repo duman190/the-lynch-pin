@@ -1,8 +1,9 @@
 """Socials: the latest posts on X, read with the posting tokens (next to the profile links on the page).
 
-X reads are metered, so the feed is fetched in the background at most once per scan day (it rolls
-over at 3 PM, when the daily scan has posted; see ui.scans.scan_day), kept on disk, and served from
-there: one X request of 5 posts a day, however many people open the page. After a failed fetch the
+X reads are metered, so a background thread reads X once a day at the read time (9 AM Pacific by default:
+before the 1 PM scan posts, so the widget shows what else is on X instead of repeating the Latest
+scans widget; on startup if that day's read was missed), keeps it on disk, and everyone is served
+from there: one X request of 5 posts a day. Page views never trigger a read. After a failed fetch the
 last good posts stay up and the next try waits an hour. Post images are downloaded and re-encoded
 as JPEG here, because the page may only load images from this server (CSP img-src 'self').
 
@@ -19,12 +20,32 @@ import tempfile
 import threading
 import time
 
-from ui.scans import scan_day
+import datetime
 
 HANDLE = "lynch_pin_quant"  # the profile links (X, Instagram, Threads) are in static/index.html
 TOKEN_NAMES = ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")
 POSTS = 5
 RETRY_S = 3600
+READ_AT = "09:00"               # daily X read time...
+READ_TZ = "America/Los_Angeles"  # ...in this time zone (PDT / PST), whatever the server's clock says
+
+
+def parse_hhmm(value):
+    """'09:00' / '6:30' / '9' -> (hour, minute); ValueError otherwise."""
+    m = re.match(r"^\s*(\d{1,2})(?::(\d{2}))?\s*$", str(value))
+    if not m or int(m.group(1)) > 23 or int(m.group(2) or 0) > 59:
+        raise ValueError(f"expected HH:MM, got {value!r}")
+    return int(m.group(1)), int(m.group(2) or 0)
+
+
+def read_day(read_at=READ_AT, now=None, tz=READ_TZ):
+    """The X-read 'day' a moment belongs to: it rolls over at ``read_at`` in time zone ``tz``."""
+    from zoneinfo import ZoneInfo
+    h, m = parse_hhmm(read_at)
+    now = now or datetime.datetime.now(ZoneInfo(tz))
+    if (now.hour, now.minute) < (h, m):
+        now -= datetime.timedelta(days=1)
+    return now.date().isoformat()
 IMG_WIDTH = 640
 MAX_IMG_BYTES = 8 * 1024 * 1024
 IMG_RE = re.compile(r"^x_[0-9]{1,30}\.jpg$")
@@ -97,7 +118,11 @@ def download_jpeg(src, dest):
 
 
 class SocialFeed:
-    def __init__(self, cache_dir, env_file, fetch=fetch_x, download=download_jpeg):
+    def __init__(self, cache_dir, env_file, read_at=READ_AT, tz=READ_TZ, fetch=fetch_x, download=download_jpeg):
+        from zoneinfo import ZoneInfo
+        parse_hhmm(read_at)
+        ZoneInfo(tz)  # unknown zone: fail at startup, not at 9 AM
+        self.read_at, self.tz = read_at, tz
         self.dir = os.path.join(cache_dir, "socials")
         self.path = os.path.join(self.dir, "feed.json")
         self.env_file = env_file
@@ -106,6 +131,28 @@ class SocialFeed:
         self._running = False
         self._failed_at = 0.0
         self._feed = self._load()
+        self._stop = threading.Event()
+
+    def start(self, every_s=60):
+        """Checks every ``every_s`` seconds (cheap: no network) whether the daily read is due."""
+        def loop():
+            while not self._stop.is_set():
+                self.tick()
+                self._stop.wait(every_s)
+        threading.Thread(target=loop, name="socials", daemon=True).start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+    def tick(self):
+        """Reads X if the daily read time has passed since the last read (retried hourly on failure)."""
+        with self._lock:
+            if not self._stale() or self._running:
+                return False
+            self._running = True
+        self._refresh_bg()
+        return True
 
     def _load(self):
         try:
@@ -116,14 +163,11 @@ class SocialFeed:
             return {}
 
     def _stale(self):
-        return self._feed.get("day") != scan_day() and time.time() - self._failed_at > RETRY_S
+        return self._feed.get("day") != read_day(self.read_at, tz=self.tz) and time.time() - self._failed_at > RETRY_S
 
     def snapshot(self):
-        """What the page shows; starts a background refresh when the posts are from an earlier scan day."""
+        """What the page shows (never calls X)."""
         with self._lock:
-            if self._stale() and not self._running:
-                self._running = True
-                threading.Thread(target=self._refresh_bg, name="socials", daemon=True).start()
             feed, running = self._feed, self._running
         posts = []
         for p in feed.get("x") or []:
@@ -145,7 +189,7 @@ class SocialFeed:
 
     def refresh(self):
         tok = read_tokens(self.env_file)
-        feed = {"day": scan_day(), "fetched": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        feed = {"day": read_day(self.read_at, tz=self.tz), "fetched": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "x_user": self._feed.get("x_user"), "x": self._feed.get("x") or []}
         if all(tok.get(k) for k in TOKEN_NAMES):  # no tokens: profile links only
             feed["x_user"], feed["x"] = self._fetch(tok, feed["x_user"])

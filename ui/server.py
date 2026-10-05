@@ -96,8 +96,9 @@ class PortalApp:
         self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
         if socials is None and self.settings.socials:
             from ui.socials import SocialFeed
-            socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file)
-        self.socials = socials  # ui.socials.SocialFeed: latest X / Threads posts (None = links only)
+            socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file,
+                                 read_at=self.settings.social_read_at, tz=self.settings.social_tz).start()
+        self.socials = socials  # ui.socials.SocialFeed: latest X posts (None = profile links only)
         self.started = time.time()
 
     @property
@@ -468,6 +469,9 @@ def parse_args(argv=None):
                    help="serve the internet through a tunnel on this machine (e.g. cloudflared → localhost): any "
                         "Host name, visitor IPs from CF-Connecting-IP, one analysis at a time per visitor, "
                         "no /api/cache. Loopback only: not with --lan")
+    p.add_argument("--social-read-at", default=s.social_read_at, metavar="HH:MM",
+                   help="time of the daily Latest on X read, Pacific time (LYNCH_UI_SOCIAL_TZ; default 09:00, "
+                        "before the 1 PM scan posts)")
     p.add_argument("--workers", type=int, default=s.workers,
                    help="tickers analysed at the same time, one process each (default 0 = auto: "
                         f"1 with the AI overview, {CPU_WORKERS} without, fewer if free RAM is short)")
@@ -480,6 +484,14 @@ def parse_args(argv=None):
     s.enrich = a.enrich
     s.workers = max(0, a.workers)
     s.public = a.public
+    try:
+        from zoneinfo import ZoneInfo
+        from ui.socials import parse_hhmm
+        parse_hhmm(a.social_read_at)
+        ZoneInfo(s.social_tz)
+    except (ValueError, KeyError) as e:
+        p.error(f"--social-read-at: {e}")
+    s.social_read_at = a.social_read_at
     if s.public and (s.lan or s.host not in LOOPBACK_HOSTS):
         p.error("--public listens on 127.0.0.1 only (the tunnel runs on this machine): drop --lan / --host")
     return s, a
