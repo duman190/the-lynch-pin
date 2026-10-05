@@ -124,6 +124,12 @@ def test_background_thread_reads_on_schedule(tmp_path, env_file):
         feed.stop()
 
 
+def test_page_shows_the_3_latest_of_5(tmp_path, env_file):
+    feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=FakeX([post(i) for i in range(1, 6)]), download=fake_download)
+    feed.refresh()
+    assert [p["url"][-4:] for p in feed.snapshot()["x"]] == ["1001", "1002", "1003"]
+
+
 def test_old_images_are_removed(tmp_path, env_file):
     x = FakeX()
     feed = SocialFeed(str(tmp_path / "cache"), env_file, fetch=x, download=fake_download)

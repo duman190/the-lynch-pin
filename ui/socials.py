@@ -24,7 +24,8 @@ import datetime
 
 HANDLE = "lynch_pin_quant"  # the profile links (X, Instagram, Threads) are in static/index.html
 TOKEN_NAMES = ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")
-POSTS = 5
+POSTS = 5  # the fewest X returns per request
+SHOW = 3   # posts on the page
 RETRY_S = 3600
 READ_AT = "09:00"               # daily X read time...
 READ_TZ = "America/Los_Angeles"  # ...in this time zone (PDT / PST), whatever the server's clock says
@@ -170,7 +171,7 @@ class SocialFeed:
         with self._lock:
             feed, running = self._feed, self._running
         posts = []
-        for p in feed.get("x") or []:
+        for p in (feed.get("x") or [])[:SHOW]:
             q = {k: p[k] for k in ("text", "time", "url", "likes", "replies", "reposts", "views") if p.get(k) is not None}
             if p.get("image"):
                 q["image"] = f"/social/{p['image']}"
