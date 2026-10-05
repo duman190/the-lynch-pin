@@ -100,6 +100,10 @@ class Settings:
     # "Latest scans": the threads main.py archives per scan kind (scans/<kind>/scan.json), newest first
     scans_dir: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_SCANS_DIR", os.path.join(REPO_ROOT, "scans")))
     scans_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_SCANS", 7))
+    # Socials: profile links + the latest X posts, read with the posting tokens (from this file, else the environment)
+    socials: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_SOCIALS", True))
+    social_env_file: str = field(default_factory=lambda: os.environ.get(
+        "LYNCH_UI_SOCIAL_ENV", os.path.join(REPO_ROOT, "venv", "bin", "activate")))
 
     @property
     def enrich_enabled(self):

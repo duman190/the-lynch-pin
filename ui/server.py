@@ -86,7 +86,7 @@ def to_json(payload):
 class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
-    def __init__(self, settings=None, jobs=None, llm=None, scans=None):
+    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None):
         self.settings = settings or Settings()
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
@@ -94,6 +94,10 @@ class PortalApp:
             from ui.scans import ScanArchive
             scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
         self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
+        if socials is None and self.settings.socials:
+            from ui.socials import SocialFeed
+            socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file)
+        self.socials = socials  # ui.socials.SocialFeed: latest X / Threads posts (None = links only)
         self.started = time.time()
 
     @property
@@ -286,6 +290,16 @@ def make_handler(app):
                 return self.send_json(scan)
             if path.startswith("/scans/"):
                 return self.route_scan_image(path[len("/scans/"):])
+            if path == "/api/socials":
+                if app.socials is None:
+                    from ui.socials import HANDLE
+                    return self.send_json({"handle": HANDLE, "x": [], "refreshing": False})
+                return self.send_json(app.socials.snapshot())
+            if path.startswith("/social/"):
+                img = app.socials.image_path(path[len("/social/"):]) if app.socials is not None else None
+                if not img:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+                return self.send_file(img, "public, max-age=86400")
             if path == "/api/cache":
                 if app.jobs is None or app.public:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")

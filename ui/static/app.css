@@ -142,6 +142,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 /* ── views: home = hero + search + Latest scans; ?t= = ticker page; ?scan= = thread page ── */
 body:not([data-view="home"]) .hero,
 body:not([data-view="home"]) #scans,
+body:not([data-view="home"]) #socials,
 body:not([data-view="ticker"]) #result,
 body:not([data-view="ticker"]) #deepdive,
 body:not([data-view="scan"]) #thread,
@@ -216,6 +217,50 @@ body[data-view="scan"] .about { display: none !important; }
 .scan-dots { display: flex; justify-content: center; gap: 7px; }
 .scan-dots .dot { width: 7px; height: 7px; border-radius: 50%; background: #4A4A4A; transition: background .2s, transform .2s; }
 .scan-dots .dot.on { background: var(--white); transform: scale(1.15); }
+
+/* ── Socials: app-icon widget + Latest on X ──────────────────────────────── */
+.socials { display: grid; gap: 12px; }
+.socials-grid { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 14px; align-items: start; }
+.widget {
+  border-radius: 26px; padding: 18px; min-width: 0;
+  background: linear-gradient(180deg, rgba(44,44,46,.96), rgba(28,28,30,.98));
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 12px 34px rgba(0,0,0,.45);
+}
+.social-apps { display: grid; gap: 16px; }
+.sa-head { display: grid; gap: 2px; }
+.sa-handle { color: var(--white); font: 800 1.05rem/1.2 var(--mono); }
+.sa-icons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.sa-app { display: grid; justify-items: center; gap: 8px; text-decoration: none; color: var(--text); font-size: .78rem; }
+.sa-icon {
+  width: 60px; height: 60px; border-radius: 15px; display: grid; place-items: center; color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), 0 6px 16px rgba(0,0,0,.45); transition: transform .15s ease;
+}
+.sa-icon svg { width: 30px; height: 30px; }
+.sa-app:hover .sa-icon { transform: translateY(-2px); }
+.sa-app:active .sa-icon { transform: scale(.94); }
+.sa-x { background: #000; border: 1px solid #2F3336; }
+.sa-ig { background: radial-gradient(circle at 30% 107%, #FDF497 0%, #FD5949 45%, #D6249F 60%, #285AEB 90%); }
+.sa-threads { background: #000; border: 1px solid #2F3336; font: 700 2.1rem/1 var(--sans); padding-bottom: 4px; }
+.sa-name { font-weight: 600; }
+.x-widget { padding: 14px 18px 8px; }
+.xw-head { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--white); padding-bottom: 6px; }
+.xw-logo { width: 20px; height: 20px; }
+.xw-title { font: 800 1rem/1 var(--sans); }
+.xw-follow { margin-left: auto; color: var(--sky); font: 700 .85rem var(--sans); }
+.xw-list { list-style: none; margin: 0; padding: 0; }
+.xw-list li + li { border-top: 1px solid rgba(255,255,255,.07); }
+.xw-post { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; padding: 12px 0;
+  text-decoration: none; color: var(--text); }
+.xw-post:hover .xw-text { color: var(--white); }
+.xw-main { min-width: 0; display: grid; gap: 4px; }
+.xw-meta { color: var(--dim); font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xw-meta strong { color: var(--muted); }
+.xw-text { margin: 0; white-space: pre-line; font-size: .92rem; line-height: 1.4; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
+.xw-metrics { display: flex; gap: 14px; color: var(--dim); font: 700 .74rem/1 var(--mono); }
+.xw-m { display: inline-flex; gap: 4px; align-items: center; }
+.xw-img { width: 112px; height: 112px; object-fit: cover; border-radius: 14px; border: 1px solid rgba(255,255,255,.08); background: #121212; }
 
 /* ── ?scan=KIND: the thread, X style ─────────────────────────────────────── */
 .thread { display: grid; gap: 16px; max-width: 760px; width: 100%; margin: 0 auto; }
@@ -435,6 +480,8 @@ dialog#lightbox img { width: 100%; height: auto; }
   .rh-ticker { font-size: 2rem; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
   .scans-nav { display: none; }  /* swipe on phones */
+  .socials-grid { grid-template-columns: 1fr; }
+  .xw-img { width: 84px; height: 84px; }
   .scan-card { padding: 16px 16px 14px; border-radius: 24px; }
   .sc-title { font-size: 1.35rem; }
   .x-thread { padding: 4px 10px; }

@@ -19,6 +19,8 @@ def _clean_env(monkeypatch):
     for k in list(os.environ):
         if k.startswith(("LYNCH_UI_", "LYNCH_LLM_")) or k == "FMP_API_KEY":
             monkeypatch.delenv(k, raising=False)
+    # never read the real posting tokens or call X / Threads from a test (test_socials.py uses fakes)
+    monkeypatch.setenv("LYNCH_UI_SOCIALS", "0")
 
 
 @pytest.fixture(autouse=True)

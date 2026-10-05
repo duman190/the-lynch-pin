@@ -156,5 +156,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshHealth();
   if (window.LynchSearch) window.LynchSearch.init(state);
   if (window.LynchScans) window.LynchScans.init(state);
+  if (window.LynchSocials) window.LynchSocials.init();
   setInterval(refreshHealth, 30000);
 });
