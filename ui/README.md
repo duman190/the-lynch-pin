@@ -68,6 +68,7 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 | `--social-read-at` | `LYNCH_UI_SOCIAL_READ_AT` / `LYNCH_UI_SOCIAL_TZ` | `09:00` / `America/Los_Angeles`: when the daily Latest on X read happens (9 AM PDT / PST) |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
 | `--no-ai` | | AI enabled |
+| `-v` / `--verbose` | `LYNCH_UI_VERBOSE=1` | off: the header shows only *AI* with a green/red dot (no model name, no cache chip) and the AI card hides the model name, token counts and thinking setting |
 | `--public` | `LYNCH_UI_PUBLIC=1` | off (see *Public access* above) |
 | `--workers` | `LYNCH_UI_WORKERS` | `0` = auto: 1 with the AI overview, 1.5 × CPU cores (max 16, capped by free RAM at ~200 MB each) without; above 1, one process each |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |

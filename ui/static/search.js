@@ -324,6 +324,8 @@
   ];
   const AI_FINAL = new Set(["done", "error", "unavailable"]);
   const AI_METRICS = [["ttft", "TTFT"], ["speed", "Speed"], ["tokens", "Tokens"], ["thinking", "Thinking"], ["elapsed", "Time"]];
+  /** -v: show the model name, token counts and thinking setting (app.css hides Tokens/Thinking otherwise). */
+  const verbose = () => !!(S.app.health && S.app.health.verbose);
   const nf = new Intl.NumberFormat();
 
   function stopAI() {
@@ -341,7 +343,7 @@
     const model = (ai && ai.model) || (h && h.model);
     const short = (ai && ai.model_short) || (h && h.model_short) || model;
     return el("div", { class: "card-title-row" }, el("h2", { text: "🤖 AI overview" }),
-      model ? el("span", { class: "chip", title: `Local model ${model}`, text: short }) : null);
+      model && verbose() ? el("span", { class: "chip", title: `Local model ${model}`, text: short }) : null);
   }
 
   /** Live AI card: metrics bar, status line, collapsible reasoning and three typing sections. */
@@ -386,7 +388,7 @@
           ? `${nf.format(cur.reasoning_tokens)} tok${isNum(cur.thinking_s) ? ` · ${cur.thinking_s.toFixed(1)}s` : ""}`
           : (off ? "off" : "—"));
         setText(dd.elapsed, isNum(cur.elapsed_s) ? `${cur.elapsed_s.toFixed(1)}s` : "—");
-        if (cur.reasoning_tokens) setText(rSum, `🧠 Model reasoning · ${nf.format(cur.reasoning_tokens)} tokens`);
+        if (cur.reasoning_tokens && verbose()) setText(rSum, `🧠 Model reasoning · ${nf.format(cur.reasoning_tokens)} tokens`);
       },
       tick(elapsed) { if (!isNum(cur.ttft_s) && isNum(elapsed)) this.metrics({ elapsed_s: elapsed }); },  // before 1st token
       status(msg) { if (msg && msg !== lastStatus) { lastStatus = msg; status.textContent = msg; } },

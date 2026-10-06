@@ -107,7 +107,7 @@ class PortalApp:
 
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
-               "benchmark": self.settings.benchmark,
+               "benchmark": self.settings.benchmark, "verbose": self.settings.verbose,
                "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
                             "refresh": self.jobs is not None and self.jobs.allow_refresh}}
         if self.llm is not None:
@@ -465,6 +465,9 @@ def parse_args(argv=None):
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
+    p.add_argument("-v", "--verbose", action="store_true", default=s.verbose,
+                   help="show the model name, token counts, thinking setting and cache chip on the page "
+                        "(default: only an AI on/off dot)")
     p.add_argument("--public", action="store_true", default=s.public,
                    help="serve the internet through a tunnel on this machine (e.g. cloudflared → localhost): any "
                         "Host name, visitor IPs from CF-Connecting-IP, one analysis at a time per visitor, "
@@ -484,6 +487,7 @@ def parse_args(argv=None):
     s.enrich = a.enrich
     s.workers = max(0, a.workers)
     s.public = a.public
+    s.verbose = a.verbose
     try:
         from zoneinfo import ZoneInfo
         from ui.socials import parse_hhmm

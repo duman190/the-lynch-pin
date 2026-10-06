@@ -145,18 +145,22 @@ async function refreshHealth() {
   try {
     const h = await getJSON("/api/health");
     state.health = h;
+    // without -v the page shows no model name, token counts, thinking setting or cache chip (app.css)
+    document.body.classList.toggle("verbose", !!h.verbose);
     $("#search-section").hidden = !h.features.search;
     $("#ai-hint").hidden = !h.features.ai;
     if (h.features.ai && h.ai) {
       const ok = h.ai.available;
       const cls = h.ai.checking ? "busy" : ok ? (h.ai.warning ? "busy" : "on") : "off";
-      const label = h.ai.checking ? "AI …" : ok ? `AI · ${h.ai.model_short || "local"}` : "AI offline";
-      const tip = ok ? `Local model ${h.ai.model} (ctx ${h.ai.ctx}, reasoning ${h.ai.reasoning || "on"})${h.ai.warning ? " — " + h.ai.warning : ""}`
+      const label = !h.verbose ? "AI" : h.ai.checking ? "AI …" : ok ? `AI · ${h.ai.model_short || "local"}` : "AI offline";
+      const tip = !h.verbose ? (h.ai.checking ? "AI: checking…" : ok ? "AI overview: on" : "AI overview: offline")
+        : ok ? `Local model ${h.ai.model} (ctx ${h.ai.ctx}, reasoning ${h.ai.reasoning || "on"})${h.ai.warning ? " — " + h.ai.warning : ""}`
         : (h.ai.reason || "local model unavailable");
       setChip("#chip-ai", cls, label, tip);
       if (h.ai.checking) setTimeout(refreshHealth, 2500);  // background probe finishes shortly
     }
-    if (h.cache) {
+    $("#chip-cache").hidden = !h.verbose;
+    if (h.cache && h.verbose) {
       setChip("#chip-cache", null, h.cache.capacity ? `Cache ${h.cache.size}/${h.cache.capacity}` : `Cache ${h.cache.size}`,
         `Today's LFU cache (${h.cache.day}): ${h.cache.hits} hits, ${h.cache.misses} misses, ${h.cache.evictions || 0} evictions` +
         (h.cache.top && h.cache.top.length ? ` · most used: ${h.cache.top.map(([t, f]) => `${t}×${f}`).join(", ")}` : ""));

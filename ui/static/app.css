@@ -155,6 +155,11 @@ body[data-view="scan"] .about { display: none !important; }
   background: linear-gradient(180deg, #7FB3F5, var(--sky)); box-shadow: 0 0 14px var(--sky-glow);
 }
 .home-btn:hover { filter: brightness(1.08); }
+/* without -v the header has no model name or cache chip: a bigger Home button fills the space */
+body:not(.verbose) .home-btn { font-size: .95rem; padding: 10px 18px; min-height: 40px; gap: 8px; }
+body:not(.verbose) .home-btn svg { width: 19px; height: 19px; }
+body:not(.verbose) .topbar .chip { font-size: .8rem; padding: 9px 12px; }
+body:not(.verbose) .aim-tokens, body:not(.verbose) .aim-thinking { display: none; }
 
 /* ── Latest scans: iOS-style widget stack ────────────────────────────────── */
 .scans { display: grid; gap: 12px; min-width: 0; scroll-margin-top: 72px; }
@@ -498,6 +503,10 @@ dialog#lightbox img { width: 100%; height: auto; }
   .card-income { order: 3; } .card-credit { order: 4; } .card-tech { order: 5; }
   .rh-ticker { font-size: 2rem; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
+  body:not(.verbose) .chips { flex-wrap: nowrap; }  /* Home and the AI dot share one row */
+  body:not(.verbose) .home-btn { padding: 9px 14px; font-size: .88rem; min-height: 38px; gap: 6px; }
+  body:not(.verbose) .home-btn svg { width: 17px; height: 17px; }
+  body:not(.verbose) .topbar .chip { padding: 9px 10px; font-size: .78rem; }
   .scans-nav { display: none; }  /* swipe on phones */
   .socials-grid { grid-template-columns: 1fr; }
   .sa-icons { grid-template-columns: repeat(4, 1fr); gap: 8px; }

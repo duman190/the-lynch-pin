@@ -49,6 +49,17 @@ def test_cli_overrides():
     assert parse_args([])[0].llm_reasoning == "off"
 
 
+def test_verbose_flag_reaches_health(tmp_path):
+    """-v shows the model name, token counts and cache chip on the page; without it /api/health says so."""
+    from ui.server import parse_args
+    assert parse_args([])[0].verbose is False
+    assert parse_args(["-v"])[0].verbose is True and parse_args(["--verbose"])[0].verbose is True
+    for flag in (False, True):
+        s = Settings()
+        s.cache_dir, s.verbose = str(tmp_path / "cache"), flag
+        assert PortalApp(s).health()["verbose"] is flag
+
+
 def test_reasoning_off_sends_switch_and_skips_thinking(settings, lm):
     settings.llm_reasoning = "off"
     c = L.LocalLLMClient(settings)
