@@ -427,6 +427,7 @@ def main():
             # Update section labels for tweet
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '📊 Reverse 5Y DCF:')
             raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '🐻 "Stomach Test" (why it can underperform in the next 5 years):')
+            raw_narrative = raw_narrative.replace('🧪', '🐻')  # a bare "🧪:" label (no "Stomach Test") too
 
             formatted_reply = f"${clean_t}\n\n{raw_narrative}"
             if args.portfolio:
@@ -553,6 +554,7 @@ def main():
             raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '\n📊:')
             raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '\n🐻 "Stomach Test" (why it can underperform in the next 5 years):')
+            raw_narrative = raw_narrative.replace('🧪', '🐻')  # a bare "🧪:" label (no "Stomach Test") too
             # Remove cashtags
             formatted_reply = re.sub(r'\$([A-Z]+)', r'\1', raw_narrative)
             if args.portfolio:
