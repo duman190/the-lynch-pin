@@ -223,7 +223,7 @@ def test_socials_off_serves_links_only(tmp_path):
         assert get(httpd, "/social/x_1001.jpg")[0].status == 404
         page = get(httpd, "/")[1].decode()
         for url in ["https://x.com/lynch_pin_quant", "https://www.instagram.com/lynch_pin_quant/",
-                    "https://www.threads.com/@lynch_pin_quant"]:
+                    "https://www.threads.com/@lynch_pin_quant", "https://github.com/duman190/the-lynch-pin"]:
             assert f'href="{url}" target="_blank" rel="noopener noreferrer"' in page, url
         assert page.index('id="scans"') < page.index('id="socials"')
         assert get(httpd, "/static/socials.js")[0].status == 200

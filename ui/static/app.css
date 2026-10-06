@@ -99,7 +99,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 .hero img { width: 100%; height: auto; }
 
 /* ── search ──────────────────────────────────────────────────────────────── */
-.search-wrap { display: grid; gap: 10px; justify-items: center; }
+.search-wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; justify-items: center; }  /* minmax: the input's intrinsic width must not widen the phone column */
 .search {
   width: min(720px, 100%);
   display: flex; align-items: center; gap: 10px;
@@ -231,7 +231,7 @@ body[data-view="scan"] .about { display: none !important; }
 .social-apps { display: grid; grid-template-rows: auto 1fr; gap: 12px; }
 .sa-head { display: grid; gap: 2px; }
 .sa-handle { color: var(--white); font: 800 1.05rem/1.2 var(--mono); }
-/* laptop: an iOS list of the three apps, spread over the X widget's height; phone: a row of icons */
+/* laptop: an iOS list of the four apps, spread over the X widget's height; phone: a row of icons */
 .sa-icons { display: grid; grid-template-columns: 1fr; align-content: space-evenly; gap: 6px; }
 .sa-app {  /* icons and arrows line up with the handle's edges; the hover highlight reaches 8px past them */
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
@@ -252,6 +252,7 @@ body[data-view="scan"] .about { display: none !important; }
 .sa-app:active .sa-icon { transform: scale(.94); }
 .sa-x { background: #000; border: 1px solid #2F3336; }
 .sa-ig { background: radial-gradient(circle at 30% 107%, #FDF497 0%, #FD5949 45%, #D6249F 60%, #285AEB 90%); }
+.sa-gh { background: #fff; color: #0D1117; border: 1px solid #fff; }
 .sa-threads { background: #000; border: 1px solid #2F3336; font: 700 1.8rem/1 var(--sans); padding-bottom: 3px; }
 .sa-name { font-weight: 700; color: var(--white); }
 .x-widget { padding: 14px 18px 8px; }
@@ -492,7 +493,7 @@ dialog#lightbox img { width: 100%; height: auto; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
   .scans-nav { display: none; }  /* swipe on phones */
   .socials-grid { grid-template-columns: 1fr; }
-  .sa-icons { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .sa-icons { grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .sa-app { grid-template-columns: 1fr; justify-items: center; gap: 8px; margin: 0; padding: 0; font-size: .78rem; }
   .sa-sub, .sa-chev { display: none; }
   .sa-app:hover { background: none; }
