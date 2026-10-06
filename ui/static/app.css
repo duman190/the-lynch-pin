@@ -333,8 +333,7 @@ a.x-tag:hover { text-decoration: underline; }
 .card { margin: 0; min-width: 0; }
 .card h2 { margin-bottom: 12px; }
 .card-valuation { grid-column: span 5; }
-.card-plot { grid-column: span 7; padding: 12px; display: grid; align-content: start; gap: 8px; }
-.card-ai { grid-column: 1 / -1; }
+.card-ai { grid-column: span 7; }  /* laptop: beside Valuation, which no longer shares its row with the chart */
 .card-income, .card-credit, .card-tech { grid-column: span 4; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
 .card-title-row h2 { margin: 0; }
@@ -375,9 +374,10 @@ a.x-tag:hover { text-decoration: underline; }
 .roi-val { text-align: right; color: var(--white); }
 
 .plot-btn { all: unset; cursor: zoom-in; display: block; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+.chart-slot { margin-top: 16px; }
+.btn-chart { width: 100%; }  /* same pill as Analyze, full width under the Valuation card */
 .plot-btn:focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
 .plot-btn img { width: 100%; }
-.card-plot figcaption { text-align: right; padding: 0 4px; }
 
 .hint-box { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: #121212; border: 1px dashed var(--border); font-size: .9rem; color: var(--text); }
 
@@ -437,6 +437,13 @@ dialog#lightbox {
 }
 dialog#lightbox::backdrop { background: rgba(0,0,0,.8); backdrop-filter: blur(4px); }
 dialog#lightbox img { width: 100%; height: auto; }
+.lightbox-dl { position: sticky; top: max(8px, env(safe-area-inset-top)); float: right; margin: 8px 0 8px 8px; z-index: 2; }
+.lightbox-dl a, .lightbox-close {
+  display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border);
+  background: rgba(26,26,26,.9); color: var(--white); cursor: pointer; text-decoration: none;
+}
+.lightbox-dl a:hover, .lightbox-close:hover { border-color: var(--sky); }
+.lightbox-dl svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .lightbox-close {
   position: sticky; top: max(8px, env(safe-area-inset-top)); float: right; margin: 8px; z-index: 2;
   width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border);
@@ -453,7 +460,7 @@ dialog#lightbox img { width: 100%; height: auto; }
 /* ── responsive: tablets & phones ────────────────────────────────────────── */
 @media (max-width: 1024px) {
   .about-grid { grid-template-columns: 1fr; }
-  .card-valuation, .card-plot { grid-column: 1 / -1; }
+  .card-valuation, .card-ai { grid-column: 1 / -1; }
   .card-income, .card-credit { grid-column: span 6; }
   .card-tech { grid-column: 1 / -1; }
 }
@@ -486,9 +493,9 @@ dialog#lightbox img { width: 100%; height: auto; }
   .panel-head { flex-direction: column; gap: 2px; }
   .result-grid { grid-template-columns: 1fr; gap: 12px; }
   .result-grid > .card { grid-column: 1 / -1; }
-  /* phone reading order: valuation → chart → AI → grades → technicals */
-  .card-valuation { order: 1; } .card-plot { order: 2; } .card-ai { order: 3; }
-  .card-income { order: 4; } .card-credit { order: 5; } .card-tech { order: 6; }
+  /* phone reading order: valuation → AI → grades → technicals */
+  .card-valuation { order: 1; } .card-ai { order: 2; }
+  .card-income { order: 3; } .card-credit { order: 4; } .card-tech { order: 5; }
   .rh-ticker { font-size: 2rem; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
   .scans-nav { display: none; }  /* swipe on phones */
@@ -515,7 +522,6 @@ dialog#lightbox img { width: 100%; height: auto; }
   .progress-row { flex-direction: column; align-items: flex-start; }
   .stepper li { padding: 5px 8px; font-size: .72rem; }
   .peg-num { font-size: 2.4rem; }
-  .card-plot { padding: 8px; }
   dialog#lightbox { max-width: 100vw; max-height: 100dvh; width: 100vw; border-radius: 0; margin: 0; border: 0; }
   dialog#lightbox img { min-height: 60vh; object-fit: contain; }
   /* full-screen on phones: keep × clear of the notch / Dynamic Island and the status bar */
@@ -523,6 +529,11 @@ dialog#lightbox img { width: 100%; height: auto; }
     position: fixed; margin: 0;
     top: calc(env(safe-area-inset-top) + 8px);
     right: calc(env(safe-area-inset-right) + 8px);
+  }
+  .lightbox-dl {  /* beside the ×: 44px button + 8px gap */
+    position: fixed; margin: 0; float: none;
+    top: calc(env(safe-area-inset-top) + 8px);
+    right: calc(env(safe-area-inset-right) + 60px);
   }
   .footer {
     padding: 14px 14px max(20px, env(safe-area-inset-bottom));

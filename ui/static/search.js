@@ -77,7 +77,6 @@
         el("p", { class: "status-line", id: "status-line", role: "status", "aria-live": "polite" }, "Queued…")),
       el("div", { class: "result-grid", id: "result-grid" },
         el("div", { class: "panel card card-valuation", id: "card-valuation" }, placeholder("Valuation")),
-        el("figure", { class: "panel card card-plot", id: "card-plot" }, placeholder("PEG deviation chart")),
         el("div", { class: "panel card card-ai", id: "card-ai", hidden: !ai }, placeholder("AI overview")),
         el("div", { class: "panel card card-ai card-quick", id: "card-quick", hidden: ai }, placeholder("⚡ Quick overview")),
         el("div", { class: "panel card card-income", id: "card-income" }, placeholder("Income statement")),
@@ -190,22 +189,36 @@
         ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
       ]),
       el("h3", { class: "sub-h", text: "5Y ROI projection" }),
-      roiBars(st));
+      roiBars(st),
+      el("div", { class: "chart-slot", id: "chart-slot" }, chartButton()));
+    fillChart();
     // widths via CSSOM (CSP forbids inline style attributes)
     requestAnimationFrame(() => card.querySelectorAll(".roi-bar").forEach((b) => { b.style.width = `${b.dataset.w}%`; }));
   }
 
+  /* The chart is not drawn on the page: a "View chart" button under Valuation opens it in the lightbox,
+     which carries the download icon. The button is there (disabled) as soon as the card is, and turns
+     clickable when the chart stage delivers; the chart and the card can settle in either order. */
+  function chartButton() {
+    return el("button", { type: "button", class: "btn-primary btn-chart", disabled: true, title: "The chart is still rendering" }, "View chart");
+  }
+
   function renderPlot(d) {
-    const fig = $("#card-plot");
-    if (!d.plot_preview_url) {
-      put(fig, el("h2", { text: "PEG deviation chart" }), el("p", { class: "muted", text: d.stages && d.stages.plot === "error" ? "Chart rendering failed." : "No chart — the PEG distribution needs GARP data." }));
+    S.chart = d.plot_preview_url ? { ticker: d.ticker, url: d.plot_url } : null;
+    S.plotSettled = true;
+    fillChart();
+  }
+
+  function fillChart() {
+    const slot = $("#chart-slot");
+    if (!slot) return;
+    if (!S.chart) {  // still rendering: keep the disabled button; failed or no chart: nothing to offer
+      if (S.plotSettled) slot.replaceChildren();
       return;
     }
-    const alt = `${d.ticker} PEG valuation deviation chart: bell curve of the 5-year PEG history with today's position, stats, income grade and credit rating`;
-    put(fig, 
-      el("button", { type: "button", class: "plot-btn", "aria-label": `Enlarge ${d.ticker} chart`, onclick: () => openLightbox(d.plot_url, alt) },
-        el("img", { src: d.plot_preview_url, alt, width: 1568, height: 915, decoding: "async" })),
-      el("figcaption", { class: "muted small" }, "Tap to enlarge · ", downloadLink(d.plot_url, `${d.ticker}_valuation.png`, alt)));
+    const { ticker, url } = S.chart;
+    const alt = `${ticker} PEG valuation deviation chart: bell curve of the 5-year PEG history with today's position, stats, income grade and credit rating`;
+    slot.replaceChildren(el("button", { type: "button", class: "btn-primary btn-chart", onclick: () => openLightbox(url, alt, `${ticker}_valuation.png`) }, "View chart"));
   }
 
   function renderIncome(d) {
@@ -719,6 +732,8 @@
     S.sym = sym;
     S.started = Date.now();
     S.rendered = new Set();
+    S.chart = null;
+    S.plotSettled = false;
     S.polled = false;
     skeleton(sym);
     pushRecent(sym);
