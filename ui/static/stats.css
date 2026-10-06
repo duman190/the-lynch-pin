@@ -1,0 +1,121 @@
+/* The Lynch Pin · Portal stats (ui/stats.py). Builds on app.css: same tokens, top bar, panels and footer. */
+.stats-page {
+  --series-1: #5596E8;   /* the portal's sky, one step darker: inside the dark lightness band */
+  --series-2: #D95926;   /* orange, dark-surface step */
+  --highlight: #F5B041;  /* p99.9 marker */
+  --chart-grid: #2A2A2A;
+  --chart-axis: #3A3A3A;
+}
+
+/* ── head + range ────────────────────────────────────────────────────────── */
+.st-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.st-head h1 { font-size: 1.6rem; font-weight: 900; color: var(--white); letter-spacing: .02em; }
+.st-head p { margin: 4px 0 0; }
+.st-range { display: inline-flex; padding: 3px; gap: 2px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); }
+.st-range button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer; border-radius: 999px;
+  font: 700 .85rem var(--mono); padding: 8px 14px; min-height: 36px;
+}
+.st-range button:hover { color: var(--white); }
+.st-range button[aria-pressed="true"] { background: var(--sky); color: #0B1422; }
+main.loading .st-card, main.loading .st-tiles { opacity: .55; transition: opacity .2s; }
+
+/* ── tiles ───────────────────────────────────────────────────────────────── */
+.st-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.st-tile {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px;
+  display: grid; gap: 2px; min-width: 0;
+}
+.st-tile .t-label { color: var(--muted); font-size: .78rem; font-weight: 700; }
+.st-tile .t-value { color: var(--white); font: 800 1.45rem/1.2 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-tile .t-sub { color: var(--dim); font: 600 .74rem var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-tile.t-hl { border-color: rgba(245,176,65,.45); }
+.st-tile.t-hl .t-value { color: var(--highlight); }
+
+/* ── sections + cards ────────────────────────────────────────────────────── */
+.st-section { display: grid; gap: 12px; }
+.st-section > h2 { margin-top: 6px; }
+.st-ai-sub { margin: -6px 0 0; }
+.st-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.st-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.st-wide { grid-column: 1 / -1; }
+.st-card { display: grid; gap: 10px; align-content: start; padding: 16px 18px; min-width: 0; }
+.st-card header h3 { margin: 0; color: var(--white); font-size: 1rem; font-weight: 800; letter-spacing: .01em; }
+.st-card header p { margin: 2px 0 0; }
+.st-legend { display: flex; gap: 16px; font-size: .8rem; color: var(--muted); }
+.st-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { display: inline-block; width: 14px; height: 2px; border-radius: 2px; }
+.key-1 { background: var(--series-1); }
+.key-2 { background: var(--series-2); }
+
+.st-chart { position: relative; height: 230px; touch-action: pan-y; }
+.st-chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.st-chart svg:focus { outline: none; }
+.st-chart svg:focus-visible { outline: 2px solid var(--sky); outline-offset: 4px; }
+.st-empty { height: 100%; display: grid; place-items: center; color: var(--dim); font-size: .85rem;
+  border: 1px solid var(--border); border-radius: 12px; }
+.st-chart text { font: 600 11px var(--mono); fill: var(--dim); }
+.st-chart .hl-label { font: 800 11px var(--mono); fill: #1A1206; }
+.st-chart .end-label { font: 800 12px var(--mono); fill: var(--white); }
+
+/* percentile strip = the chart's table view */
+.st-pcts { display: flex; flex-wrap: wrap; gap: 6px; }
+.st-pcts span {
+  display: inline-flex; gap: 6px; align-items: baseline; padding: 4px 9px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--border); font: 600 .75rem var(--mono); color: var(--muted);
+}
+.st-pcts b { color: var(--white); font-weight: 800; }
+.st-pcts .p-hl { border-color: rgba(245,176,65,.55); }
+.st-pcts .p-hl b { color: var(--highlight); }
+.st-pcts .p-series { color: var(--dim); }
+
+/* ── horizontal bars ─────────────────────────────────────────────────────── */
+.st-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.st-bars li { display: grid; grid-template-columns: 13em minmax(0, 1fr) 7.5em; gap: 10px; align-items: center; }
+#c-tickers .st-bars li { grid-template-columns: 4.5em minmax(0, 1fr) 7.5em; }
+.st-bars .b-label { font: 700 .85rem var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-bars .b-label small { display: block; color: var(--dim); font: 600 .7rem var(--mono); }
+.st-bars .b-track { height: 14px; position: relative; }
+.st-bars .b-fill { position: absolute; left: 0; top: 0; bottom: 0; min-width: 2px; border-radius: 0 4px 4px 0; background: var(--series-1); }
+.st-bars li:hover .b-fill { filter: brightness(1.15); }
+.st-bars .b-val { font: 700 .82rem var(--mono); color: var(--white); text-align: right; white-space: nowrap; }
+.st-bars .b-val small { color: var(--dim); font-weight: 600; margin-left: 4px; }
+.st-bars .b-up .b-fill { background: repeating-linear-gradient(135deg, var(--series-1) 0 4px, rgba(85,150,232,.35) 4px 7px); }
+.st-foot { margin: 0; }
+
+.st-reject { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.st-cols-wrap { display: grid; gap: 6px; }
+.st-cols-wrap p { margin: 0; }
+.st-cols { height: 150px; position: relative; }
+.st-cols svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.st-cols text { font: 600 10px var(--mono); fill: var(--dim); }
+.st-cols .col:hover rect.bar { filter: brightness(1.2); }
+.st-none { color: var(--dim); font-size: .85rem; margin: 0; }
+
+/* ── tooltip ─────────────────────────────────────────────────────────────── */
+.st-tip {
+  position: fixed; z-index: 50; pointer-events: none; min-width: 120px; max-width: 260px;
+  padding: 8px 10px; border-radius: 10px; background: rgba(12,12,12,.96); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); font: 600 .78rem/1.45 var(--mono); color: var(--muted);
+}
+.st-tip .tt-head { color: var(--dim); font-size: .72rem; margin-bottom: 2px; }
+.st-tip .tt-row { display: flex; align-items: center; gap: 8px; }
+.st-tip .tt-row b { color: var(--white); font-weight: 800; }
+.st-tip .tt-key { width: 12px; height: 2px; border-radius: 2px; flex: none; }
+
+/* ── responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .st-grid-3 { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .st-head h1 { font-size: 1.35rem; }
+  .st-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .st-tile .t-value { font-size: 1.2rem; }
+  .st-grid { grid-template-columns: 1fr; gap: 12px; }
+  .st-card { padding: 14px 12px; }
+  .st-chart { height: 200px; }
+  .st-reject { grid-template-columns: 1fr; gap: 16px; }
+  .st-bars li { grid-template-columns: 9em minmax(0, 1fr) 6.5em; gap: 8px; }
+  .st-bars .b-label { white-space: normal; }
+  #c-tickers .st-bars li { grid-template-columns: 4em minmax(0, 1fr) 6.5em; }
+}

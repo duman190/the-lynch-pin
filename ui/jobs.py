@@ -93,7 +93,7 @@ def public_view(data):
 
 class Job:
     __slots__ = ("sym", "status", "stage", "data", "error", "created", "started", "finished", "gen", "day",
-                 "retries", "probe", "owner")
+                 "retries", "probe", "owner", "waiters")
 
     def __init__(self, sym, now, day=None):
         self.sym = sym
@@ -109,6 +109,7 @@ class Job:
         self.retries = 0     # times re-queued after Yahoo throttled it
         self.probe = False   # the one job allowed to test whether Yahoo is back
         self.owner = None    # client (IP) whose lookup started it, for max_per_client
+        self.waiters = []    # (clock, wall time, source) of each lookup answered by this job, for the stats page
 
 
 class AIStream:
@@ -198,7 +199,7 @@ class AIJob:
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
-                 backends_spec=None, allow_refresh=True, max_per_client=None):
+                 backends_spec=None, allow_refresh=True, max_per_client=None, stats=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -219,6 +220,7 @@ class JobManager:
         # --public: analyses one client may have queued or running at once (None = no limit). Cached
         # tickers, polls and joining a ticker someone else is already analysing are never limited.
         self.max_per_client = max_per_client
+        self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None: lookups, Yahoo 429s and AI overviews
         self.workers = max(1, int(workers))
         self.processes = processes          # analyse in child processes (ui/workers.py)
         self._backends_spec = backends_spec  # "module:function" building the child's backends (tests)
@@ -277,6 +279,8 @@ class JobManager:
         with self._cv:
             job = self._inflight.get(sym)
             if job is not None:  # dedup; refresh is ignored while in flight
+                if not poll:
+                    self._wait(job, "joined")
                 return self._snapshot(job)
             now, today = self._clock(), self._today()
             for k in [k for k, j in self._recent.items()
@@ -298,17 +302,23 @@ class JobManager:
             if client is not None and self.max_per_client:
                 mine = [j.sym for j in self._inflight.values() if j.owner == client]
                 if len(mine) >= self.max_per_client:
-                    return {"ticker": sym, "status": "busy", "retry_after": 5,
+                    return {"ticker": sym, "status": "busy", "retry_after": 5, "reason": "visitor_busy",
                             "error": f"one analysis at a time per visitor — waiting for {', '.join(mine)} to finish"}
             if len(self._queue) >= self.max_queue:
-                return {"ticker": sym, "status": "busy", "retry_after": 10,
+                return {"ticker": sym, "status": "busy", "retry_after": 10, "reason": "queue_full",
                         "error": f"analysis queue is full ({self.max_queue} tickers) — try again shortly"}
             job = Job(sym, self._clock(), self._today())
             job.owner = client
+            self._wait(job, "refresh" if refresh else "fresh")
             self._inflight[sym] = job
             self._queue.append(job)
             self._cv.notify_all()
             return self._snapshot(job)
+
+    def _wait(self, job, source):
+        """Lock held: a lookup that ``job`` will answer; its wait goes to the stats page when the job ends."""
+        if self.stats is not None:
+            job.waiters.append((self._clock(), time.time(), source))
 
     def lookup(self, sym):
         """Stored result for today (no stats side-effects), or None."""
@@ -363,7 +373,8 @@ class JobManager:
             job = self._ai_inflight.get(sym)
             if job is None:
                 if len(self._ai_queue) >= self.max_queue:
-                    return {"ticker": sym, "status": "busy", "retry_after": 15, "error": "AI queue is full"}
+                    return {"ticker": sym, "status": "busy", "retry_after": 15, "reason": "ai_queue_full",
+                            "error": "AI queue is full"}
                 job = AIJob(sym, entry, self._clock())
                 self._ai_inflight[sym] = job
                 self._ai_queue.append(job)
@@ -536,6 +547,9 @@ class JobManager:
                     # written from (a quant ↻ Refresh meanwhile replaces the entry → it gets a fresh AI).
                     self.store.update(job.sym, lambda e: e.__setitem__("ai", ai) if e is job.entry else None)
                 self._finish_ai(job)
+            if self.stats is not None:
+                self.stats.ai(job.sym, job.status, result.get("metrics"), total_s=job.finished - job.started,
+                              wait_s=job.started - job.created, model=result.get("model_short") or result.get("model"))
 
     def _finish_ai(self, job):
         """Lock held: retire a finalised AI job and publish its final snapshot to stream readers."""
@@ -602,6 +616,8 @@ class JobManager:
     def _note_outcome(self, job, throttled):
         if throttled:
             self.rate_limit_hits += 1
+            if self.stats is not None:
+                self.stats.upstream("yahoo_429")
             if not self._limited:
                 self._limited, self._backoff = True, RATE_LIMIT_BACKOFF[0]
                 print(f"⏳ Yahoo Finance rate limit ({job.sym}): pausing new lookups for {int(self._backoff)} s",
@@ -713,6 +729,10 @@ class JobManager:
         """Lock held: move a finalised job from in-flight to the short-lived recent map."""
         self._inflight.pop(job.sym, None)
         self._recent[job.sym] = job
+        if self.stats is not None:
+            for t0, ts, source in job.waiters:
+                self.stats.query(job.sym, source, job.status, job.finished - t0, ts=ts)
+            job.waiters = []
         if self._running.get(job.gen) is job:
             del self._running[job.gen]
 
@@ -733,6 +753,9 @@ class JobManager:
                     aj.error = "local model timed out; LM Studio may still be busy — retry in a minute"
                     self._ai_live.discard(aj.gen)
                     self._finish_ai(aj)
+                    if self.stats is not None:
+                        self.stats.ai(aj.sym, "timeout", total_s=aj.finished - aj.started,
+                                      wait_s=aj.started - aj.created)
                     self._spawn_ai_worker()
                 self._cv.wait(1.0)
 

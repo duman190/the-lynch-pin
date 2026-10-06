@@ -3,6 +3,7 @@
     python -m pytest ui/tests/test_benchmark.py -q                        # quick run, prints the table
     python ui/tests/test_benchmark.py --seconds 5 --concurrency 1,8,32,128  # longer standalone run
     python ui/tests/test_benchmark.py --scenarios ticker,page --concurrency 64
+    python ui/tests/test_benchmark.py --stats                               # with the stats recorder (--lan / --public)
 
 How it works
 ------------
@@ -212,8 +213,12 @@ def serve(cache_dir):
     settings = Settings()
     settings.cache_dir = cache_dir
     settings.host, settings.port, settings.lan = "127.0.0.1", 0, False
+    stats = None
+    if os.environ.get("LYNCH_BENCH_STATS") == "1":  # --stats: record every request, as --lan / --public do
+        from ui.stats import StatsRecorder
+        stats = StatsRecorder(os.path.join(cache_dir, "stats.sqlite3"))
     jobs = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), llm=None,
-                      allow_refresh=False)  # as build_app() does with --no-ai
+                      allow_refresh=False, stats=stats)  # as build_app() does with --no-ai
     # Home page content: 7 archived scans (real-size chart PNGs) and a Socials feed of 5 posts, offline
     from PIL import Image
     from social.scan_archive import save_scan
@@ -236,7 +241,7 @@ def serve(cache_dir):
     for p in socials._feed["x"]:
         socials._download(p["image_src"], os.path.join(socials.dir, f"x_{p['id']}.jpg"))
         p["image"] = f"x_{p['id']}.jpg"
-    app = PortalApp(settings, jobs=jobs, llm=None, socials=socials)  # AI overview off
+    app = PortalApp(settings, jobs=jobs, llm=None, socials=socials, stats=stats)  # AI overview off
     httpd = PortalServer(("127.0.0.1", 0), make_handler(app))
 
     for s in SYMS:  # warm the daily cache and the chart previews before the clock starts
@@ -473,6 +478,7 @@ def main(argv=None):
     ap.add_argument("--scenarios", default=",".join(scenarios("x")), help="comma-separated scenario names")
     ap.add_argument("--procs", type=int, default=default_procs(), help="max load-generator processes")
     ap.add_argument("--json", help="also write the raw results to this file")
+    ap.add_argument("--stats", action="store_true", help="the server records stats, as with --lan (ui/stats.py)")
     ap.add_argument("--serve", metavar="DIR", help=argparse.SUPPRESS)
     ap.add_argument("--load", metavar="CFG", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
@@ -484,6 +490,7 @@ def main(argv=None):
         return
     names = [x.strip() for x in a.scenarios.split(",") if x.strip()]
     concs = [int(x) for x in a.concurrency.split(",") if x.strip()]
+    os.environ["LYNCH_BENCH_STATS"] = "1" if a.stats else "0"
     with tempfile.TemporaryDirectory(prefix="lynch-bench-") as tmp:
         server = BenchServer(tmp)
         try:

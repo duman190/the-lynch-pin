@@ -2,6 +2,9 @@
 
     python -m ui.server                 # http://127.0.0.1:8765 (this machine only)
     python -m ui.server --lan           # reachable from phones/PCs on the same private network
+                                        # + the stats page on port 190 (ui/stats.py)
+    python -m ui.server --public        # behind a tunnel on this machine; the stats page on port 190
+                                        #   answers LAN / Tailscale clients only
 
 No authentication: --lan exposes the portal to every device on your LAN (peer-IP and
 Host-header checks refuse anything outside loopback / private / link-local ranges).
@@ -14,6 +17,7 @@ import math
 import mimetypes
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -86,8 +90,9 @@ def to_json(payload):
 class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
-    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None):
+    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None):
         self.settings = settings or Settings()
+        self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
         if scans is None:
@@ -151,6 +156,38 @@ def make_handler(app):
             line = (fmt % args).encode("ascii", "backslashreplace").decode("ascii")
             line = "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in line)
             sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_ip()} {line}\n")
+
+        def send_response(self, code, message=None):
+            self._code = code  # for the stats page
+            super().send_response(code, message)
+
+        def _begin(self):
+            self._code = self._reason = None  # one handler serves every request of a keep-alive connection
+            self._t0, self._t0_mono = time.time(), time.monotonic()
+
+        _marked = None  # (visitor, hour) this connection last marked for DAU / MAU
+
+        def _record(self):
+            """Count this request on the stats page (--lan / --public): its minute, if refused why, and if served
+            its visitor (DAU / MAU)."""
+            if app.stats is not None and self._code is not None:
+                app.stats.hit(self._code, self._reason, ts=self._t0)
+                if self._code < 400:
+                    mark = (self._visitor(), int(self._t0 // 3600))
+                    if mark != self._marked:  # a keep-alive connection's visitor: once an hour is enough
+                        self._marked = mark
+                        app.stats.visit(mark[0], ts=self._t0)
+
+        def _visitor(self):
+            """The source IP for DAU / MAU: the peer, or behind a tunnel on this machine (cloudflared) the
+            visitor's CF-Connecting-IP. The header is only trusted from loopback, so the LAN can't set it."""
+            peer = self.client_address[0]
+            if peer.startswith("127.") or peer == "::1":
+                cf = self.headers.get("CF-Connecting-IP")
+                ip = _ip(cf.strip()) if cf else None  # parsing "" raises inside ipaddress: µs per request
+                if ip is not None:
+                    return str(ip)
+            return peer
 
         def client_ip(self):
             """The visitor's IP. With --public the peer is always the local tunnel (cloudflared), which
@@ -220,7 +257,8 @@ def make_handler(app):
                 ctype += "; charset=utf-8"
             self._send(HTTPStatus.OK, body, ctype, cache=cache, extra=validators)
 
-        def _refuse(self, message, hint):
+        def _refuse(self, message, hint, reason=None):
+            self._reason = reason
             key = (self.client_address[0], message)
             if key not in _REFUSED:  # explain once per client, not on every request
                 _REFUSED.add(key)
@@ -233,16 +271,16 @@ def make_handler(app):
             if app.public:  # only the tunnel on this machine; any public host name
                 if _ip(ip) is None or not _ip(ip).is_loopback:
                     return self._refuse("served through the local tunnel only (--public)",
-                                        "point cloudflared at http://localhost:<port>")
+                                        "point cloudflared at http://localhost:<port>", "tunnel_only")
                 return True
             if not is_local_client(ip):
                 return self._refuse("local network only",
-                                    f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)")
+                                    f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)", "outside_lan")
             host = self.headers.get("Host", "")
             if not is_allowed_host(host):
                 name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
                 return self._refuse("unexpected Host header",
-                                    f"Host was {host!r}; to allow it restart with --allow-host {name}")
+                                    f"Host was {host!r}; to allow it restart with --allow-host {name}", "foreign_host")
             return True
 
         # ── verbs ────────────────────────────────────────────────────────────────
@@ -250,6 +288,13 @@ def make_handler(app):
             self.do_GET()
 
         def do_GET(self):
+            self._begin()
+            try:
+                self._get()
+            finally:
+                self._record()
+
+        def _get(self):
             if not self._guard():
                 return
             url = urlsplit(self.path)
@@ -266,9 +311,12 @@ def make_handler(app):
                     self.close_connection = True
 
         def do_POST(self):
-            if not self._guard():
-                return
-            self.send_error_json(HTTPStatus.METHOD_NOT_ALLOWED, "read-only portal")
+            self._begin()
+            try:
+                if self._guard():
+                    self.send_error_json(HTTPStatus.METHOD_NOT_ALLOWED, "read-only portal")
+            finally:
+                self._record()
 
         do_PUT = do_DELETE = do_PATCH = do_POST
 
@@ -338,17 +386,22 @@ def make_handler(app):
             if len(parts) == 2:
                 snap = app.jobs.request_ai(sym, refresh=query.get("refresh", ["0"])[0] == "1")
                 if snap.get("status") == "busy":
+                    self._reason = snap.get("reason")
                     return self._send(HTTPStatus.TOO_MANY_REQUESTS, to_json(snap),
                                       "application/json; charset=utf-8",
                                       extra={"Retry-After": str(snap.get("retry_after", 15))})
                 return self.send_json(snap)
-            refresh = query.get("refresh", ["0"])[0] == "1"
-            snap = app.jobs.request(sym, refresh=refresh, poll=query.get("poll", ["0"])[0] == "1",
-                                    client=self.client_ip() if app.public else None)
+            refresh, poll = query.get("refresh", ["0"])[0] == "1", query.get("poll", ["0"])[0] == "1"
+            snap = app.jobs.request(sym, refresh=refresh, poll=poll, client=self.client_ip() if app.public else None)
             if snap.get("status") == "busy":
+                self._reason = snap.get("reason")
                 return self._send(HTTPStatus.TOO_MANY_REQUESTS, to_json(snap), "application/json; charset=utf-8",
                                   extra={"Retry-After": str(snap.get("retry_after", 10))})
-            return self.send_json(snap)
+            self.send_json(snap)
+            if app.stats is not None and not poll and snap.get("status") in ("done", "nodata", "error"):
+                # answered at once (cache, or a just-finished job); queued lookups are timed by the job
+                app.stats.query(sym, "cache" if snap.get("cached") else "recent", snap["status"],
+                                time.monotonic() - self._t0_mono, ts=self._t0)
 
         def route_ai_stream(self, sym):
             """Server-Sent Events: the AI overview token by token, with TTFT / tok/s metrics."""
@@ -402,6 +455,66 @@ def make_handler(app):
 _REFUSED = set()
 
 
+class StatsApp:
+    """The stats server's state: the portal's recorder. The stats page has the portal's LAN guard (never
+    the --public one), and its own requests are not recorded."""
+    public = False
+    stats = None
+
+    def __init__(self, settings, recorder):
+        self.settings, self.recorder = settings, recorder
+
+
+def make_stats_handler(app):
+    """The stats page: the portal's handler (guard, static files, headers) with its own routes."""
+    settings = app.settings
+
+    class StatsHandler(make_handler(app)):
+        server_version = "LynchPinStats/1.0"
+
+        def _guard(self):
+            """LAN / Tailscale clients only. With --public, cloudflared runs on this machine and connects from
+            loopback, so loopback is refused; anything carrying Cloudflare's headers is refused in any mode.
+            The stats page stays off the internet even if a tunnel is pointed at it."""
+            ip = _ip(self.client_address[0])
+            if settings.public and (ip is None or ip.is_loopback):
+                return self._refuse("LAN / Tailscale only",
+                                    f"with --public, loopback is the tunnel's: open http://<lan-ip>:{settings.stats_port}")
+            if self.headers.get("CF-Connecting-IP") or self.headers.get("CF-Ray"):
+                return self._refuse("not through a tunnel", "the stats page is for the LAN / Tailscale only")
+            return super()._guard()
+
+        def route(self, path, query):
+            if path in ("/", "/index.html"):
+                return self.send_file(os.path.join(settings.static_dir, "stats.html"), "no-cache")
+            if path == "/api/stats":
+                try:
+                    days = int(query.get("days", [app.recorder.retention_days])[0])
+                except ValueError:
+                    return self.send_error_json(HTTPStatus.BAD_REQUEST, "days must be a number")
+                return self.send_json(dict(app.recorder.summary(days), mode="public" if settings.public else "lan",
+                                           portal_port=None if settings.public else settings.port))
+            if path.startswith("/static/") or path == "/favicon.ico":
+                return super().route(path, query)
+            return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+
+    return StatsHandler
+
+
+def start_stats_server(settings, recorder):
+    """The stats page on all interfaces, port ``settings.stats_port`` (LAN / Tailscale clients only), in a
+    thread. Returns the server, or None when the port can't be bound (the portal runs on without it)."""
+    try:
+        httpd = PortalServer((settings.stats_bind_host, settings.stats_port),
+                             make_stats_handler(StatsApp(settings, recorder)))
+    except OSError as e:
+        hint = " (ports below 1024 need root on Linux: try --stats-port 8190)" if isinstance(e, PermissionError) else ""
+        print(f"⚠️  stats page not started on port {settings.stats_port}: {e.strerror or e}{hint}", flush=True)
+        return None
+    threading.Thread(target=httpd.serve_forever, name="lynch-stats-http", daemon=True).start()
+    return httpd
+
+
 class PortalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -418,7 +531,11 @@ class PortalServer(ThreadingHTTPServer):
 
 
 def build_app(settings, with_search=True, with_ai=True):
-    jobs = llm = None
+    jobs = llm = stats = None
+    if settings.stats_enabled:
+        from ui.stats import StatsRecorder
+        stats = StatsRecorder(settings.stats_path, retention_days=settings.stats_days,
+                              visitor_days=settings.stats_visitor_days)
     if with_ai:
         try:
             from ui.llm import LocalLLMClient
@@ -431,12 +548,13 @@ def build_app(settings, with_search=True, with_ai=True):
             workers = settings.analysis_workers(with_ai=llm is not None)
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
                               allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
-                              max_per_client=1 if settings.public else None)  # --public: one per visitor
+                              max_per_client=1 if settings.public else None,  # --public: one per visitor
+                              stats=stats)
         except ImportError:
             jobs = None
     if jobs is None:
         llm = None  # AI overview hangs off a ticker job
-    return PortalApp(settings, jobs=jobs, llm=llm)
+    return PortalApp(settings, jobs=jobs, llm=llm, stats=stats)
 
 
 def parse_args(argv=None):
@@ -471,10 +589,15 @@ def parse_args(argv=None):
     p.add_argument("--public", action="store_true", default=s.public,
                    help="serve the internet through a tunnel on this machine (e.g. cloudflared → localhost): any "
                         "Host name, visitor IPs from CF-Connecting-IP, one analysis at a time per visitor, "
-                        "no /api/cache. Loopback only: not with --lan")
+                        "no /api/cache. The portal listens on loopback only (not with --lan); the stats page "
+                        "(--stats-port) answers LAN / Tailscale clients only")
     p.add_argument("--social-read-at", default=s.social_read_at, metavar="HH:MM",
                    help="time of the daily Latest on X read, Pacific time (LYNCH_UI_SOCIAL_TZ; default 09:00, "
                         "before the 1 PM scan posts)")
+    p.add_argument("--stats-port", type=int, default=s.stats_port,
+                   help="port of the stats page, with --lan or --public, for LAN / Tailscale clients only "
+                        "(default 190)")
+    p.add_argument("--no-stats", action="store_true", help="no stats page and nothing recorded for it")
     p.add_argument("--workers", type=int, default=s.workers,
                    help="tickers analysed at the same time, one process each (default 0 = auto: "
                         f"1 with the AI overview, {CPU_WORKERS} without, fewer if free RAM is short)")
@@ -488,6 +611,9 @@ def parse_args(argv=None):
     s.workers = max(0, a.workers)
     s.public = a.public
     s.verbose = a.verbose
+    s.stats, s.stats_port = s.stats and not a.no_stats, a.stats_port
+    if s.stats_enabled and s.stats_port == s.port:
+        p.error("--stats-port must differ from --port")
     try:
         from zoneinfo import ZoneInfo
         from ui.socials import parse_hhmm
@@ -516,19 +642,34 @@ def _lan_addresses():
     return sorted(a for a in addrs if is_local_client(a) and not a.startswith("127."))
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt  # SIGTERM (kill, launchd) stops like Ctrl-C: the finally block flushes the stats
+
+
 def main(argv=None):
     settings, args = parse_args(argv)
+    signal.signal(signal.SIGTERM, _interrupt)
     bad = netguard.allow(args.allow_net, args.allow_host)
     bad += netguard.parse_nets([os.environ.get("LYNCH_UI_ALLOWED_NETS", "")])[1]
     if bad:
         print(f"⚠️  ignoring invalid network(s): {', '.join(bad)} (expected CIDR like 100.0.0.0/8)", flush=True)
     app = build_app(settings, with_ai=not args.no_ai)
     httpd = PortalServer((settings.bind_host, settings.port), make_handler(app))
+    stats_httpd = start_stats_server(settings, app.stats) if app.stats is not None else None
     print(f"📈 Lynch Pin Quant Portal on http://{settings.bind_host}:{settings.port}", flush=True)
+    lan_addrs = _lan_addresses() if settings.lan or stats_httpd is not None else []
+    if stats_httpd is not None:
+        where = os.path.relpath(settings.stats_path, REPO_ROOT)
+        print(f"📊 Stats page on http://{settings.stats_bind_host}:{settings.stats_port} (LAN / Tailscale only"
+              f"{', never through the tunnel' if settings.public else ''}; rolling {settings.stats_days}-day window "
+              f"in {settings.stats_path if where.startswith('..') else where})", flush=True)
+        for a in lan_addrs:
+            print(f"   📊 stats: http://{a}:{settings.stats_port} {'over Tailscale' if a.startswith('100.') else 'on your Wi-Fi'}",
+                  flush=True)
     if settings.lan:
         print("⚠️  --lan: listening on ALL interfaces with NO authentication. Any device on your private "
               "network or tailnet can use the portal (public IPs and foreign Host headers are refused).", flush=True)
-        for a in _lan_addresses():
+        for a in lan_addrs:
             where = "over Tailscale" if a.startswith("100.") else "on your Wi-Fi"
             print(f"   📱 open http://{a}:{settings.port} {where}", flush=True)
     if settings.public:
@@ -556,8 +697,13 @@ def main(argv=None):
         pass
     finally:
         httpd.server_close()
+        if stats_httpd is not None:
+            stats_httpd.shutdown()
+            stats_httpd.server_close()
         if app.jobs is not None:
             app.jobs.shutdown()
+        if app.stats is not None:
+            app.stats.close()  # writes the last minutes
 
 
 if __name__ == "__main__":

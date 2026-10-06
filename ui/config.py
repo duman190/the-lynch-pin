@@ -67,6 +67,13 @@ class Settings:
     # -v: the page shows the local model's name, its token counts and thinking setting, and the cache
     # chip. Off by default: the header shows only "AI" with a green/red dot.
     verbose: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_VERBOSE"))
+    # Stats page (ui/stats.py): a second server with --lan or --public, on its own port, for LAN / Tailscale
+    # clients only. It keeps a rolling window of stats_days days in cache_dir/stats.sqlite3, and
+    # stats_visitor_days of DAU / MAU.
+    stats: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_STATS", True))
+    stats_port: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_PORT", 190))
+    stats_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_DAYS", 30))
+    stats_visitor_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_VISITOR_DAYS", 365))
 
     # Local LLM (LM Studio, OpenAI-compatible). Empty model = use the first model the server lists.
     llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:1234"))
@@ -123,3 +130,17 @@ class Settings:
     @property
     def bind_host(self):
         return "0.0.0.0" if self.lan else self.host
+
+    @property
+    def stats_enabled(self):
+        return (self.lan or self.public) and self.stats
+
+    @property
+    def stats_bind_host(self):
+        """All interfaces with --lan or --public: with --public the portal stays on loopback for the tunnel,
+        while the stats page answers LAN / Tailscale clients only (ui/server.py: make_stats_handler)."""
+        return "0.0.0.0" if self.lan or self.public else self.host
+
+    @property
+    def stats_path(self):
+        return os.path.join(self.cache_dir, "stats.sqlite3")

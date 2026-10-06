@@ -5,6 +5,8 @@ Dark-mode web UI for the Lynch Pin engine, for PC and phone. Everything lives in
 ```bash
 python -m ui.server                  # http://127.0.0.1:8765, this machine only
 python -m ui.server --lan            # phones/PCs on the same private network (prints the URL to open)
+                                     #   + the stats page on port 190 (see *Stats page*)
+python -m ui.server --public --no-ai # behind a Cloudflare Tunnel; the stats page on port 190, LAN / Tailscale only
 python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Studio), incl. a quick benchmark
 python ui/tests/test_benchmark.py    # throughput benchmark: req/s and latency per endpoint (AI off)
 python ui/tests/cold_bench.py --base http://127.0.0.1:8765 --clients 24 --count 48   # cold lookups/min (real Yahoo)
@@ -30,7 +32,7 @@ ingress:
 python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 ```
 
-`--public` listens on 127.0.0.1 only (it refuses `--lan` or another `--host`), so the tunnel is the only way in and no router port is opened. It accepts any `Host` name, reads each visitor's IP from Cloudflare's `CF-Connecting-IP` header (trusted only from the local tunnel), allows **one analysis at a time per visitor** (a second ticker gets "busy" and the page retries; cached tickers, polls and joining a ticker someone else is already analysing are free), turns `/api/cache` off and leaves other visitors' tickers, the LAN setting and the local model's address out of `/api/health`. What the portal can serve stays the same as on the LAN: its own pages, charts by ticker and analysis JSON — never other files on this machine. There is still no login: put Cloudflare Access in front of the hostname to choose who can use it. Visitors' lookups use this machine's Yahoo quota (and FMP's, with enrichment on).
+`--public` listens on 127.0.0.1 only (it refuses `--lan` or another `--host`), so the tunnel is the only way in and no router port is opened. The one exception is the stats page on port 190 (see *Stats page*): it listens on all interfaces but answers LAN and Tailscale clients only, never the tunnel (`--no-stats` keeps everything on loopback). It accepts any `Host` name, reads each visitor's IP from Cloudflare's `CF-Connecting-IP` header (trusted only from the local tunnel), allows **one analysis at a time per visitor** (a second ticker gets "busy" and the page retries; cached tickers, polls and joining a ticker someone else is already analysing are free), turns `/api/cache` off and leaves other visitors' tickers, the LAN setting and the local model's address out of `/api/health`. What the portal can serve stays the same as on the LAN: its own pages, charts by ticker and analysis JSON — never other files on this machine. There is still no login: put Cloudflare Access in front of the hostname to choose who can use it. Visitors' lookups use this machine's Yahoo quota (and FMP's, with enrichment on).
 
 ## Features
 - Hero artwork built from the Lynch Pin badge.
@@ -49,6 +51,47 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 - The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
 - **Concurrent lookups** with the AI overview off: several users' tickers are analysed at the same time, each in its own worker process (1.5 per CPU core, at most 16, and no more than free RAM holds at ~200 MB each; `--workers` to change). A model loaded in LM Studio can take most of an 8 GB Mac: unload it when running `--no-ai`. On an 8-core M1 this takes cold lookups from ~11 to ~117 tickers/min (`ui/tests/cold_bench.py`). Through `--public` with every visitor on its own IP and loading the full home page first (22 requests, ~1.3 MB: Latest scans and Socials included), the same 48 tickers ran at 110 tickers/min (2026-10-05). A burst of 200 visitors at once, each with a new ticker, ran at 62 tickers/min: 12 analyse, 20 queue, the rest get "queue full" and their page retries, and Yahoo answered 429 eleven times, so the circuit breaker paused new work; all 200 finished, the slowest in ~3 min. With the AI overview on, tickers are analysed one at a time unless `--workers` is set. Yahoo throttles at a few hundred tickers in a short burst (each cold lookup makes ~12 Yahoo calls), so the cache below does the heavy lifting under sustained load.
 - A daily LFU cache of 500 tickers (~10 MB of RAM, ~280 MB of charts on disk). Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
+
+## Stats page (`--lan` or `--public`)
+
+With `--lan` or `--public` the portal also starts a second server, the **stats page**, on port **190** (`--stats-port`): `http://<lan-ip>:190` or `http://<tailscale-ip>:190`, printed at startup. It has the portal's header and no other routes: no tickers, no charts. It doesn't run in the default loopback-only mode, and `--no-stats` turns it off. On Linux, ports below 1024 need root, so pick e.g. `--stats-port 8190` there; if the port can't be bound, the portal runs on without it and says why.
+
+**Who can open it: LAN and Tailscale clients only.** Clients outside loopback, RFC 1918, ULA, link-local and Tailscale ranges, and foreign `Host` headers, get a 403, as on the `--lan` portal. So does anything carrying Cloudflare's headers (`CF-Connecting-IP`, `CF-Ray`).
+- **With `--lan`** the portal and the stats page are both on the LAN; `http://localhost:190` works on this machine too.
+- **With `--public`** the portal stays on 127.0.0.1 behind the tunnel, and the stats page records its traffic, with visitors counted by `CF-Connecting-IP`. The stats page itself refuses loopback, because that is where cloudflared connects from, so even a tunnel pointed at port 190 by mistake gets a 403. Open it from a phone on the Wi-Fi or over Tailscale, or on this machine through its LAN address. Its *Portal* button is hidden, since the portal isn't on the LAN.
+
+A range switch (24 h / 7 d / 30 d) scopes everything but *Visitors*; the page refreshes every minute.
+- **Tiles:** requests, peak RPM, ticker queries, latency p99.9, cache hit rate, rejected %, DAU today, MAU.
+- **Requests per minute:** CDF over the minutes with traffic (an idle night is not a 0-RPM sample), all requests and ticker queries.
+- **Ticker query latency:** CDF on a log scale, from a lookup to its result, with **p99.9 highlighted**. A cache hit is the time to answer the request (well under a millisecond); a cold lookup is the time until its analysis finished, queue and Yahoo pauses included; a lookup that joins an analysis already running counts from when it joined.
+- **Cache hit rate per day:** CDF over days of the share of each day's lookups answered from the daily cache, plus where all lookups were answered from (cache, new analysis, joined one in progress, a recent result).
+- **Most queried tickers:** the top 10 as a share of all ticker queries.
+- **Rejected requests:** by reason (client outside the LAN, foreign `Host`, invalid ticker, write method, analysis / AI queue full, one analysis per visitor) as a share of all requests, and per day. Yahoo's 429s are listed too, marked *upstream*: they are Yahoo refusing the portal's own calls (the circuit breaker pauses lookups), not requests to the portal.
+- **AI overview:** CDFs of time to first token, speed (tok/s) and total time per generated overview (cached overviews cost nothing and are not counted), with failures and the queue wait.
+- **Visitors:** daily active users (distinct source IPs per day) and monthly active users (distinct source IPs in the 30 days up to each day) over the last 12 months, plus today's DAU, MAU and DAU/MAU in the tiles. The 12-month window is fixed: the range switch stops at 30 days. A visitor is the source of a request the portal served (status below 400), so refused probes don't count. Behind a tunnel on this machine (cloudflared) that is the visitor's `CF-Connecting-IP`, trusted only from loopback, so a LAN device can't set it.
+
+Each chart has its percentiles (p50, p90, p99, p99.9, max, n) underneath, and a crosshair that reads off P(X ≤ x) on hover or with the arrow keys.
+
+**Recording (`ui/stats.py`).** No lock on the request path: HTTP and worker threads bump per-minute counters with `next()` on an `itertools.count` (one C call, atomic under the GIL) and append finished lookups and AI overviews to a `deque` (`append` is atomic). A served request also marks its visitor in a dict used as a set (one atomic store). One flusher thread writes them to SQLite (`ui/.cache/stats.sqlite3`, WAL) every 5 s; a minute's counters are written two minutes after it ends. The stats page reads through its own connection. `Ctrl-C` and `SIGTERM` write the last minutes before exiting.
+
+**Retention:** a rolling 30 days (`LYNCH_UI_STATS_DAYS`), and a rolling year for DAU / MAU (`LYNCH_UI_STATS_VISITOR_DAYS`); older rows are deleted every hour. Visitors are stored once per day as a keyed hash of their IP (HMAC-SHA256, random key kept in the database), never as the IP: enough to count distinct visitors, not to list them.
+
+**Overhead** (8-core M1, Python 3.9, 2026-10-06): recording costs ~1.7 µs of CPU per request (~2.1 µs from loopback, where the `CF-Connecting-IP` lookup runs):
+- the per-minute counter: 0.4 µs
+- the visitor: marked once per connection and hour
+- the rest: clock reads and bookkeeping
+
+Measured cost:
+- **Offline** (`python ui/tests/test_benchmark.py --stats`, cached tickers, AI off, A/B/B/A): 0.2-2.3% fewer requests/s. That is the cheapest requests (0.2-0.3 ms each) with the server saturated.
+- **Cold lookups** with `--no-ai` (`cold_bench.py --clients 24 --count 48`, 12 workers, no Yahoo 429s), the same two sets of 48 tickers in A/B/B/A order. Measured with the request counters, before visitors were added (they add a few tenths of a µs per request):
+
+  | Tickers | Stats off | Stats on |
+  |---|---|---|
+  | Nasdaq-100 #1-48 | 104.0 /min | 105.8 /min |
+  | Nasdaq-100 #49-96 | 99.4 /min | 96.8 /min |
+  | Mean | 101.7 /min | 101.3 /min |
+
+  The 0.4% difference is well inside the ±2.5% between repeat runs: each lookup takes seconds of Yahoo / SEC time and about 60 requests, so the stats cost ~0.1 ms of a ~10 s lookup.
 
 ## Configuration (CLI flag or env var)
 | Flag | Env | Default |
@@ -70,6 +113,10 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 | `--no-ai` | | AI enabled |
 | `-v` / `--verbose` | `LYNCH_UI_VERBOSE=1` | off: the header shows only *AI* with a green/red dot (no model name, no cache chip) and the AI card hides the model name, token counts and thinking setting |
 | `--public` | `LYNCH_UI_PUBLIC=1` | off (see *Public access* above) |
+| `--stats-port` | `LYNCH_UI_STATS_PORT` | `190`: the stats page, with `--lan` or `--public`, LAN / Tailscale clients only (see *Stats page*) |
+| `--no-stats` | `LYNCH_UI_STATS=0` | on with `--lan` or `--public`: no stats page, nothing recorded |
+| | `LYNCH_UI_STATS_DAYS` | `30`: days of stats kept (rolling) |
+| | `LYNCH_UI_STATS_VISITOR_DAYS` | `365`: days of DAU / MAU kept (rolling) |
 | `--workers` | `LYNCH_UI_WORKERS` | `0` = auto: 1 with the AI overview, 1.5 × CPU cores (max 16, capped by free RAM at ~200 MB each) without; above 1, one process each |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
 | `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Lynch Stats">
+  <title>The Lynch Pin · Portal Stats</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/stats.css">
+  <script src="/static/stats.js" defer></script>
+</head>
+<body class="stats-page">
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar" role="banner">
+    <a class="brand" href="/" aria-label="The Lynch Pin Quant Portal stats">
+      <img src="/static/img/logo.png" alt="" width="40" height="40">
+      <span class="brand-text"><strong>THE LYNCH PIN</strong><span>Quant Portal</span></span>
+    </a>
+    <div class="chips">
+      <a class="home-btn" id="portal-link" href="/" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 11.2 12 4l9 7.2V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1z" fill="currentColor"/></svg>
+        <span>Portal</span>
+      </a>
+      <span class="chip" id="chip-live"><span class="dot"></span><span class="chip-label">Stats</span></span>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="st-head" aria-labelledby="st-title">
+      <div>
+        <h1 id="st-title">Portal stats</h1>
+        <p class="muted small" id="st-sub">Loading…</p>
+      </div>
+      <div class="st-range" role="group" aria-label="Time range">
+        <button type="button" data-days="1" aria-pressed="false">24 h</button>
+        <button type="button" data-days="7" aria-pressed="false">7 d</button>
+        <button type="button" data-days="30" aria-pressed="true">30 d</button>
+      </div>
+    </section>
+
+    <section class="st-tiles" id="tiles" aria-label="Summary"></section>
+
+    <section class="st-section" aria-labelledby="h-main">
+      <h2 id="h-main">Requests &amp; lookups</h2>
+      <div class="st-grid">
+        <article class="panel st-card" id="c-rpm">
+          <header><h3>Requests per minute</h3><p class="muted small">CDF over the minutes with traffic</p></header>
+          <div class="st-legend" aria-hidden="true">
+            <span><i class="key key-1"></i>All requests</span><span><i class="key key-2"></i>Ticker queries</span>
+          </div>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-latency">
+          <header><h3>Ticker query latency</h3><p class="muted small">CDF, log scale: from a lookup to its result, cache hits included</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-cache">
+          <header><h3>Cache hit rate per day</h3><p class="muted small">CDF over days: share of each day's lookups answered from the daily cache</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-tickers">
+          <header><h3>Most queried tickers</h3><p class="muted small">Top 10, as a share of all ticker queries</p></header>
+          <ol class="st-bars" aria-label="Top 10 tickers"></ol>
+          <p class="muted small st-foot"></p>
+        </article>
+        <article class="panel st-card st-wide" id="c-reject">
+          <header><h3>Rejected requests</h3><p class="muted small">Requests the portal refused, by reason and by day</p></header>
+          <div class="st-reject">
+            <ol class="st-bars" aria-label="Rejections by reason"></ol>
+            <div class="st-cols-wrap"><div class="st-cols"></div><p class="muted small">Rejected per day</p></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="st-section" aria-labelledby="h-visitors">
+      <h2 id="h-visitors">Visitors</h2>
+      <p class="muted small st-ai-sub" id="visitors-sub">Distinct source IPs over the last 12 months (kept for a year, so the range switch doesn't apply)</p>
+      <div class="st-grid">
+        <article class="panel st-card" id="c-dau">
+          <header><h3>Daily active users</h3><p class="muted small">Distinct source IPs per day</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-mau">
+          <header><h3>Monthly active users</h3><p class="muted small">Distinct source IPs in the 30 days up to each day</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="st-section" aria-labelledby="h-ai">
+      <h2 id="h-ai">AI overview</h2>
+      <p class="muted small st-ai-sub" id="ai-sub"></p>
+      <div class="st-grid st-grid-3">
+        <article class="panel st-card" id="c-ttft">
+          <header><h3>Time to first token</h3><p class="muted small">CDF per generated overview</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-speed">
+          <header><h3>Speed</h3><p class="muted small">CDF of tokens per second while writing (tok/s)</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+        <article class="panel st-card" id="c-total">
+          <header><h3>Total time</h3><p class="muted small">CDF from the model's first call to the finished overview</p></header>
+          <div class="st-chart"></div>
+          <div class="st-pcts"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>The Lynch Pin · Portal stats</span>
+    <span class="muted" id="st-retention">Local network only</span>
+  </footer>
+
+  <div class="st-tip" id="st-tip" role="tooltip" hidden></div>
+</body>
+</html>

@@ -271,7 +271,7 @@ This prevents hypergrowth companies (LYFT, CELH) from producing fantasy ROIs by 
 
 ## Web Portal & Local AI Overview
 
-`python -m ui.server` serves a dark-mode web UI for single-ticker lookups, with an optional AI overview streamed from a local LM Studio server. See [ui/README.md](ui/README.md). Its **Local AI tuning** section has the measurements behind the overview prompt and the settings to use on new hardware:
+`python -m ui.server` serves a dark-mode web UI for single-ticker lookups, with an optional AI overview streamed from a local LM Studio server. With `--lan` or `--public` it also serves a stats page on port 190, for LAN / Tailscale clients only (requests per minute, lookup latency, rejections, caching, popular tickers, AI speed over a rolling 30 days; DAU and MAU over a rolling year). See [ui/README.md](ui/README.md). Its **Local AI tuning** section has the measurements behind the overview prompt and the settings to use on new hardware:
 - prefill vs decode speed for a dense 27B and a 3B-active MoE on Splash
 - the prefix-cache behaviour
 - the prompt rules
