@@ -447,12 +447,14 @@ dialog#lightbox {
 }
 dialog#lightbox::backdrop { background: rgba(0,0,0,.8); backdrop-filter: blur(4px); }
 dialog#lightbox img { width: 100%; height: auto; }
+.lightbox-hint { margin: 0; padding: 12px 16px max(14px, env(safe-area-inset-bottom)); text-align: center; color: var(--text); font-size: .95rem; }
 .lightbox-dl { position: sticky; top: max(8px, env(safe-area-inset-top)); float: right; margin: 8px 0 8px 8px; z-index: 2; }
 .lightbox-dl a, .lightbox-close {
   display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border);
   background: rgba(26,26,26,.9); color: var(--white); cursor: pointer; text-decoration: none;
 }
 .lightbox-dl a:hover, .lightbox-close:hover { border-color: var(--sky); }
+.lightbox-dl a.is-loading { opacity: .45; cursor: progress; }  /* iOS app: the PNG is still downloading */
 .lightbox-dl svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .lightbox-close {
   position: sticky; top: max(8px, env(safe-area-inset-top)); float: right; margin: 8px; z-index: 2;

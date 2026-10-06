@@ -43,8 +43,9 @@ function openLightbox(src, alt, filename) {
   const dl = $("#lightbox-dl");
   dl.replaceChildren();
   dl.hidden = !filename;
-  if (filename) dl.append(downloadLink(src, filename, alt, DOWNLOAD_ICON, "Download chart"));
-  if (dlg.open) return;  // the iOS share fallback re-opens the file it is already showing
+  if (filename) dl.append(downloadLink(src, filename, alt, DOWNLOAD_ICON, "Download chart", { prefetch: true }));
+  $("#lightbox-hint").hidden = true;
+  if (dlg.open) return;
   if (typeof dlg.showModal === "function") dlg.showModal();
   else window.open(src, "_blank", "noopener");
 }
@@ -56,15 +57,27 @@ function initLightbox() {
 
 /* ── chart download ──────────────────────────────────────────────────────── */
 /* An iOS home-screen app has no browser chrome: following a download link strands the user on a file
-   preview with no way back. There, hand the PNG to the share sheet ("Save Image") instead. */
-let pngFetch = { url: null, promise: null };
+   preview with no way back. There, hand the PNG to the share sheet ("Save Image") instead. iOS opens
+   the share sheet only within the tap that asked for it, so the PNG must already be downloaded by then:
+   the lightbox fetches it when it opens, and the tap shares the blob without waiting on anything. */
+let pngFetch = { url: null, promise: null, blob: null };
 function fetchPng(url) {
   if (pngFetch.url !== url) {
-    const promise = fetch(url).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); });
-    promise.catch(() => { if (pngFetch.promise === promise) pngFetch = { url: null, promise: null }; });
-    pngFetch = { url, promise };
+    const entry = { url, promise: null, blob: null };
+    entry.promise = fetch(url)
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
+      .then((blob) => { entry.blob = blob; return blob; });
+    entry.promise.catch(() => { if (pngFetch === entry) pngFetch = { url: null, promise: null, blob: null }; });
+    pngFetch = entry;
   }
   return pngFetch.promise;
+}
+/* When the share sheet can't open: show the image with "press and hold to save". The lightbox stays as it
+   is when it already shows this image, download button included. */
+function saveHint(url, alt) {
+  const dlg = $("#lightbox");
+  if (!(dlg.open && $("#lightbox-img").src === new URL(url, location.href).href)) openLightbox(url, alt);
+  $("#lightbox-hint").hidden = false;
 }
 /* the tray-and-arrow glyph of a browser's download button */
 const DOWNLOAD_ICON = (() => {
@@ -76,21 +89,30 @@ const DOWNLOAD_ICON = (() => {
   svg.append(path);
   return svg;
 })();
-function downloadLink(url, filename, alt, content, label) {
+function downloadLink(url, filename, alt, content, label, { prefetch = false } = {}) {
   const a = el("a", { href: url, download: filename }, content ? content.cloneNode(true) : "download PNG");
   if (label) { a.setAttribute("aria-label", label); a.title = label; }
   if (navigator.standalone !== true) return a;  // browsers honour the download attribute
-  a.addEventListener("pointerdown", () => { fetchPng(url).catch(() => {}); });  // head start: share needs a fresh tap
-  a.addEventListener("click", async (e) => {
+  if (prefetch) {  // the open lightbox: download now (button dimmed meanwhile), share on the tap
+    a.classList.add("is-loading");
+    a.setAttribute("aria-disabled", "true");
+    const done = () => { a.classList.remove("is-loading"); a.removeAttribute("aria-disabled"); };
+    fetchPng(url).then(done, done);
+  }
+  a.addEventListener("pointerdown", () => { fetchPng(url).catch(() => {}); });  // links elsewhere: head start
+  const share = (blob) => {
+    const file = new File([blob], filename, { type: "image/png" });
+    if (!navigator.canShare || !navigator.canShare({ files: [file] })) return saveHint(url, alt);
+    navigator.share({ files: [file] }).catch((err) => {
+      if (!(err && err.name === "AbortError")) saveHint(url, alt);  // AbortError: share sheet dismissed
+    });
+  };
+  a.addEventListener("click", (e) => {
     e.preventDefault();
-    try {
-      const file = new File([await fetchPng(url)], filename, { type: "image/png" });
-      if (!navigator.canShare || !navigator.canShare({ files: [file] })) throw new Error("file sharing unsupported");
-      await navigator.share({ files: [file] });
-    } catch (err) {
-      if (err && err.name === "AbortError") return;  // share sheet dismissed
-      openLightbox(url, alt);  // fallback: press and hold the image to save it
-    }
+    if (a.classList.contains("is-loading")) return;  // a tap now would come too late for the share sheet
+    const ready = pngFetch.url === url ? pngFetch.blob : null;
+    if (ready) share(ready);  // still within the tap: the share sheet opens
+    else fetchPng(url).then(share, () => saveHint(url, alt));  // not downloaded yet: iOS may refuse → hint
   });
   return a;
 }
