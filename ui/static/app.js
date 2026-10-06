@@ -34,11 +34,17 @@ async function getJSON(url) {
 }
 
 /* ── lightbox ─────────────────────────────────────────────────────────────── */
-function openLightbox(src, alt) {
+function openLightbox(src, alt, filename) {
   const dlg = $("#lightbox");
   const img = $("#lightbox-img");
   img.src = src;
   img.alt = alt || "";
+  // a chart that can be saved gets a download icon next to the close button (see downloadLink)
+  const dl = $("#lightbox-dl");
+  dl.replaceChildren();
+  dl.hidden = !filename;
+  if (filename) dl.append(downloadLink(src, filename, alt, DOWNLOAD_ICON, "Download chart"));
+  if (dlg.open) return;  // the iOS share fallback re-opens the file it is already showing
   if (typeof dlg.showModal === "function") dlg.showModal();
   else window.open(src, "_blank", "noopener");
 }
@@ -60,8 +66,19 @@ function fetchPng(url) {
   }
   return pngFetch.promise;
 }
-function downloadLink(url, filename, alt) {
-  const a = el("a", { href: url, download: filename }, "download PNG");
+/* the tray-and-arrow glyph of a browser's download button */
+const DOWNLOAD_ICON = (() => {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", "M12 3v12m0 0-5-5m5 5 5-5M4 20h16");
+  svg.append(path);
+  return svg;
+})();
+function downloadLink(url, filename, alt, content, label) {
+  const a = el("a", { href: url, download: filename }, content ? content.cloneNode(true) : "download PNG");
+  if (label) { a.setAttribute("aria-label", label); a.title = label; }
   if (navigator.standalone !== true) return a;  // browsers honour the download attribute
   a.addEventListener("pointerdown", () => { fetchPng(url).catch(() => {}); });  // head start: share needs a fresh tap
   a.addEventListener("click", async (e) => {
