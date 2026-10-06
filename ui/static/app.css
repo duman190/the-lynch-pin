@@ -68,7 +68,7 @@ h2 { color: var(--sky); font-size: 1.15rem; text-transform: uppercase; font-weig
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 .brand-text strong { font-weight: 900; letter-spacing: .06em; }
 .brand-text span { color: var(--sky); font-size: .8rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
   font: 700 .75rem/1 var(--mono); letter-spacing: .04em;
@@ -155,8 +155,9 @@ body[data-view="scan"] .about { display: none !important; }
   background: linear-gradient(180deg, #7FB3F5, var(--sky)); box-shadow: 0 0 14px var(--sky-glow);
 }
 .home-btn:hover { filter: brightness(1.08); }
-/* without -v the header has no model name or cache chip: a bigger Home button fills the space */
-body:not(.verbose) .home-btn { font-size: .95rem; padding: 10px 18px; min-height: 40px; gap: 8px; }
+/* without -v the header has no model name or cache chip: a bigger Home button fills the space, no taller
+   than the logo so the header keeps its height on every page */
+body:not(.verbose) .home-btn { font-size: .95rem; padding: 0 18px; height: 40px; gap: 8px; }
 body:not(.verbose) .home-btn svg { width: 19px; height: 19px; }
 body:not(.verbose) .topbar .chip { font-size: .8rem; padding: 9px 12px; }
 body:not(.verbose) .aim-tokens, body:not(.verbose) .aim-thinking { display: none; }
@@ -504,7 +505,10 @@ dialog#lightbox img { width: 100%; height: auto; }
   .rh-ticker { font-size: 2rem; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
   body:not(.verbose) .chips { flex-wrap: nowrap; }  /* Home and the AI dot share one row */
-  body:not(.verbose) .home-btn { padding: 9px 14px; font-size: .88rem; min-height: 38px; gap: 6px; }
+  body:not(.verbose) .home-btn { padding: 0 14px; font-size: .88rem; height: 34px; min-height: 0; gap: 6px; }
+  /* TTFT, Speed and Time on one row */
+  body:not(.verbose) .ai-metrics { flex-wrap: nowrap; gap: 6px; }
+  body:not(.verbose) .aim { padding: 6px 9px; font-size: .74rem; white-space: nowrap; }
   body:not(.verbose) .home-btn svg { width: 17px; height: 17px; }
   body:not(.verbose) .topbar .chip { padding: 9px 10px; font-size: .78rem; }
   .scans-nav { display: none; }  /* swipe on phones */
@@ -553,6 +557,8 @@ dialog#lightbox img { width: 100%; height: auto; }
 @media (max-width: 380px) {
   .brand-text span { display: none; }
   .home-btn span { display: none; }  /* icon only on the narrowest phones */
+  body:not(.verbose) .ai-metrics { gap: 5px; }
+  body:not(.verbose) .aim { padding: 5px 7px; font-size: .7rem; gap: 4px; }
 }
 
 /* Phones in landscape: keep the hero short so the search stays above the fold */
