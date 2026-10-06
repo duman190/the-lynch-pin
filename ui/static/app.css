@@ -161,6 +161,10 @@ body:not(.verbose) .home-btn { font-size: .95rem; padding: 0 18px; height: 40px;
 body:not(.verbose) .home-btn svg { width: 19px; height: 19px; }
 body:not(.verbose) .topbar .chip { font-size: .8rem; padding: 9px 12px; }
 body:not(.verbose) .aim-tokens, body:not(.verbose) .aim-thinking { display: none; }
+/* TTFT, Speed and Time always share one row: the pills shrink (values clip) rather than wrap */
+body:not(.verbose) .ai-metrics { flex-wrap: nowrap; }
+body:not(.verbose) .aim { min-width: 0; white-space: nowrap; }
+body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Latest scans: iOS-style widget stack ────────────────────────────────── */
 .scans { display: grid; gap: 12px; min-width: 0; scroll-margin-top: 72px; }
@@ -506,9 +510,8 @@ dialog#lightbox img { width: 100%; height: auto; }
   .home-btn { padding: 7px 10px; font-size: .72rem; }
   body:not(.verbose) .chips { flex-wrap: nowrap; }  /* Home and the AI dot share one row */
   body:not(.verbose) .home-btn { padding: 0 14px; font-size: .88rem; height: 34px; min-height: 0; gap: 6px; }
-  /* TTFT, Speed and Time on one row */
-  body:not(.verbose) .ai-metrics { flex-wrap: nowrap; gap: 6px; }
-  body:not(.verbose) .aim { padding: 6px 9px; font-size: .74rem; white-space: nowrap; }
+  body:not(.verbose) .ai-metrics { gap: 6px; }
+  body:not(.verbose) .aim { padding: 6px 9px; font-size: .74rem; }
   body:not(.verbose) .home-btn svg { width: 17px; height: 17px; }
   body:not(.verbose) .topbar .chip { padding: 9px 10px; font-size: .78rem; }
   .scans-nav { display: none; }  /* swipe on phones */
