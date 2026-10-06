@@ -51,7 +51,7 @@ class LynchPinResearcher:
         gemini_key = os.environ.get("GEMINI_API_KEY")
         # Gemini tiers are skipped when no key is set (the chain then runs on OpenRouter only)
         self.client = genai.Client(api_key=gemini_key) if gemini_key else None
-        self.best_model = "gemini-3.7-flash"
+        self.best_model = "gemini-3.8-flash"
         self.backup_model = "gemini-3.6-flash"
         self.openrouter_model = OPENROUTER_FREE_MODEL
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
