@@ -362,10 +362,12 @@ def test_ai_overviews_are_recorded(settings, rec):
         jm._recent_ai.clear()
         assert jm.request_ai("MSFT")["cached"] is True  # a cached overview is not a generation
         jm.shutdown()
-        ai = [r[1] for r in drain(rec) if r[0] == "ai"]
+        rows = drain(rec)
+        ai = [r[1] for r in rows if r[0] == "ai"]
         assert len(ai) == 1
-        ts, sym, status, ttft, tok_s, total, wait, tokens, model = ai[0]
-        assert (sym, status, model) == ("MSFT", "done", "qwen3-30b-a3b")
+        ts, sym, status, ttft, tok_s, total, wait, tokens, model, backend = ai[0]
+        assert (sym, status, model, backend) == ("MSFT", "done", "qwen3-30b-a3b", "local")
+        assert [r[1][1:] for r in rows if r[0] == "ai_routes"] == [("MSFT", "local", "done")]
         assert ttft is not None and total >= ttft and wait >= 0 and tokens > 0
     finally:
         httpd.shutdown()

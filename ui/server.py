@@ -121,6 +121,10 @@ class PortalApp:
                             "refresh": self.jobs is not None and self.jobs.allow_refresh}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
+            if self.jobs is not None and self.jobs.gemini is not None:
+                out["ai"]["offload"] = self.jobs.gemini.model_id
+                if not out["ai"].get("available"):  # the local model is down: Gemini writes the overviews
+                    out["ai"].update(available=True, local_available=False, checking=False)
         if self.jobs is not None:
             out["cache"] = self.jobs.cache_stats()
             if self.settings.enrich_enabled:
@@ -144,7 +148,7 @@ class PortalApp:
         out.pop("precache", None)
         cache = out.get("cache")
         if cache:
-            for k in ("top", "running", "ai_running"):
+            for k in ("top", "running", "ai_running", "inference"):  # inference: this machine's Gemini quota
                 cache.pop(k, None)
         ai = out.get("ai")
         if ai:
@@ -560,12 +564,16 @@ def build_app(settings, with_search=True, with_ai=True):
         from ui.stats import StatsRecorder
         stats = StatsRecorder(settings.stats_path, retention_days=settings.stats_days,
                               visitor_days=settings.stats_visitor_days)
+    gemini = None
     if with_ai:
         try:
             from ui.llm import LocalLLMClient
             llm = LocalLLMClient(settings)
         except ImportError:
             llm = None
+    if llm is not None:
+        from ui.gemini import GeminiClient
+        gemini = GeminiClient.from_settings(settings)  # None without GEMINI_API_KEY or with --no-gemini
     if with_search:
         try:
             from ui.jobs import JobManager
@@ -573,7 +581,7 @@ def build_app(settings, with_search=True, with_ai=True):
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
                               allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
                               max_per_client=1 if settings.public else None,  # --public: one per visitor
-                              stats=stats)
+                              stats=stats, gemini=gemini)
         except ImportError:
             jobs = None
     if jobs is None:
@@ -602,6 +610,18 @@ def parse_args(argv=None):
                    help="AI overviews generated at once (default 1; see ui/README.md, Local AI tuning)")
     p.add_argument("--llm-autoload", action="store_true", default=s.llm_autoload,
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
+    p.add_argument("--llm-rpm", type=int, default=s.llm_rpm, metavar="N",
+                   help="low watermark: AI overviews a minute the local model is given (default 24: Qwen3.6-35B-A3B "
+                        "on Splash with --llm-parallel 4; use 4 for the 27B). Above it, Gemini; above "
+                        "--llm-rpm + --gemini-rpm, the Quick overview with a Retry AI button")
+    p.add_argument("--gemini-model", default=s.gemini_model,
+                   help="Gemini model for overviews above the low watermark (default gemini-flash-lite-latest; "
+                        "needs GEMINI_API_KEY)")
+    p.add_argument("--gemini-rpm", type=int, default=s.gemini_rpm, metavar="N",
+                   help="Gemini overviews a minute (default 15, the free tier's limit per model)")
+    p.add_argument("--gemini-rpd", type=int, default=s.gemini_rpd, metavar="N",
+                   help="Gemini overviews per Pacific day (default 975: room for the daily scans' backup tier)")
+    p.add_argument("--no-gemini", action="store_true", help="local model only: no Gemini offload")
     p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 500)")
     p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
@@ -637,6 +657,9 @@ def parse_args(argv=None):
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
     s.llm_max_tokens, s.llm_autoload, s.llm_reasoning = a.llm_max_tokens, a.llm_autoload, a.llm_reasoning
     s.llm_parallel = max(1, a.llm_parallel)
+    s.llm_rpm = max(0, a.llm_rpm)
+    s.gemini = s.gemini and not a.no_gemini
+    s.gemini_model, s.gemini_rpm, s.gemini_rpd = a.gemini_model, max(0, a.gemini_rpm), max(0, a.gemini_rpd)
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     s.enrich = a.enrich
     s.fmp_limit = max(0, a.fmp_limit)
@@ -731,6 +754,16 @@ def main(argv=None):
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning} parallel={settings.llm_parallel}", flush=True)
+        g = app.jobs.gemini if app.jobs is not None else None
+        if g is not None:
+            b = g.budget.status()
+            print(f"🧠 Inference queue: local up to {settings.llm_rpm}/min, then Gemini {g.model_id} up to "
+                  f"{settings.gemini_rpm}/min ({b['today']}/{settings.gemini_rpd} used today, Pacific), then the "
+                  f"Quick overview (high watermark {app.jobs.inference.high}/min)", flush=True)
+        else:
+            why = "--no-gemini" if not settings.gemini else "GEMINI_API_KEY not set"
+            print(f"🧠 Inference queue: local up to {settings.llm_rpm}/min, then the Quick overview "
+                  f"(no Gemini offload: {why})", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

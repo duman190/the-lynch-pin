@@ -3,7 +3,9 @@
 "use strict";
 (() => {
   const NS = "http://www.w3.org/2000/svg";
-  const COLOR = { s1: "#5596E8", s2: "#D95926", hl: "#F5B041", grid: "#2A2A2A", axis: "#3A3A3A", surface: "#1A1A1A" };
+  // neutral: "no AI" (the Quick overview), deliberately not a series hue
+  const COLOR = { s1: "#5596E8", s2: "#D95926", neutral: "#7A7A7A", hl: "#F5B041", grid: "#2A2A2A", axis: "#3A3A3A",
+    surface: "#1A1A1A" };
   const REFRESH_MS = 60000;
   const $ = (sel, root = document) => root.querySelector(sel);
   const main = $("#main");
@@ -515,6 +517,16 @@
     dayStrip($("#c-dau"), v, "dau");
     dayChart($("#c-mau"), v.days, "mau", "active in 30 days");
     dayStrip($("#c-mau"), v, "mau");
+
+    const routes = d.ai_routes || { local: 0, gemini: 0, quick: 0, quick_reasons: {} };
+    const WHY = { busy: "at capacity", offline: "no model up", unavailable: "model unavailable", error: "model error",
+      timeout: "timed out" };
+    const why = Object.entries(routes.quick_reasons || {}).map(([k, n]) => `${WHY[k] || k} ${num(n)}`).join(" · ");
+    pieChart($("#c-ai-routes"), [
+      { name: "Local model", value: routes.local, color: COLOR.s1 },
+      { name: "Gemini", note: "offloaded", value: routes.gemini, color: COLOR.s2 },
+      { name: "Quick overview", note: why ? `no AI: ${why}` : "no AI", value: routes.quick, color: COLOR.neutral },
+    ], "overviews");
 
     const ai = d.ai;
     $("#ai-sub").textContent = ai.n

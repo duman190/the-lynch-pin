@@ -91,6 +91,18 @@ class Settings:
     llm_parallel: int = field(default_factory=lambda: _env_int("LYNCH_LLM_PARALLEL", 1))
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
+    # Inference queue (ui/inference_queue.py). Low watermark: AI overviews per minute the local model is given. 24 is
+    # Qwen3.6-35B-A3B on standalone Splash with --llm-parallel 4 (M3 Pro, batch width 4): at 50 requests a minute every
+    # overview it took finished in at most 61 s (ui/README.md, "AI inference queue"). The 27B: 4. Above it, overviews
+    # go to Gemini up to gemini_rpm (high watermark = llm_rpm + gemini_rpm); above that, the Quick overview.
+    llm_rpm: int = field(default_factory=lambda: _env_int("LYNCH_LLM_RPM", 24))
+    # Gemini offload (ui/gemini.py): on when GEMINI_API_KEY is set. Free tier: 15 requests a minute per model
+    # (Google's 429 names the quota); 975 a day leaves room for the daily scans' backup tier.
+    gemini: bool = field(default_factory=lambda: _env_bool("LYNCH_GEMINI", True))
+    gemini_model: str = field(default_factory=lambda: os.environ.get("LYNCH_GEMINI_MODEL", "gemini-flash-lite-latest"))
+    gemini_rpm: int = field(default_factory=lambda: _env_int("LYNCH_GEMINI_RPM", 15))
+    gemini_rpd: int = field(default_factory=lambda: _env_int("LYNCH_GEMINI_RPD", 975))
+    gemini_timeout: int = field(default_factory=lambda: _env_int("LYNCH_GEMINI_TIMEOUT", 120))
 
     # Analysis
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
@@ -154,3 +166,8 @@ class Settings:
     def fmp_budget_path(self):
         """FMP requests made for enrichment in the last 24 h, shared by the analysis processes (ui/fmp_budget.py)."""
         return os.path.join(self.cache_dir, "fmp_budget.sqlite3")
+
+    @property
+    def gemini_budget_path(self):
+        """Gemini requests sent per Pacific day, kept across restarts (ui/gemini.py)."""
+        return os.path.join(self.cache_dir, "gemini_budget.sqlite3")

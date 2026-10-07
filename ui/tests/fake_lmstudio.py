@@ -10,11 +10,15 @@ Loopback only.
 
 Knobs (``state`` dict): delay (s per chunk), inline_think, prefill_think (only ``</think>`` streams),
 sloppy (markdown-bold labels), finish ("stop" | "length"), limit (max chunks), fail (404 "No models
-loaded"), reject_reasoning_effort (400 on that field), state / loaded_ctx (native model listing).
+loaded"), reject_reasoning_effort (400 on that field), state / loaded_ctx (native model listing),
+http_errors (list of (status, body) answered to the next chat requests, one each), error_rate (share of chat
+requests answered 503, like Gemini under load), streams (generations at once; the rest wait, like a local
+server's batch width). The last chat request's Authorization header is kept in ``state["auth"]``.
 ``"reasoning_effort": "none"`` in a request suppresses the reasoning tokens, like Qwen3.6 Splash.
 """
 import argparse
 import json
+import random
 import re
 import threading
 import time
@@ -123,6 +127,13 @@ def make_handler(state):
                 return self._json(200, {"status": "loaded"})
             if self.path != "/v1/chat/completions":
                 return self._json(404, {"error": "not found"})
+            state["auth"] = self.headers.get("Authorization")
+            if state.get("http_errors"):
+                code, body = state["http_errors"].pop(0)
+                return self._json(code, body)
+            if state.get("error_rate") and random.random() < state["error_rate"]:
+                return self._json(503, {"error": {"code": 503, "status": "UNAVAILABLE",
+                                                  "message": "This model is currently experiencing high demand."}})
             if state.get("fail"):
                 return self._json(404, {"error": {"message": "No models loaded. Please load a model."}})
             if state.get("reject_reasoning_effort") and "reasoning_effort" in req:
@@ -130,6 +141,9 @@ def make_handler(state):
             prompt = req["messages"][-1]["content"]
             reply = canned_reply(prompt, state.get("sloppy"))
             if req.get("stream"):
+                if state.get("streams"):
+                    with state.setdefault("_slots", threading.BoundedSemaphore(state["streams"])):
+                        return self._stream(req, reply)
                 return self._stream(req, reply)
             return self._json(200, {"id": "x", "model": req.get("model"), "choices": [{
                 "index": 0, "finish_reason": "stop",
@@ -152,7 +166,8 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=18080)
     ap.add_argument("--delay", type=float, default=0.04, help="seconds per streamed chunk (typing speed)")
     ap.add_argument("--inline-think", action="store_true")
+    ap.add_argument("--streams", type=int, default=0, help="generations at once (0 = no limit)")
     a = ap.parse_args()
-    httpd, _ = serve(a.port, {"delay": a.delay, "inline_think": a.inline_think})
+    httpd, _ = serve(a.port, {"delay": a.delay, "inline_think": a.inline_think, "streams": a.streams})
     print(f"fake LM Studio on http://127.0.0.1:{a.port}")
     threading.Event().wait()

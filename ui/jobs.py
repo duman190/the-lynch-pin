@@ -188,20 +188,21 @@ class AIStream:
 
 class AIJob:
     __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen", "stream",
-                 "warm")
+                 "warm", "backend")
 
-    def __init__(self, sym, entry, now):
+    def __init__(self, sym, entry, now, backend="local"):
         self.sym, self.entry = sym, entry
         self.status, self.result, self.error = "queued", None, None
         self.created, self.started, self.finished, self.gen = now, None, None, None
         self.stream = AIStream()
         self.warm = False  # started by the nightly pre-cache, not a visitor: left off the stats page
+        self.backend = backend  # "local" (LM Studio / Splash) or "gemini" (ui/inference_queue.py routed it there)
 
 
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
-                 backends_spec=None, allow_refresh=True, max_per_client=None, stats=None):
+                 backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -246,6 +247,19 @@ class JobManager:
         # ≤2 generate attempts (+connect), optional model autoload (≤300 s), probe + slack
         self.ai_deadline = 2 * (float(getattr(settings, "llm_timeout", 600)) + 3) + \
             (300 if getattr(settings, "llm_autoload", False) else 0) + 30
+        # Gemini offload (ui/gemini.py) above the local model's low watermark, admitted by the inference queue
+        # (ui/inference_queue.py). One worker per request a minute: a Gemini overview takes 2-45 s, so they never wait.
+        from ui.inference_queue import InferenceQueue
+        self.gemini = gemini
+        budget = getattr(gemini, "budget", None)
+        self.inference = InferenceQueue(getattr(settings, "llm_rpm", 4), budget=budget, clock=clock)
+        self._gemini_queue = collections.deque()
+        self.gemini_workers = 0 if gemini is None else max(1, int(budget.rpm if budget is not None
+                                                                  else getattr(settings, "gemini_rpm", 15)))
+        self.gemini_deadline = float(getattr(settings, "gemini_timeout", 120)) + 30  # one attempt (+connect) + slack
+        self._ai_pool = {}  # ai worker token → "local" | "gemini"
+        # Today's complete overviews by ticker: never generated twice a day, even after a ↻ Refresh or an eviction
+        self._ai_final, self._ai_final_day = {}, None
         self._stop = False
         self._threads = []
         if start:
@@ -254,6 +268,8 @@ class JobManager:
             if self.llm is not None:
                 for _ in range(self.ai_workers):
                     self._spawn_ai_worker()
+            for _ in range(self.gemini_workers):
+                self._spawn_ai_worker("gemini")
             wd = threading.Thread(target=self._watchdog, name="lynch-watchdog", daemon=True)
             wd.start()
             self._threads.append(wd)
@@ -342,9 +358,13 @@ class JobManager:
             return jpeg_preview(path, os.path.join(os.path.dirname(path), "previews"), 1100)
         return path
 
-    def request_ai(self, sym, refresh=False):
-        """AI overview snapshot for ``sym`` (needs today's quant result); enqueues generation."""
-        if self.llm is None:
+    def request_ai(self, sym, refresh=False, warm=False):
+        """AI overview snapshot for ``sym`` (needs today's quant result). A new overview is admitted by the
+        inference queue (ui/inference_queue.py): the local model, Gemini, or — above the high watermark, or with no model up — none
+        for now: ``status: unavailable`` with ``fallback: quick`` (the page shows the Quick overview and ↻ Retry AI)
+        and ``retry_after``. A complete overview is kept until the cache resets and never generated again that
+        day; a partial one can be retried (``refresh``). ``warm``: the nightly pre-cache (local model only)."""
+        if self.llm is None and self.gemini is None:
             return {"ticker": sym, "status": "unavailable", "error": "AI overview disabled"}
         with self._cv:
             job = self._ai_inflight.get(sym)
@@ -360,28 +380,51 @@ class JobManager:
             if entry.get("status") != "done" or not (entry.get("_ai_inputs") or {}).get("row"):
                 return {"ticker": sym, "status": "unavailable", "reason": "no_garp",
                         "error": "AI overview needs GARP valuation data"}
-            if not refresh and entry.get("ai"):
-                return dict(entry["ai"], ticker=sym, cached=True)
+            ai = entry.get("ai")
+            if ai is None:
+                ai = self._final_ai(sym)  # written today for an analysis since refreshed or evicted
+                if ai is not None:
+                    entry["ai"] = ai
+            if ai and (not refresh or ai.get("complete", True)):  # a complete overview is final for the day
+                return dict(ai, ticker=sym, cached=True)
             now = self._clock()
             for k in [k for k, j in self._recent_ai.items() if now - j.finished > self.recent_ttl]:
                 del self._recent_ai[k]
             if not refresh and sym in self._recent_ai:
                 return self._ai_snapshot(self._recent_ai[sym])
-        st = self.llm.status()  # network probe (cached 15 s) — outside the lock
-        if not st.get("available"):
-            return {"ticker": sym, "status": "unavailable", "reason": "offline",
-                    "error": st.get("reason") or "local model unavailable"}
+        # local model status: a network probe (cached 15 s) — outside the lock
+        st = self.llm.status() if self.llm is not None else {"available": False, "reason": "no local model"}
         with self._cv:
             job = self._ai_inflight.get(sym)
             if job is None:
-                if len(self._ai_queue) >= self.max_queue:
-                    return {"ticker": sym, "status": "busy", "retry_after": 15, "reason": "ai_queue_full",
-                            "error": "AI queue is full"}
-                job = AIJob(sym, entry, self._clock())
+                local_pending = len(self._ai_queue) + sum(j.backend == "local" for j in self._ai_running.values())
+                route, wait = self.inference.admit(sym, bool(st.get("available")), local_pending, warm=warm)
+                if route is None:
+                    return self._ai_paused(sym, st, wait)
+                job = AIJob(sym, entry, self._clock(), backend=route)
+                job.warm = warm
                 self._ai_inflight[sym] = job
-                self._ai_queue.append(job)
+                (self._ai_queue if route == "local" else self._gemini_queue).append(job)
                 self._cv.notify_all()
             return self._ai_snapshot(job)
+
+    def _ai_paused(self, sym, st, wait):
+        """Lock held: no AI for this request now → the page shows the Quick overview with ↻ Retry AI."""
+        out = {"ticker": sym, "status": "unavailable", "fallback": "quick", "retry_after": wait}
+        if not st.get("available") and self.gemini is None:
+            out.update(reason="offline", error=st.get("reason") or "local model unavailable")
+        else:
+            out.update(reason="busy", error="AI overviews are at capacity right now")
+        if self.stats is not None:
+            self.stats.ai_route(sym, "quick", out["reason"])
+        return out
+
+    def _final_ai(self, sym):
+        """Lock held: today's complete overview of ``sym``, or None."""
+        day = self._today()
+        if day != self._ai_final_day:
+            self._ai_final, self._ai_final_day = {}, day
+        return self._ai_final.get(sym)
 
     def warm(self, sym, ai=True, timeout=None):
         """Pre-cache ``sym`` (ui/precache.py): analyse it if today's cache doesn't hold it, then, when the AI
@@ -413,7 +456,7 @@ class JobManager:
             return outcome, None
         if entry.get("ai"):
             return outcome, "cached"
-        snap = self.request_ai(sym)
+        snap = self.request_ai(sym, warm=True)
         if snap.get("status") in ("unavailable", "error", "busy"):
             return outcome, snap.get("reason") or snap.get("status")
         with self._cv:
@@ -456,11 +499,14 @@ class JobManager:
         now = self._clock()
         pos = 0
         if job.status == "queued":
+            queue, workers = ((self._ai_queue, self.ai_workers) if job.backend == "local"
+                              else (self._gemini_queue, self.gemini_workers))
+            busy = sum(j.backend == job.backend for j in self._ai_running.values()) >= workers
             try:
-                pos = self._ai_queue.index(job) + 1 + (1 if len(self._ai_running) >= self.ai_workers else 0)
+                pos = queue.index(job) + 1 + (1 if busy else 0)
             except ValueError:
                 pos = None
-        out = {"ticker": job.sym, "status": job.status, "queue_position": pos, "cached": False,
+        out = {"ticker": job.sym, "status": job.status, "queue_position": pos, "cached": False, "backend": job.backend,
                "elapsed_s": round((job.finished or now) - (job.started or job.created), 1), "error": job.error}
         if job.result:
             out.update({k: v for k, v in job.result.items() if k not in ("status", "error")})
@@ -545,31 +591,36 @@ class JobManager:
                     last_out = clock()
         yield "error", {"ticker": job.sym, "status": "error", "error": "AI stream closed — reload to continue"}
 
-    def _spawn_ai_worker(self):
+    def _spawn_ai_worker(self, backend="local"):
         self._ai_token += 1
         token = self._ai_token
         self._ai_live.add(token)
-        t = threading.Thread(target=self._ai_worker, args=(token,), name=f"lynch-ai-{token}", daemon=True)
+        self._ai_pool[token] = backend
+        t = threading.Thread(target=self._ai_worker, args=(token, backend), name=f"lynch-ai-{backend}-{token}",
+                             daemon=True)
         t.start()
         self._threads.append(t)
 
-    def _ai_worker(self, token):
+    def _ai_worker(self, token, backend="local"):
         from ui.llm import LLMCancelled, LLMError, LLMUnavailable, ticker_narrative
+        queue, client = (self._ai_queue, self.llm) if backend == "local" else (self._gemini_queue, self.gemini)
+        attempts = 2 if backend == "local" else 1  # Gemini: one request per overview admitted against its quota
         while True:
             with self._cv:
-                while not self._ai_queue and not self._stop and token in self._ai_live:
+                while not queue and not self._stop and token in self._ai_live:
                     self._cv.wait(1.0)
                 if self._stop or token not in self._ai_live:
+                    self._ai_pool.pop(token, None)
                     return
-                job = self._ai_queue.popleft()
+                job = queue.popleft()
                 job.status, job.gen, job.started = "running", token, self._clock()
                 self._ai_running[token] = job
             def cancelled(job=job, token=token):
                 return self._stop or token not in self._ai_live or job.status != "running"
 
             try:
-                result = ticker_narrative(self.llm, job.entry, self.settings.benchmark, sink=job.stream,
-                                          cancelled=cancelled)
+                result = ticker_narrative(client, job.entry, self.settings.benchmark, sink=job.stream,
+                                          cancelled=cancelled, attempts=attempts)
             except LLMCancelled:
                 continue  # watchdog / shutdown already finalised the job
             except LLMUnavailable as e:
@@ -587,14 +638,23 @@ class JobManager:
                 job.result = result
                 if job.status == "done":
                     ai = {k: v for k, v in result.items() if k != "error"}
+                    ai["backend"] = backend
                     job.entry["ai"] = ai
-                    # Attach to the cached entry only if it is still the analysis the narrative was
-                    # written from (a quant ↻ Refresh meanwhile replaces the entry → it gets a fresh AI).
+                    # Attach to the cached entry only if it is still the analysis the narrative was written from;
+                    # a quant ↻ Refresh meanwhile replaces the entry, which then picks up a complete overview
+                    # from _ai_final on its next request (a partial one is generated afresh).
                     self.store.update(job.sym, lambda e: e.__setitem__("ai", ai) if e is job.entry else None)
+                    if ai.get("complete"):
+                        self._final_ai(job.sym)  # rolls the map over at midnight
+                        self._ai_final[job.sym] = ai
                 self._finish_ai(job)
             if self.stats is not None and not job.warm:
                 self.stats.ai(job.sym, job.status, result.get("metrics"), total_s=job.finished - job.started,
-                              wait_s=job.started - job.created, model=result.get("model_short") or result.get("model"))
+                              wait_s=job.started - job.created, model=result.get("model_short") or result.get("model"),
+                              backend=backend)
+                # where the visitor's overview came from; a failure (Gemini 503 / 429, LM Studio gone) leaves the page
+                # on the Quick overview
+                self.stats.ai_route(job.sym, backend if job.status == "done" else "quick", job.status)
 
     def _finish_ai(self, job):
         """Lock held: retire a finalised AI job and publish its final snapshot to stream readers."""
@@ -616,6 +676,11 @@ class JobManager:
             st["ai_queue"] = len(self._ai_queue)
             st["ai_running"] = ", ".join(sorted(j.sym for j in self._ai_running.values())) or None
             st["ai_workers"] = self.ai_workers
+            if self.gemini is not None:
+                st["gemini_queue"] = len(self._gemini_queue)
+                st["gemini_workers"] = self.gemini_workers
+        if self.llm is not None or self.gemini is not None:
+            st["inference"] = self.inference.status()
         return st
 
     def shutdown(self):
@@ -790,18 +855,23 @@ class JobManager:
                     if job.started is not None and self._clock() - job.started > self.deadline:
                         self._expire(job)
                 for aj in list(self._ai_running.values()):
-                    if aj.started is None or self._clock() - aj.started <= self.ai_deadline:
+                    limit = self.ai_deadline if aj.backend == "local" else self.gemini_deadline
+                    if aj.started is None or self._clock() - aj.started <= limit:
                         continue
-                    print(f"⏱️  {aj.sym}: AI overview exceeded {int(self.ai_deadline)}s — abandoning ai worker "
+                    print(f"⏱️  {aj.sym}: AI overview exceeded {int(limit)}s — abandoning {aj.backend} ai worker "
                           f"{aj.gen}, starting a fresh one")
                     aj.status, aj.finished = "error", self._clock()
-                    aj.error = "local model timed out; LM Studio may still be busy — retry in a minute"
+                    aj.error = ("local model timed out; LM Studio may still be busy — retry in a minute"
+                                if aj.backend == "local" else "Gemini timed out — retry in a minute")
                     self._ai_live.discard(aj.gen)
+                    self._ai_pool.pop(aj.gen, None)
                     self._finish_ai(aj)
                     if self.stats is not None:
                         self.stats.ai(aj.sym, "timeout", total_s=aj.finished - aj.started,
-                                      wait_s=aj.started - aj.created)
-                    self._spawn_ai_worker()
+                                      wait_s=aj.started - aj.created, backend=aj.backend)
+                        if not aj.warm:
+                            self.stats.ai_route(aj.sym, "quick", "timeout")
+                    self._spawn_ai_worker(aj.backend)
                 self._cv.wait(1.0)
 
     def _expire(self, job):

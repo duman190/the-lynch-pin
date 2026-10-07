@@ -11,6 +11,7 @@ python -m pytest ui/tests -q         # offline tests (fake engine + fake LM Stud
 python ui/tests/test_benchmark.py    # throughput benchmark: req/s and latency per endpoint (AI off)
 python ui/tests/cold_bench.py --base http://127.0.0.1:8765 --clients 24 --count 48   # cold lookups/min (real Yahoo)
 python ui/tests/cold_bench.py --base http://127.0.0.1:8790 --clients 24 --count 48 --visitors --home   # same, as --public visitors
+python ui/tests/inference_bench.py --llm-url http://HOST:8000 --llm-parallel 4 --minutes 1   # AI overviews: local + Gemini at 50/min
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
@@ -44,6 +45,7 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 - **Home button:** on a ticker page or a scan thread, the ⌂ Home pill in the top bar (or the logo) returns to the home page (search, Latest scans) without reloading; Back/Forward work as usual.
 - Ticker search at `?t=MSFT`, which you can bookmark and share. It shows valuation (PEG, Dev SD bell, 5Y Bull/Base/Bear ROI), the same chart `main.py` renders, the income grade, the credit rating, technicals and the 6M edge. Results stream in stage by stage.
 - An AI overview from a local LM Studio server that types in real time (Server-Sent Events), with live time to first token, tokens/s, token count and thinking tokens; a reasoning model's thinking streams into a collapsible box. The prompt is a static system message (the task) plus a terse, pre-computed data block for the ticker (company profile, analysts' target, the reverse-DCF math and the Quick Overview's red flags), answered in three 2-3 sentence sections (see *Local AI tuning*). Each ticker's overview is generated once and cached with its analysis for the day. When no model is loaded, the UI shows "AI offline" and keeps working.
+- **AI inference queue:** above the local model's share of AI overviews a minute, Gemini writes them; above Gemini's 15 a minute, the page shows the Quick overview with ↻ Retry AI (see *AI inference queue*).
 - **Quick Overview** with `--no-ai`: the AI overview's three sections built by fixed rules from the same data, no model involved (`ui/quick.py`). *Overview*: name, sector, HQ, employees, market cap, Yahoo's business summary, margins, dividend, analyst consensus and a valuation snapshot. *Reverse 5Y DCF*: "X% base ROI requires EPS to compound at Y%/yr for 5 years and a re-rating from Zx forward PE to a terminal ZZx" (the daily scan's Base ROI math), split into the EPS and multiple contributions, with how demanding those assumptions are. *Stomach test*: red flags from thresholds such as trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, PEG > 1 SD above its mean, base ROI < 9%, a losing bear case, shrinking revenue, an income grade below A (subpar; C/D are serious), a credit rating below A (balance-sheet risk; junk is serious), negative free cash flow, an uncovered dividend, a falling trend, high beta or short interest.
 - With `--no-ai` there is no **↻ Refresh**: a cached ticker stays cached until midnight (or eviction), so repeat lookups never spend Yahoo calls again. Uncacheable results (errors, a Yahoo 429, a missing PEG history) still re-run when searched again.
 - **Price levels** in the Technicals card, computed with the experimental trade assistant's toolkit (`experimental/quant_engine.py`): support and resistance from clustered pivots (6 months), the volume point of control (3 months), a 1-month expected range from realised volatility, and the 52-week range. Each level shows its chance of being touched within a month.
@@ -67,6 +69,7 @@ A range switch (24 h / 7 d / 30 d) scopes everything but *Visitors*; the page re
 - **Cache hit rate per day:** CDF over days of the share of each day's lookups answered from the daily cache, plus where all lookups were answered from (cache, new analysis, joined one in progress, a recent result).
 - **Most queried tickers:** the top 10 as a share of all ticker queries.
 - **Rejected requests:** by reason (client outside the LAN, foreign `Host`, invalid ticker, write method, analysis / AI queue full, one analysis per visitor) as a share of all requests, and per day. Yahoo's 429s are listed too, marked *upstream*: they are Yahoo refusing the portal's own calls (the circuit breaker pauses lookups), not requests to the portal.
+- **Where AI overviews came from:** a donut of visitors' new AI overviews: written by the local model, offloaded to Gemini, or neither (the page showed the Quick overview: at capacity, no model up, or the model failed, broken down beside the slice). Cached overviews are not counted (see *AI inference queue*).
 - **AI overview:** CDFs of time to first token, speed (tok/s) and total time per generated overview (cached overviews cost nothing and are not counted), with failures and the queue wait.
 - **Visitors:** daily active users (distinct source IPs per day) and monthly active users (distinct source IPs in the 30 days up to each day) over the last 12 months, plus today's DAU, MAU and DAU/MAU in the tiles. The 12-month window is fixed: the range switch stops at 30 days. A visitor is the source of a request the portal served (status below 400), so refused probes don't count. Behind a tunnel on this machine (cloudflared) that is the visitor's `CF-Connecting-IP`, trusted only from loopback, so a LAN device can't set it.
 
@@ -105,6 +108,10 @@ Measured cost:
 | `--llm-reasoning` | `LYNCH_LLM_REASONING` | `off` (sends `reasoning_effort: "none"`; `on` keeps the model's thinking) |
 | `--llm-autoload` | `LYNCH_LLM_AUTOLOAD=1` | off (asks LM Studio to load the model with `--llm-ctx`) |
 | `--llm-parallel` | `LYNCH_LLM_PARALLEL` | `1` AI overviews generated at once (see *Local AI tuning*) |
+| `--llm-rpm` | `LYNCH_LLM_RPM` | `24`: low watermark, AI overviews a minute the local model is given; 24 is Qwen3.6-35B-A3B on Splash with `--llm-parallel 4`, use `4` for the 27B (see *AI inference queue*) |
+| `--gemini-model` | `LYNCH_GEMINI_MODEL` | `gemini-flash-lite-latest`: offload above the low watermark, with `GEMINI_API_KEY` set |
+| `--gemini-rpm` / `--gemini-rpd` | `LYNCH_GEMINI_RPM` / `LYNCH_GEMINI_RPD` | `15` a minute (the free tier's limit per model) / `975` a Pacific day (room for the daily scans' backup tier) |
+| `--no-gemini` | `LYNCH_GEMINI=0` | Gemini offload on when `GEMINI_API_KEY` is set |
 | `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `500` |
 | | `LYNCH_UI_SCANS_DIR` / `LYNCH_UI_SCANS` | `scans/` / `7`: the scan archive and how many scans *Latest scans* shows |
 | | `LYNCH_UI_SOCIALS=0` / `LYNCH_UI_SOCIAL_ENV` | on / `venv/bin/activate`: turn the Latest on X read off / where the X tokens are read from |
@@ -124,6 +131,58 @@ Measured cost:
 | `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |
 
 The LLM context window is the smaller of `--llm-ctx` and the loaded model's real context (from LM Studio's `/api/v0/models`). To try the AI card without a model, run `python -m ui.tests.fake_lmstudio --port 18080` (streams a canned reply; `--delay` sets the typing speed) and start the server with `--llm-url http://127.0.0.1:18080`.
+
+## AI inference queue (local model + Gemini)
+
+Every new AI overview request (a ticker without one today) is admitted by `ui/inference_queue.py` against two watermarks on the last minute's AI requests:
+
+| Requests in the last minute | Who writes the overview |
+|---|---|
+| up to the **low watermark** (`--llm-rpm`, default 24) | the local model; at most that many waiting or being written at once, so a model slower than its setting never builds more than about a minute of backlog |
+| low … **high watermark** (= `--llm-rpm` + `--gemini-rpm`) | **Gemini** (`--gemini-model`, default `gemini-flash-lite-latest`) through its OpenAI-compatible API, streamed like the local model, at most 15 a minute and 975 a Pacific day (`ui/gemini.py`) |
+| above the high watermark | nobody for now: the page shows the rule-based **Quick overview** with **↻ Retry AI**, which counts down `retry_after` (when a slot frees up) |
+
+- **No model up:** a local model that doesn't answer its status probe counts as full, so its share goes to Gemini. Without Gemini (no `GEMINI_API_KEY`, or `--no-gemini`), the Quick overview.
+- **A failure** falls back to the Quick overview with ↻ Retry AI too: Gemini's 503 ("high demand") or 429, LM Studio gone, a timeout.
+- **One overview per ticker per day.** Visitors asking for a ticker that is being written join that generation. A complete overview is cached with the analysis and reused until the cache resets at midnight: ↻ Retry AI doesn't regenerate it, and neither does a quant ↻ Refresh or an LFU eviction. A partial reply (fewer than three sections) shows ↻ Retry AI, and a retry replaces it.
+- **The nightly pre-cache** only uses the local model and is never paused by the window (one ticker at a time); its requests still count toward the minute.
+- **Gemini's budget** (`<cache_dir>/gemini_budget.sqlite3`) counts every request sent, answered or not, per rolling minute and per Pacific day, across restarts. A 429 closes Gemini for the delay Google names (30 s when it names none; until midnight Pacific for the per-day quota). Measured on the free tier (2026-10-07): a burst of 25 got 429s naming `GenerateRequestsPerMinutePerProjectPerModel-FreeTier`, `quotaValue 15`, for gemini-3.5-flash-lite, the model `gemini-flash-lite-latest` points to. Google doesn't publish the per-day cap any more (it points to AI Studio); 975 leaves room for the daily scans' backup tier, which uses the same model.
+- **No reasoning switch for Gemini.** Flash-Lite doesn't think, and the API refuses any attempt to turn thinking off (400 for `reasoning_effort: "none"` and for `thinking_budget: 0`). A refused request still counts: sending it once cost one of the minute's 15 and the 15th request got a 429. `"minimal"` is accepted but turned a ~1 s first token into ~7 s.
+- `/api/health` shows the queue under `cache.inference`: watermarks, last minute's local and paused requests, Gemini's minute and day. The stats page charts where overviews came from (see *Stats page*).
+
+### Benchmark: 50 requests a minute (2026-10-07)
+
+`ui/tests/inference_bench.py` sends AI overview requests at a fixed rate through the portal's real `JobManager`:
+- **Prompts.** Every request is a different ticker, and no ticker is used twice in a day across runs.
+  - The tickers come from `database/*.txt`, analysed once a day from live Yahoo data with FMP off.
+  - A prompt the server has seen before comes almost entirely from Splash's prefix cache (~610 of ~630 tokens instead of the 256-token system prompt), which made the local model's TTFT look about 2× better than it is.
+- **Warm-up.** Two spare tickers first load the weights and prime the shared system prompt.
+- **Timing.** Time to first token is measured from the request, so it includes the queue wait. Total time runs from the request to the finished overview.
+- **Output.** The results are written to `tmp/`, with CDF charts; `--compare` draws several runs on one chart.
+
+Setup: Qwen3.6-35B-A3B on standalone Splash (M3 Pro 36 GB, `--llm-parallel 4` = the batch width, 32K context) and Gemini Flash-Lite at 15 a minute. Each run sent 50 requests in 1 minute; every local request had exactly the 256-token system prompt cached.
+
+| Low watermark | Local | Gemini | Quick overview | Got AI | AI started by 1:00 | Local TTFT p50 / p90 | Local total p50 / p100 |
+|---|---|---|---|---|---|---|---|
+| 12/min | 12 | 15 | 23 | **27 (54%)** | 27 (all done) | 8.4 / 18.3 s | 19.7 / 31.0 s |
+| 16/min | 16 | 15 | 19 | **31 (62%)** | 31 (all done) | 13.2 / 28.0 s | 27.5 / 37.8 s |
+| 20/min | 20 | 15 | 15 | **35 (70%)** | 33 (30 done, 3 typing) | 19.5 / 37.4 s | 29.9 / 49.7 s |
+| 24/min | 24 | 15 | 11 | **39 (78%)** | 32 (30 done, 2 typing) | 20.9 / 48.2 s | 34.6 / 61.4 s |
+
+Gemini over the 60 requests of the four runs: TTFT p50 0.70 s, p90 0.89 s; total p50 1.60 s, p100 3.47 s; no failures.
+
+**Reading the table:**
+- No AI request failed in any of the four runs.
+- The local model kept pace up to 24 a minute: every overview it took finished within 61 s.
+- 24 is the default: it turns the most requests into AI overviews (78% at 50 a minute) while the slowest local overview still finishes in about a minute.
+- Past that, the local queue (wait p50 19.5 s at 24/min) would grow by the minute.
+- For a first token within ~20 s at p90, use 12.
+
+**Quality** (the same 4 tickers on both models, NVDA / KO / INTC / PLTR): both models had three sections every time, copied the reverse-DCF numbers (4/4) and verdict, copied the analyst-target sentence (the local model once lowercased it mid-sentence), and used no number that wasn't in the data.
+- **Gemini** reads more fluently and cites more of the data.
+- **The local A3B** reasons more but slips more: "losing money at -4.4% annually due to its high Beta" (INTC), "realistic because historical mean PEG is 4.43, meaning the stock is already cheap" (KO).
+- **Gemini's slips:** a generic KO reverse DCF, and "burning through its $4.9B in FCF" for a positive FCF.
+- **Verdict:** offloading to Gemini doesn't lower the overview's quality.
 
 ## Local AI tuning
 

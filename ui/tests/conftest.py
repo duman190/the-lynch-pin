@@ -17,8 +17,8 @@ import pytest  # noqa: E402
 def _clean_env(monkeypatch):
     """A developer's shell (LYNCH_UI_LAN=1, a custom LLM URL...) must not change test results."""
     for k in list(os.environ):
-        if k.startswith(("LYNCH_UI_", "LYNCH_LLM_")) or k == "FMP_API_KEY":
-            monkeypatch.delenv(k, raising=False)
+        if k.startswith(("LYNCH_UI_", "LYNCH_LLM_", "LYNCH_GEMINI")) or k in ("FMP_API_KEY", "GEMINI_API_KEY"):
+            monkeypatch.delenv(k, raising=False)  # never call the real Gemini from a test
     # never read the real posting tokens or call X / Threads from a test (test_socials.py uses fakes)
     monkeypatch.setenv("LYNCH_UI_SOCIALS", "0")
 

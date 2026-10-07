@@ -291,8 +291,9 @@
     put(card, ...parts);
   }
 
-  /* ── Quick overview (AI off): the AI card's three sections, built by fixed rules ── */
-  function renderQuick(d) {
+  /* ── Quick overview (AI off, or no AI for this ticker right now): the AI card's three sections, built by
+     fixed rules. ``notice``: why the AI overview isn't here, with ↻ Retry AI ── */
+  function renderQuick(d, notice = null) {
     const card = $("#card-quick");
     if (!card) return;
     const q = d.quick;
@@ -303,6 +304,7 @@
     put(card,
       el("div", { class: "card-title-row" }, el("h2", { text: "⚡ Quick overview" }),
         el("span", { class: "chip", title: "Computed from the numbers above by fixed rules; no AI model", text: "rule-based" })),
+      notice,
       sec("ai-overview", "Overview", el("p", { class: "ai-text", text: q.overview })),
       q.reverse_dcf ? sec("ai-dcf", "📊 Reverse 5Y DCF",
         el("p", { class: "ai-text", text: q.reverse_dcf }),
@@ -352,7 +354,7 @@
     const dd = {};
     const metrics = el("dl", { class: "ai-metrics", "aria-label": "Generation metrics" },
       AI_METRICS.map(([k, lab]) => el("div", { class: `aim aim-${k}` }, el("dt", { text: lab }), (dd[k] = el("dd", { text: "—" })))));
-    const status = el("p", { class: "ai-status", role: "status", "aria-live": "polite" }, "Starting the local model…");
+    const status = el("p", { class: "ai-status", role: "status", "aria-live": "polite" }, "Starting the AI model…");
     const rText = document.createTextNode("");
     const rPre = el("pre", { class: "ai-reasoning" }, rText);
     const rSum = el("summary", { text: "🧠 Model reasoning" });
@@ -365,8 +367,8 @@
       return sec;
     });
     let head = aiHead(null);
-    put(card, head, metrics, status, rBox, secEls,
-      el("p", { class: "muted small", text: "AI-generated from the quant data above. Not financial advice." }));
+    const foot = el("p", { class: "muted small", text: "AI-generated from the quant data above. Not financial advice." });
+    put(card, head, metrics, status, rBox, secEls, foot);
     card.setAttribute("aria-busy", "true");
     const cur = {};
     let lastStatus = "";
@@ -394,7 +396,7 @@
       status(msg) { if (msg && msg !== lastStatus) { lastStatus = msg; status.textContent = msg; } },
       phase(ph, queuePos, note) {
         const msgs = {
-          queued: `Waiting for the local model — position ${queuePos || 1}…`,
+          queued: `Waiting for the AI model — position ${queuePos || 1}…`,
           connecting: note ? `${note[0].toUpperCase()}${note.slice(1)}…` : "Processing the prompt…",
           thinking: "🧠 Thinking…",
           writing: "✍️ Writing…",
@@ -429,7 +431,41 @@
         for (const { p } of Object.values(secs)) p.classList.remove("typing");
         card.setAttribute("aria-busy", "false");
       },
+      addRetry(node) { foot.before(node); },
     };
+  }
+
+  /** ↻ Retry AI; disabled with a countdown while the server says no slot is free (``retry_after`` s). */
+  function retryButton(wait) {
+    const token = S.token;
+    const btn = el("button", { type: "button", class: "btn-ghost", onclick: () => startAI(S.sym, true) }, "↻ Retry AI");
+    let left = isNum(wait) ? Math.ceil(wait) : 0;
+    if (left > 0) {
+      btn.disabled = true;
+      const tick = () => {
+        if (token !== S.token) return;
+        btn.textContent = left > 0 ? `↻ Retry AI (${left}s)` : "↻ Retry AI";
+        if (left <= 0) { btn.disabled = false; return; }
+        left -= 1;
+        setTimeout(tick, 1000);
+      };
+      tick();
+    }
+    return btn;
+  }
+
+  /** No AI overview for now — at capacity, no model up, or the model failed: the rule-based Quick overview takes
+   *  the AI card's place, with ↻ Retry AI. */
+  function aiFallback(ai) {
+    const d = (S.lastSnap && S.lastSnap.data) || {};
+    if (!d.quick) { renderAIError(ai); return; }
+    const aiCard = $("#card-ai");
+    if (aiCard) { aiCard.hidden = true; aiCard.setAttribute("aria-busy", "false"); }
+    const why = ai.reason === "busy" ? "AI overviews are at capacity right now"
+      : ai.reason === "offline" ? "The AI model is offline"
+      : `The AI overview didn't come through${ai.error ? ` (${ai.error})` : ""}`;
+    renderQuick(d, el("div", { class: "hint-box ai-fallback" },
+      el("span", { text: `🤖 ${why}, so here is the rule-based Quick overview. ` }), retryButton(ai.retry_after)));
   }
 
   function renderAIError(ai) {
@@ -450,7 +486,8 @@
   function finishAI(ai, V) {
     stopAI();
     if (ai.status !== "done") {
-      renderAIError(ai);
+      if (ai.need_quant || ai.reason === "no_garp") renderAIError(ai);
+      else aiFallback(ai);
       setAIStep(ai.status === "unavailable" ? "skipped" : "error");
       loadDeepDive(S.sym, S.token);
       return;
@@ -463,6 +500,10 @@
     V.status([isNum(took) ? `Done in ${took.toFixed(1)}s` : "Done", ai.cached ? "⚡ from today's cache" : null,
       ai.complete === false ? "partial reply" : null].filter(Boolean).join(" · "));
     V.finish();
+    if (ai.complete === false) {  // a partial reply may be retried; a complete one is final until the cache resets
+      V.addRetry(el("p", { class: "ai-retry" }, retryButton(0),
+        el("span", { class: "muted small", text: " Only part of the overview came back." })));
+    }
     setAIStep("done");
     loadDeepDive(S.sym, S.token);
     if (typeof refreshHealth === "function") refreshHealth();
@@ -533,6 +574,9 @@
     if (!S.app.health || !S.app.health.features.ai) return;
     stopAI();
     const token = S.token;
+    const quick = $("#card-quick"), aiCard = $("#card-ai");
+    if (quick) quick.hidden = true;  // a retry after the Quick overview stood in for the AI card
+    if (aiCard) aiCard.hidden = false;
     setAIStep("running");
     const V = aiLiveView();
     let snap;

@@ -96,7 +96,11 @@
     <section class="st-section" aria-labelledby="h-ai">
       <h2 id="h-ai">AI overview</h2>
       <p class="muted small st-ai-sub" id="ai-sub"></p>
-      <div class="st-grid st-grid-3">
+      <div class="st-grid">
+        <article class="panel st-card" id="c-ai-routes">
+          <header><h3>Where AI overviews came from</h3><p class="muted small">Each visitor's new overview: written by the local model, offloaded to Gemini above the local model's share, or neither (at capacity, or no model answered) and the page showed the rule-based Quick overview. Cached overviews are not counted</p></header>
+          <div class="st-pie"></div>
+        </article>
         <article class="panel st-card" id="c-ttft">
           <header><h3>Time to first token</h3><p class="muted small">CDF per generated overview</p></header>
           <div class="st-chart"></div>

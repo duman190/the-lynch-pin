@@ -402,6 +402,9 @@ a.x-tag:hover { text-decoration: underline; }
 .aim-ttft dd { color: var(--sky); }
 .aim-speed dd { color: var(--green); }
 .ai-status { margin: 0 0 10px; color: var(--muted); font: .9rem var(--mono); }
+.ai-fallback { margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ai-retry { margin: 4px 0 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.btn-ghost:disabled { opacity: .55; cursor: default; }
 .ai-think { margin: 0 0 10px; border: 1px dashed var(--border); border-radius: 10px; background: #121212; }
 .ai-think summary { cursor: pointer; padding: 8px 12px; color: var(--muted); font: 700 .8rem var(--mono); }
 .ai-reasoning { margin: 0; padding: 0 12px 10px; max-height: 220px; overflow: auto; white-space: pre-wrap;

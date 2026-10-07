@@ -605,7 +605,7 @@ def test_jit_warning_when_not_loaded(settings, lm):
     assert st["available"] and st["ctx_loaded"] is None and "JIT" in st["warning"]
 
 
-def test_refresh_during_ai_does_not_attach_stale_narrative(settings, lm):
+def test_refresh_during_ai_keeps_the_finished_overview_for_the_day(settings, lm):
     gate = threading.Event()
     entered = threading.Event()
 
@@ -627,8 +627,13 @@ def test_refresh_during_ai_does_not_attach_stale_narrative(settings, lm):
     wait(lambda: store.peek("MSFT"), lambda e: e is not old_entry)
     gate.set()
     wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "done")
-    assert "ai" not in store.peek("MSFT")  # fresh analysis → fresh AI on next request
     assert old_entry["ai"]["status"] == "done"
+    # a complete overview is final until the cache resets: the refreshed analysis gets it on its next request
+    # (here the poll above), and not even ↻ Retry generates a second one
+    assert store.peek("MSFT")["ai"] is old_entry["ai"]
+    n = len(lm[1]["requests"])
+    jm._recent_ai.clear()
+    assert jm.request_ai("MSFT", refresh=True)["cached"] is True and len(lm[1]["requests"]) == n
     jm.shutdown()
 
 

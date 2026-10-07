@@ -1,5 +1,5 @@
-"""Portal stats: traffic, ticker-query latency, rejections, caching, popular tickers, AI-overview speed and
-daily / monthly active users.
+"""Portal stats: traffic, ticker-query latency, rejections, caching, popular tickers, AI-overview speed, where
+the AI overviews came from (local model, Gemini, or the Quick overview) and daily / monthly active users.
 
     python -m ui.server --lan        # portal on :8765, stats on http://<lan-ip>:190
     python -m ui.server --public     # portal on 127.0.0.1:8765 for the tunnel, stats on http://<lan-ip>:190
@@ -74,6 +74,8 @@ CREATE INDEX IF NOT EXISTS queries_ts ON queries (ts);
 CREATE TABLE IF NOT EXISTS ai (ts REAL NOT NULL, ticker TEXT NOT NULL, status TEXT NOT NULL, ttft_s REAL,
                                tok_s REAL, total_s REAL, wait_s REAL, tokens INTEGER, model TEXT);
 CREATE INDEX IF NOT EXISTS ai_ts ON ai (ts);
+CREATE TABLE IF NOT EXISTS ai_routes (ts REAL NOT NULL, ticker TEXT NOT NULL, route TEXT NOT NULL, reason TEXT);
+CREATE INDEX IF NOT EXISTS ai_routes_ts ON ai_routes (ts);
 CREATE TABLE IF NOT EXISTS visitors (day TEXT NOT NULL, visitor TEXT NOT NULL, PRIMARY KEY (day, visitor)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
@@ -121,6 +123,8 @@ class StatsRecorder:
         self._db = self._connect()  # the writer's connection: used by the flusher (or close()) only
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        if "backend" not in {r[1] for r in self._db.execute("PRAGMA table_info(ai)")}:  # databases before Gemini
+            self._db.execute("ALTER TABLE ai ADD COLUMN backend TEXT")
         row = self._db.execute("SELECT v FROM meta WHERE k = 'visitor_key'").fetchone()
         if row is None:
             row = (secrets.token_hex(32),)
@@ -174,11 +178,16 @@ class StatsRecorder:
         self._rows.append(("queries", (self._clock() if ts is None else ts, ticker, source, status,
                                        max(0.0, float(latency_s)))))
 
-    def ai(self, ticker, status, metrics=None, total_s=None, wait_s=None, model=None, ts=None):
-        """An AI overview finished (generated, not served from the cache)."""
+    def ai(self, ticker, status, metrics=None, total_s=None, wait_s=None, model=None, ts=None, backend=None):
+        """An AI overview finished (generated, not served from the cache); ``backend``: "local" or "gemini"."""
         m = metrics or {}
         self._rows.append(("ai", (self._clock() if ts is None else ts, ticker, status, m.get("ttft_s"),
-                                  m.get("tok_s"), total_s, wait_s, m.get("tokens"), model)))
+                                  m.get("tok_s"), total_s, wait_s, m.get("tokens"), model, backend)))
+
+    def ai_route(self, ticker, route, reason=None, ts=None):
+        """Where a visitor's new AI overview came from: "local", "gemini", or "quick" (the inference queue was over
+        its high watermark, no model was up, or the model failed — the page showed the Quick overview)."""
+        self._rows.append(("ai_routes", (self._clock() if ts is None else ts, ticker, route, reason)))
 
     # ── writer ───────────────────────────────────────────────────────────────
     def _flusher(self):
@@ -194,6 +203,7 @@ class StatsRecorder:
         now = self._clock()
         upto = math.inf if final else int(now // 60) - GRACE_MINUTES
         batch = self._pending or {"minutes": [], "rejections": [], "queries": [], "ai": [], "visitors": []}
+        batch.setdefault("ai_routes", [])
         batch["minutes"] += _harvest(self._requests, upto)
         batch["rejections"] += [(m, r, n) for (m, r), n in _harvest(self._rejected, upto)]
         for _ in range(len(self._rows)):  # popleft is atomic; rows appended meanwhile wait for the next flush
@@ -210,7 +220,9 @@ class StatsRecorder:
                 db.executemany("INSERT INTO rejections VALUES (?, ?, ?) ON CONFLICT (minute, reason) "
                                "DO UPDATE SET n = n + excluded.n", batch["rejections"])
                 db.executemany("INSERT INTO queries VALUES (?, ?, ?, ?, ?)", batch["queries"])
-                db.executemany("INSERT INTO ai VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", batch["ai"])
+                db.executemany("INSERT INTO ai (ts, ticker, status, ttft_s, tok_s, total_s, wait_s, tokens, model, "
+                               "backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", batch["ai"])
+                db.executemany("INSERT INTO ai_routes VALUES (?, ?, ?, ?)", batch["ai_routes"])
                 db.executemany("INSERT OR IGNORE INTO visitors VALUES (?, ?)", batch["visitors"])
         except sqlite3.Error:
             self._pending = batch  # rolled back: retried with the next flush
@@ -229,6 +241,7 @@ class StatsRecorder:
             db.execute("DELETE FROM rejections WHERE minute < ?", (int(cutoff // 60),))
             db.execute("DELETE FROM queries WHERE ts < ?", (cutoff,))
             db.execute("DELETE FROM ai WHERE ts < ?", (cutoff,))
+            db.execute("DELETE FROM ai_routes WHERE ts < ?", (cutoff,))
         self._pruned_at = now
 
     def close(self):
@@ -369,6 +382,13 @@ def summarize(db, since, now, days, retention_days=RETENTION_DAYS):
                  "models": [m for m, _ in models.most_common(3)],
                  "ttft": cdf([r[1] for r in done]), "speed": cdf([r[2] for r in done]),
                  "total": cdf([r[3] for r in done]), "wait": cdf([r[4] for r in done])}
+    # Where visitors' new AI overviews came from (cached ones are not counted)
+    routes = collections.Counter(r for (r,) in db.execute("SELECT route FROM ai_routes WHERE ts >= ?", (since,)))
+    reasons = collections.Counter(r for (r,) in db.execute(
+        "SELECT reason FROM ai_routes WHERE ts >= ? AND route = 'quick'", (since,)))
+    out["ai_routes"] = {"local": routes.get("local", 0), "gemini": routes.get("gemini", 0),
+                        "quick": routes.get("quick", 0), "total": sum(routes.values()),
+                        "quick_reasons": dict(reasons.most_common())}
     return out
 
 

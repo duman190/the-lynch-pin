@@ -188,6 +188,8 @@ def _short(model_id):
 
 
 class LocalLLMClient:
+    NAME = "LM Studio"  # in error messages (ui/gemini.py reuses this client for Gemini's OpenAI-compatible API)
+    SEND_REASONING_SWITCH = True  # reasoning "off" sends reasoning_effort=none
     STATUS_TTL = 15.0
     PRIME_EVERY = 60.0  # seconds between system-prompt primes (see _prime)
 
@@ -353,10 +355,10 @@ class LocalLLMClient:
         payload = {"model": model, "messages": messages,
                    "temperature": 0.6, "max_tokens": budget,
                    "stream": True, "stream_options": {"include_usage": True}}
-        if self.reasoning_mode() == "off":
+        if self.SEND_REASONING_SWITCH and self.reasoning_mode() == "off":
             payload["reasoning_effort"] = "none"  # "a switch, not a dial": none turns thinking off
         r = self._post_chat(payload)
-        if r.status_code in (400, 422) and "reasoning_effort" in payload and "reasoning" in r.text[:400].lower():
+        if "reasoning_effort" in payload and self._rejects_reasoning(r):
             r.close()  # this server does not know the switch: remember and go without it
             self._reasoning_field_ok = False
             print(f"ℹ️  {self.base} rejected reasoning_effort — generating with the model's default reasoning")
@@ -364,14 +366,10 @@ class LocalLLMClient:
             r = self._post_chat(payload)
         try:
             if r.status_code != 200:
-                body_text = r.text[:400]
-                if r.status_code in (400, 404) and any(k in body_text.lower() for k in _NOT_LOADED):
-                    self._mark(False, f"model '{model}' is not loaded in LM Studio")
-                    raise LLMUnavailable(f"model '{model}' is not loaded in LM Studio")
-                raise LLMError(f"LM Studio HTTP {r.status_code}: {body_text}")
-            content, finish, usage, served = self._consume(r, meter, on_delta, cancelled, on_rewind)
+                self._http_error(r.status_code, r.text[:400], model)
+            content, finish, usage, served = self._consume(r, meter, on_delta, cancelled, on_rewind, self.NAME)
         except requests.RequestException as e:  # connection dropped / read timeout mid-stream
-            raise LLMError(f"stream from LM Studio interrupted ({type(e).__name__})") from e
+            raise LLMError(f"stream from {self.NAME} interrupted ({type(e).__name__})") from e
         finally:
             r.close()
         meter.finish(usage)
@@ -388,6 +386,17 @@ class LocalLLMClient:
                 "ctx": ctx, "usage": usage or {}, "metrics": meter.metrics(),
                 "elapsed_s": meter.metrics()["elapsed_s"]}
         return content.strip(), meta
+
+    def _rejects_reasoning(self, r):
+        """The server refused the request because of ``reasoning_effort``."""
+        return r.status_code in (400, 422) and "reasoning" in r.text[:400].lower()
+
+    def _http_error(self, status, body_text, model):
+        """Raises for a non-200 chat completion: LLMUnavailable when no model can answer, else LLMError."""
+        if status in (400, 404) and any(k in body_text.lower() for k in _NOT_LOADED):
+            self._mark(False, f"model '{model}' is not loaded in LM Studio")
+            raise LLMUnavailable(f"model '{model}' is not loaded in LM Studio")
+        raise LLMError(f"LM Studio HTTP {status}: {body_text}")
 
     def _prime(self, model, system):
         """Sends the system prompt alone (empty user message, one token) once per prompt, and again after the
@@ -420,7 +429,7 @@ class LocalLLMClient:
             raise LLMError(f"local model timed out after {self.settings.llm_timeout}s") from e
 
     @staticmethod
-    def _consume(r, meter, on_delta, cancelled, on_rewind=None):
+    def _consume(r, meter, on_delta, cancelled, on_rewind=None, name="LM Studio"):
         """Reads an SSE (or, if the server ignored ``stream``, a plain JSON) chat completion."""
         splitter = ThinkSplitter()
         parts, finish, usage, served = [], None, None, None
@@ -474,7 +483,7 @@ class LocalLLMClient:
                 continue
             if chunk.get("error"):
                 err = chunk["error"]
-                raise LLMError(f"LM Studio error: {err.get('message', err) if isinstance(err, dict) else err}")
+                raise LLMError(f"{name} error: {err.get('message', err) if isinstance(err, dict) else err}")
             served = served or chunk.get("model")
             if chunk.get("usage"):
                 usage = chunk["usage"]
@@ -707,17 +716,20 @@ class NullSink:
         pass
 
 
-def ticker_narrative(client, data, benchmark="SPY", sink=None, cancelled=None):
+def ticker_narrative(client, data, benchmark="SPY", sink=None, cancelled=None, attempts=2):
     """Streams the AI overview for one analysed ticker. Returns a result dict (status done | error).
-    ``benchmark`` is unused (the 6M edge in ``data`` already names it); kept for callers."""
+    ``attempts``: 2 retries an unusable or token-starved reply once; 1 for a rate-limited backend (Gemini), where
+    every request was admitted against its quota. ``benchmark`` is unused (the 6M edge in ``data`` already names
+    it); kept for callers."""
     row = (data.get("_ai_inputs") or {}).get("row")
     if not row:
         return {"status": "error", "error": "AI overview needs GARP data (no valuation row)"}
     prompt = build_portal_messages(data)
     sym = data.get("ticker") or str(row["Ticker"]).replace("*", "")
     sink = sink or NullSink()
-    best, best_score, best_meta, meta, attempts, max_tokens = None, -1, {}, {}, 0, None
-    for attempt in range(2):  # one retry, only for an unusable or token-starved reply
+    max_attempts, attempts = attempts, 0
+    best, best_score, best_meta, meta, max_tokens = None, -1, {}, {}, None
+    for attempt in range(max_attempts):  # by default one retry, only for an unusable or token-starved reply
         attempts += 1
         loading = getattr(client, "autoload_pending", lambda: False)()
         sink.begin(attempts, note="first reply was unusable — retrying" if attempt else
@@ -741,7 +753,7 @@ def ticker_narrative(client, data, benchmark="SPY", sink=None, cancelled=None):
             max_tokens = meta["max_tokens"] * 2  # reasoning ate the budget — give it room once
         elif score > 0:
             break  # usable, just not all three sections: don't make the user watch it type again
-        print(f"⚠️  local AI reply for {sym}: {score}/3 sections — attempt {attempt + 1}/2")
+        print(f"⚠️  AI reply for {sym}: {score}/3 sections — attempt {attempt + 1}/{max_attempts}")
     if best is None or best_score <= 0:
         reason = "model ran out of tokens — raise --llm-max-tokens or disable thinking" \
             if meta.get("finish_reason") == "length" else "model returned an empty reply"
