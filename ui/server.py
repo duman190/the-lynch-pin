@@ -123,13 +123,22 @@ class PortalApp:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
         if self.jobs is not None:
             out["cache"] = self.jobs.cache_stats()
+            if self.settings.enrich_enabled:
+                out["enrich"] = self._fmp_budget().status()  # FMP requests in the last 24 h vs the cap
         return self._public_health(out) if self.public else out
+
+    def _fmp_budget(self):
+        if getattr(self, "_fmp", None) is None:
+            from ui.fmp_budget import FmpBudget
+            self._fmp = FmpBudget(self.settings.fmp_budget_path, self.settings.fmp_limit)
+        return self._fmp
 
     @staticmethod
     def _public_health(out):
         """What the page needs, minus what visitors have no business seeing: other visitors' tickers
         (cache top / running), this machine's LAN setting and the local model's address."""
         out.pop("lan", None)
+        out.pop("enrich", None)  # this machine's FMP quota
         cache = out.get("cache")
         if cache:
             for k in ("top", "running", "ai_running"):
@@ -593,6 +602,9 @@ def parse_args(argv=None):
     p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 500)")
     p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
+    p.add_argument("--fmp-limit", type=int, default=s.fmp_limit, metavar="N",
+                   help="FMP requests the portal may make in any rolling 24 h (default 225: the free plan's 250 a "
+                        "day minus 25 for the daily scans); past it lookups are not enriched")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
     p.add_argument("-v", "--verbose", action="store_true", default=s.verbose,
@@ -620,6 +632,7 @@ def parse_args(argv=None):
     s.llm_parallel = max(1, a.llm_parallel)
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     s.enrich = a.enrich
+    s.fmp_limit = max(0, a.fmp_limit)
     s.workers = max(0, a.workers)
     s.public = a.public
     s.verbose = a.verbose
@@ -692,7 +705,7 @@ def main(argv=None):
     if nets or hosts:
         print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)
     if app.jobs is not None:
-        print(f"📈 Growth enrichment: {'on' if settings.enrich_enabled else 'off'}", flush=True)
+        print(f"📈 Growth enrichment: {'on, up to ' + str(settings.fmp_limit) + ' FMP requests per 24 h' if settings.enrich_enabled else 'off'}", flush=True)
         print(f"📈 Analysis workers: {app.jobs.workers}"
               f"{' (one process each)' if app.jobs.processes else ''}", flush=True)
         free = available_mb()

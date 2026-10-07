@@ -96,6 +96,8 @@ class Settings:
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
     # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
+    # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; the daily scans need up to 25)
+    fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 225))
     # Tickers cached per day. An entry is ~21 KB of RAM plus ~560 KB of chart files on disk (swept at
     # midnight), so 500 costs ~10 MB RAM / ~280 MB disk. FMP is only called on a miss (free plan: 250
     # calls/day), so a bigger cache never adds FMP calls; it saves Yahoo calls (~12 per cold lookup).
@@ -144,3 +146,8 @@ class Settings:
     @property
     def stats_path(self):
         return os.path.join(self.cache_dir, "stats.sqlite3")
+
+    @property
+    def fmp_budget_path(self):
+        """FMP requests made for enrichment in the last 24 h, shared by the analysis processes (ui/fmp_budget.py)."""
+        return os.path.join(self.cache_dir, "fmp_budget.sqlite3")

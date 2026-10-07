@@ -16,6 +16,11 @@ _SESSION = Session(impersonate="chrome", timeout=15, verify=True)
 
 FMP_KEY = os.environ.get("FMP_API_KEY")
 
+# Optional quota gate: called with the symbol before every FMP request (a retry included); a falsy answer
+# skips the request. None (main.py) = no gate. The web portal installs one that caps its own requests so the
+# daily scans keep their share of the FMP plan (ui/fmp_budget.py).
+FMP_GATE = None
+
 
 def _yahoo_5y_growth(info, fwd_pe):
     """Yahoo PEG-derived 5Y analyst consensus growth."""
@@ -33,6 +38,8 @@ def _fmp_5y_growth(symbol):
     if not FMP_KEY:
         return None
     for attempt in range(2):
+        if FMP_GATE is not None and not FMP_GATE(symbol):
+            return None  # over the caller's quota: no request, so FMP counts nothing
         try:
             url = (f"https://financialmodelingprep.com/stable/analyst-estimates"
                    f"?symbol={symbol}&period=annual&apikey={FMP_KEY}")

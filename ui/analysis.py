@@ -56,6 +56,9 @@ class TickerAnalyzer:
         if self._backends is None:
             self._backends = _default_backends()
             yahoo.install((self.settings.benchmark,))  # dedupe history downloads, count Yahoo 429s
+            if self.settings.enrich_enabled:  # FMP requests capped per rolling 24 h (the daily scans keep the rest)
+                from ui import fmp_budget
+                fmp_budget.install(fmp_budget.FmpBudget(self.settings.fmp_budget_path, self.settings.fmp_limit))
         return self._backends
 
     def plot_dir(self, day=None):
