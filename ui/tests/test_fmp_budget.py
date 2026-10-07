@@ -85,18 +85,21 @@ def fmp(monkeypatch):
 ESTIMATES = [{"date": f"{y}-12-31", "epsAvg": 2.0 * 1.15 ** (y - 2025)} for y in range(2025, 2031)]
 
 
-def test_only_answered_requests_count(tmp_path, fmp):
+def test_every_answered_request_counts(tmp_path, fmp):
+    """FMP counts what it answers, errors included (dashboard, 2026-10-07: 1 data + 6 HTTP 402 answers = +7)."""
     ge, calls, replies = fmp
-    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=2, clock=Clock())
+    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=8, clock=Clock())
     ge.FMP_GATE = b.acquire
     replies[:] = [FakeResp(data=ESTIMATES)]
-    assert round(ge._fmp_5y_growth("NVDA")) == 15 and b.status()["used"] == 1   # answered with data: counts
-    for reply in (FakeResp(data=[]), FakeResp(403, {"Error Message": "Invalid API KEY"}),
-                  FakeResp(200, {"Error Message": "Limit Reach"}), FakeResp(500, None)):
+    assert round(ge._fmp_5y_growth("NVDA")) == 15 and b.status()["used"] == 1   # data
+    for i, reply in enumerate((FakeResp(402, {"Error Message": "Premium Query Parameter"}), FakeResp(data=[]),
+                               FakeResp(200, {"Error Message": "Limit Reach"}), FakeResp(500, None)), start=2):
         replies[:] = [reply]
-        assert ge._fmp_5y_growth("XYZ") is None and b.status()["used"] == 1     # failed calls: handed back
+        assert ge._fmp_5y_growth("XYZ") is None and b.status()["used"] == i     # "Not enriched", still counted
     replies[:] = [FakeResp(429), FakeResp(data=ESTIMATES)]
-    assert round(ge._fmp_5y_growth("AMD")) == 15 and b.status()["used"] == 2    # the 429 doesn't count, the retry does
+    assert round(ge._fmp_5y_growth("AMD")) == 15 and b.status()["used"] == 7    # the 429 and its retry: two
+    replies[:] = [FakeResp(data=ESTIMATES)]
+    assert ge._fmp_5y_growth("MSFT") and b.status()["used"] == 8
     n = len(calls)
     assert ge._fmp_5y_growth("TSM") is None and len(calls) == n                 # spent: no request at all
 
