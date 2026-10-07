@@ -745,9 +745,37 @@
     }
     applyView();
     document.title = `$${sym} · The Lynch Pin`;
-    if (window.matchMedia("(max-width: 700px)").matches) input.blur();  // drop the phone keyboard
-    $("#result").scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    const keyboard = document.activeElement === input && window.matchMedia("(max-width: 700px)").matches;
+    if (keyboard) input.blur();  // drop the phone keyboard
+    scrollToResult(keyboard);
     poll(S.token, sym, refresh);
+  }
+
+  /* Bring the ticker's result up to just below the sticky header. On an iPhone the keyboard is still open
+     when Analyze is tapped: a scroll measured then lands wrong once it slides away (the symbol ended up under
+     the header), so wait for it to close. The position is computed from the header's real height (it includes
+     the notch inset), and checked once more after things settle. */
+  function scrollToResult(keyboardOpen) {
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const bar = document.querySelector(".topbar");
+    const target = () => Math.max(0, $("#result").getBoundingClientRect().top + window.scrollY - bar.getBoundingClientRect().height - 12);
+    const go = (behavior) => window.scrollTo({ top: target(), behavior });
+    const vv = window.visualViewport;
+    if (keyboardOpen && vv) {
+      let done = false;
+      const once = () => { if (done) return; done = true; vv.removeEventListener("resize", once); go(smooth ? "smooth" : "auto"); };
+      vv.addEventListener("resize", once);  // the keyboard has closed
+      setTimeout(once, 450);  // no resize (hardware keyboard, already closed)
+    } else {
+      go(smooth ? "smooth" : "auto");
+    }
+    const token = S.token;
+    setTimeout(() => {  // the symbol partly under the header (not scrolled well past it): put it back
+      const head = $("#card-head");
+      if (token !== S.token || !head) return;
+      const under = bar.getBoundingClientRect().bottom - head.getBoundingClientRect().top;
+      if (under > 0 && under < 200) go("auto");
+    }, 1200);
   }
 
   function fromURL() {
