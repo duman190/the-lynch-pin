@@ -86,33 +86,43 @@ class LynchPinVisualizer:
         # 1. BARS WITH ROUNDED EDGES AND GLOW
         ax = plt.gca()
         bar_width = 0.8
+        # Rounded "cylinder" top: 0.5 data units deep, as wide as the bar. The corner radius is at most
+        # half the box in each direction (a wider one overlaps the two corner curves into a flat tick on
+        # top, a taller one turns a thin box inside out), the depth comes from the mutation aspect
+        cap_r = bar_width / 2
+        cap_aspect = 0.5 / cap_r
+
+        def rounded(x, y, w, h, **kw):
+            r = max(0.0, min(cap_r, h / (2 * cap_aspect)))
+            return FancyBboxPatch((x, y), w, h, boxstyle=f'round,pad=0,rounding_size={r}',
+                                  mutation_aspect=cap_aspect, **kw)
+
         for i, val in enumerate(returns):
             is_index = (i == 0)
             base_color = '#444444' if is_index else sky_blue
 
             # Glow layer (behind)
-            glow = FancyBboxPatch((x_pos[i] - bar_width/2 - 0.02, -0.5), bar_width + 0.04, val + 0.5,
-                                  boxstyle='round,pad=0,rounding_size=0.5',
-                                  facecolor='none', edgecolor=sky_blue,
-                                  linewidth=5, alpha=0.15, zorder=1)
+            glow = rounded(x_pos[i] - bar_width/2 - 0.02, -0.5, bar_width + 0.04, val + 0.5,
+                           facecolor='none', edgecolor=sky_blue,
+                           linewidth=5, alpha=0.15, zorder=1)
             ax.add_patch(glow)
 
             # Main bar with white border
-            bar = FancyBboxPatch((x_pos[i] - bar_width/2, 0), bar_width, val,
-                                 boxstyle='round,pad=0,rounding_size=0.5',
-                                 facecolor=base_color, edgecolor=pure_white,
-                                 linewidth=2.5, alpha=0.9, zorder=2)
+            bar = rounded(x_pos[i] - bar_width/2, 0, bar_width, val,
+                          facecolor=base_color, edgecolor=pure_white,
+                          linewidth=2.5, alpha=0.9, zorder=2)
             ax.add_patch(bar)
 
-            # Top-Down Airy Glow clipped to rounded bar shape
+            # Top-Down Airy Glow clipped to rounded bar shape (unclipped, the thin top layers spilled a
+            # grey band above the bar that curved against its top)
             glow_start = val * 0.7
             for level in np.linspace(glow_start, val, 20):
                 intensity = ((level - glow_start) / (val - glow_start)) ** 2.0
-                glow_bar = FancyBboxPatch((x_pos[i] - bar_width/2, level), bar_width, val - level,
-                                          boxstyle='round,pad=0,rounding_size=0.5',
-                                          facecolor=pure_white, edgecolor='none',
-                                          alpha=intensity * 0.15, zorder=3)
+                glow_bar = rounded(x_pos[i] - bar_width/2, level, bar_width, val - level,
+                                   facecolor=pure_white, edgecolor='none',
+                                   alpha=intensity * 0.15, zorder=3)
                 ax.add_patch(glow_bar)
+                glow_bar.set_clip_path(bar)
 
         # 2. RED INDEX FLOOR LINE
         plt.axhline(index_return, color='#FF4B2B', linestyle='--', lw=3, alpha=1.0, zorder=5)
