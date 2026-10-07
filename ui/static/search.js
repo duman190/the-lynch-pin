@@ -751,41 +751,44 @@
     poll(S.token, sym, refresh);
   }
 
-  /* Show the ticker's result clear of the sticky header. Phones: back to the top of the page, where the result
-     sits under the search bar. Aligning the result itself with the header was unreliable on an iPhone: Analyze
-     is tapped with the keyboard open, and as it slides away iOS shifts the page, which left the symbol under
-     the header; at the top there is a search bar's worth of room to spare. Wider screens (no on-screen keyboard)
-     line the result up just below the header. For a few seconds, until the visitor touches or scrolls the page,
-     the result is moved back if it ends up under the header anyway. */
+  /* Slide the ticker's result up to just below the sticky header, so the whole Valuation card is on screen.
+     On an iPhone, Analyze is tapped with the keyboard open and iOS shifts the page while it slides away, which
+     used to leave the symbol under the header: so the slide waits until the keyboard is fully gone (the visual
+     viewport back to full height), and for a few seconds afterwards, until the visitor touches or scrolls the
+     page, the result is put back in place if iOS moved it. The target is computed from the header's real height
+     (it includes the notch inset). */
   function scrollToResult(keyboardOpen) {
     const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const phone = window.matchMedia("(max-width: 700px)").matches;
     const bar = document.querySelector(".topbar");
-    const target = () => (phone ? 0
-      : Math.max(0, $("#result").getBoundingClientRect().top + window.scrollY - bar.getBoundingClientRect().height - 12));
-    const go = (behavior) => window.scrollTo({ top: target(), behavior });
-    const vv = window.visualViewport;
-    if (keyboardOpen && vv) {
-      let done = false;
-      const once = () => { if (done) return; done = true; vv.removeEventListener("resize", once); go("auto"); };
-      vv.addEventListener("resize", once);  // the keyboard has closed
-      setTimeout(once, 450);  // no resize (hardware keyboard, already closed)
-    } else {
-      go(phone || !smooth ? "auto" : "smooth");
-    }
+    const gap = 12;
+    const offset = () => $("#result").getBoundingClientRect().top - bar.getBoundingClientRect().height - gap;
+    const go = (behavior) => window.scrollTo({ top: Math.max(0, window.scrollY + offset()), behavior });
     const token = S.token;
+    const EVENTS = ["touchstart", "wheel", "keydown", "mousedown"];
     let touched = false;
     const touch = () => { touched = true; };
-    const opts = { passive: true, once: true };
-    for (const ev of ["touchstart", "wheel", "keydown", "mousedown"]) window.addEventListener(ev, touch, opts);
-    const check = () => {
-      const head = $("#card-head");
-      if (touched || token !== S.token || !head) return;
-      const under = bar.getBoundingClientRect().bottom - head.getBoundingClientRect().top;
-      if (under > -4 && under < 300) go("auto");  // partly under the header (not scrolled well past it)
+    const settle = () => {
+      go(smooth ? "smooth" : "auto");
+      for (const ev of EVENTS) window.addEventListener(ev, touch, { passive: true, once: true });
+      const check = () => {  // after the slide has finished: back in place if the page moved under it
+        if (touched || token !== S.token || !$("#card-head")) return;
+        const off = offset();
+        const room = document.documentElement.scrollHeight - window.innerHeight - window.scrollY;
+        if (Math.abs(off) > 6 && !(off > 0 && room < 2)) go("auto");  // (a short page can't scroll further)
+      };
+      for (const ms of [900, 1600, 2500, 3500]) setTimeout(check, ms);
+      setTimeout(() => { for (const ev of EVENTS) window.removeEventListener(ev, touch); }, 3600);
     };
-    for (const ms of [700, 1300, 2200, 3500]) setTimeout(check, ms);
-    setTimeout(() => { for (const ev of ["touchstart", "wheel", "keydown", "mousedown"]) window.removeEventListener(ev, touch, opts); }, 3600);
+    const vv = window.visualViewport;
+    if (!keyboardOpen || !vv) return settle();
+    const t0 = performance.now();
+    const wait = () => {  // the keyboard is gone once the visible area is the whole window again
+      if (token !== S.token) return;
+      const closed = vv.height >= window.innerHeight - 2 && vv.offsetTop < 1;
+      if (closed || performance.now() - t0 > 1500) settle();
+      else setTimeout(wait, 50);
+    };
+    setTimeout(wait, 100);
   }
 
   function fromURL() {
