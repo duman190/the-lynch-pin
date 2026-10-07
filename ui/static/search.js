@@ -751,31 +751,41 @@
     poll(S.token, sym, refresh);
   }
 
-  /* Bring the ticker's result up to just below the sticky header. On an iPhone the keyboard is still open
-     when Analyze is tapped: a scroll measured then lands wrong once it slides away (the symbol ended up under
-     the header), so wait for it to close. The position is computed from the header's real height (it includes
-     the notch inset), and checked once more after things settle. */
+  /* Show the ticker's result clear of the sticky header. Phones: back to the top of the page, where the result
+     sits under the search bar. Aligning the result itself with the header was unreliable on an iPhone: Analyze
+     is tapped with the keyboard open, and as it slides away iOS shifts the page, which left the symbol under
+     the header; at the top there is a search bar's worth of room to spare. Wider screens (no on-screen keyboard)
+     line the result up just below the header. For a few seconds, until the visitor touches or scrolls the page,
+     the result is moved back if it ends up under the header anyway. */
   function scrollToResult(keyboardOpen) {
     const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const phone = window.matchMedia("(max-width: 700px)").matches;
     const bar = document.querySelector(".topbar");
-    const target = () => Math.max(0, $("#result").getBoundingClientRect().top + window.scrollY - bar.getBoundingClientRect().height - 12);
+    const target = () => (phone ? 0
+      : Math.max(0, $("#result").getBoundingClientRect().top + window.scrollY - bar.getBoundingClientRect().height - 12));
     const go = (behavior) => window.scrollTo({ top: target(), behavior });
     const vv = window.visualViewport;
     if (keyboardOpen && vv) {
       let done = false;
-      const once = () => { if (done) return; done = true; vv.removeEventListener("resize", once); go(smooth ? "smooth" : "auto"); };
+      const once = () => { if (done) return; done = true; vv.removeEventListener("resize", once); go("auto"); };
       vv.addEventListener("resize", once);  // the keyboard has closed
       setTimeout(once, 450);  // no resize (hardware keyboard, already closed)
     } else {
-      go(smooth ? "smooth" : "auto");
+      go(phone || !smooth ? "auto" : "smooth");
     }
     const token = S.token;
-    setTimeout(() => {  // the symbol partly under the header (not scrolled well past it): put it back
+    let touched = false;
+    const touch = () => { touched = true; };
+    const opts = { passive: true, once: true };
+    for (const ev of ["touchstart", "wheel", "keydown", "mousedown"]) window.addEventListener(ev, touch, opts);
+    const check = () => {
       const head = $("#card-head");
-      if (token !== S.token || !head) return;
+      if (touched || token !== S.token || !head) return;
       const under = bar.getBoundingClientRect().bottom - head.getBoundingClientRect().top;
-      if (under > 0 && under < 200) go("auto");
-    }, 1200);
+      if (under > -4 && under < 300) go("auto");  // partly under the header (not scrolled well past it)
+    };
+    for (const ms of [700, 1300, 2200, 3500]) setTimeout(check, ms);
+    setTimeout(() => { for (const ev of ["touchstart", "wheel", "keydown", "mousedown"]) window.removeEventListener(ev, touch, opts); }, 3600);
   }
 
   function fromURL() {
