@@ -51,8 +51,12 @@ class LynchPinResearcher:
         gemini_key = os.environ.get("GEMINI_API_KEY")
         # Gemini tiers are skipped when no key is set (the chain then runs on OpenRouter only)
         self.client = genai.Client(api_key=gemini_key) if gemini_key else None
-        self.best_model = "gemini-3.8-flash"
-        self.backup_model = "gemini-3.6-flash"
+        # 3.8/3.7 Flash are nearly always 503 on the free tier; 3.6 Flash answers most often of the
+        # full Flash models. Flash-Lite is served from a separate, far less congested pool, so it
+        # rarely shares the primary's busy window. The -latest alias follows the newest Lite
+        # release (gemini-3.5-flash-lite as of 2026-10-07).
+        self.best_model = "gemini-3.6-flash"
+        self.backup_model = "gemini-flash-lite-latest"
         self.openrouter_model = OPENROUTER_FREE_MODEL
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
         # Paid 4th tier; dev.meta.ai's quick-start names the variable MODEL_API_KEY, accept both

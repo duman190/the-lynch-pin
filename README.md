@@ -72,8 +72,8 @@ Narrative generation (`--research` / `--post`) walks a 4-layer fallback, 3 attem
 
 | Tier | Model | Attempts |
 |---|---|---|
-| 1 | Best Gemini free model (`gemini-3.7-flash`) | 3 |
-| 2 | Backup Gemini free model (`gemini-3.6-flash`) | 3 |
+| 1 | Best Gemini free model (`gemini-3.6-flash`) | 3 |
+| 2 | Backup Gemini free model (`gemini-flash-lite-latest`) | 3 |
 | 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 3 |
 | 4 | Meta [Muse Spark 1.3 Contributor](https://dev.meta.ai) (`muse-spark-1.3-contributor`, **paid**) | 3 |
 
