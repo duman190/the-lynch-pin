@@ -25,10 +25,6 @@
       <span class="brand-text"><strong>THE LYNCH PIN</strong><span>Quant Portal</span></span>
     </a>
     <div class="chips">
-      <a class="home-btn" id="portal-link" href="/" hidden>
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 11.2 12 4l9 7.2V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1z" fill="currentColor"/></svg>
-        <span>Portal</span>
-      </a>
       <span class="chip" id="chip-live"><span class="dot"></span><span class="chip-label">Stats</span></span>
     </div>
   </header>
@@ -52,7 +48,7 @@
       <h2 id="h-main">Requests &amp; lookups</h2>
       <div class="st-grid">
         <article class="panel st-card" id="c-rpm">
-          <header><h3>Requests per minute</h3><p class="muted small">CDF over the minutes with traffic</p></header>
+          <header><h3>Requests per minute</h3><p class="muted small">CDF over the minutes with traffic; the page's own polling and health checks are not counted</p></header>
           <div class="st-legend" aria-hidden="true">
             <span><i class="key key-1"></i>All requests</span><span><i class="key key-2"></i>Ticker queries</span>
           </div>
@@ -60,7 +56,7 @@
           <div class="st-pcts"></div>
         </article>
         <article class="panel st-card" id="c-latency">
-          <header><h3>Ticker query latency</h3><p class="muted small">CDF, log scale: from a lookup to its result, cache hits included</p></header>
+          <header><h3>Ticker query latency</h3><p class="muted small">CDF, log scale: cold lookups only (an analysis ran), from the lookup to its result</p></header>
           <div class="st-chart"></div>
           <div class="st-pcts"></div>
         </article>

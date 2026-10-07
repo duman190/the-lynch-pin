@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover
 from ui.config import CPU_WORKERS, WORKER_MB, REPO_ROOT, Settings, available_mb  # noqa: E402
 from ui import netguard  # noqa: E402
 from ui.netguard import _ip, is_allowed_host, is_local_client  # noqa: E402
+from ui.stats import DEFAULT_REASON  # noqa: E402
 
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -163,6 +164,7 @@ def make_handler(app):
 
         def _begin(self):
             self._code = self._reason = None  # one handler serves every request of a keep-alive connection
+            self._background = False  # set by _get for the page's own polling (not counted as a request)
             self._t0, self._t0_mono = time.time(), time.monotonic()
 
         _marked = None  # (visitor, hour) this connection last marked for DAU / MAU
@@ -171,7 +173,9 @@ def make_handler(app):
             """Count this request on the stats page (--lan / --public): its minute, if refused why, and if served
             its visitor (DAU / MAU)."""
             if app.stats is not None and self._code is not None:
-                app.stats.hit(self._code, self._reason, ts=self._t0)
+                refused = self._reason is not None or self._code in DEFAULT_REASON
+                if not self._background or refused:  # a refused poll still counts, under its reason
+                    app.stats.hit(self._code, self._reason, ts=self._t0)
                 if self._code < 400:
                     mark = (self._visitor(), int(self._t0 // 3600))
                     if mark != self._marked:  # a keep-alive connection's visitor: once an hour is enough
@@ -299,6 +303,10 @@ def make_handler(app):
                 return
             url = urlsplit(self.path)
             path, query = url.path, parse_qs(url.query)
+            # What the open page asks for on its own (the health chip every 30 s, polls while a lookup or an AI
+            # overview runs) is not a visitor's request: the stats page leaves it out of the request counts.
+            self._background = path == "/api/health" or (
+                path.startswith("/api/ticker/") and query.get("poll", ["0"])[0] == "1")
             try:
                 self.route(path, query)
             except (BrokenPipeError, ConnectionResetError, TimeoutError):

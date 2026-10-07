@@ -480,7 +480,7 @@
     const tick = async () => {
       if (token !== S.token) return;
       try {
-        const snap = await getJSON(`/api/ticker/${encodeURIComponent(sym)}/ai`);
+        const snap = await getJSON(`/api/ticker/${encodeURIComponent(sym)}/ai?poll=1`);  // not counted on the stats page
         if (token !== S.token) return;
         if (AI_FINAL.has(snap.status)) { finishAI(snap, V); return; }
         applyLive(V, snap);

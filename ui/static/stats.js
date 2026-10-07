@@ -391,10 +391,11 @@
     host.textContent = "";
     const today = d.cache.days.length ? d.cache.days[d.cache.days.length - 1] : null;
     const items = [
-      { label: "Requests", value: num(d.rejections.requests), sub: `${num(d.rpm.requests.n)} active min` },
-      { label: "Peak RPM", value: num(d.rpm.requests.max), sub: `p50 ${num(d.rpm.requests.p50)}/min` },
+      // cold = the lookup waited for an analysis; cache hits are answered in milliseconds
+      { label: "Cold lookups", value: num(d.cold.total), sub: `of ${num(d.tickers.total)} ticker queries` },
+      { label: "Peak cold RPM", value: num(d.cold.rpm.max), sub: `p50 ${num(d.cold.rpm.p50)}/min` },
       { label: "Ticker queries", value: num(d.tickers.total), sub: `${num(d.tickers.distinct)} tickers` },
-      { label: "Latency p99.9", value: dur(d.latency.p999), sub: `p50 ${dur(d.latency.p50)}`, hl: true },
+      { label: "Cold latency p99.9", value: dur(d.latency.p999), sub: `p50 ${dur(d.latency.p50)}`, hl: true },
       { label: "Cache hit rate", value: pct(d.cache.hit_rate), sub: today ? `latest day ${pct(today.rate)}` : "–" },
       { label: "Rejected", value: pct(d.rejections.rate), sub: `${num(d.rejections.total)} requests` },
       { label: "DAU today", value: num(d.visitors.dau), sub: d.visitors.peak_dau ? `peak ${num(d.visitors.peak_dau.n)}` : "–" },
@@ -416,9 +417,6 @@
       ` · updated ${at} ${d.tz || ""} · refreshes every minute`;
     $("#st-retention").textContent = `Local network only · data kept ${d.retention_days} days, ` +
       `visitors ${d.visitors.retention_days} days (rolling)`;
-    const portal = $("#portal-link");
-    portal.hidden = !d.portal_port;  // --public: the portal is on loopback, behind the tunnel
-    if (d.portal_port) portal.href = `${location.protocol}//${location.hostname}:${d.portal_port}/`;
     tiles(d);
 
     const rpm = $("#c-rpm");

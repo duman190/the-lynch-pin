@@ -59,8 +59,10 @@ REJECTIONS = {
 UPSTREAM = ("yahoo_429",)
 DEFAULT_REASON = {400: "bad_ticker", 403: "outside_lan", 405: "read_only", 429: "queue_full"}
 
-# Where a ticker query's answer came from
+# Where a ticker query's answer came from. Cold lookups waited for an analysis (a new one, a ↻ Refresh, or
+# one already running for another visitor); the others were answered at once.
 SOURCES = ("cache", "fresh", "joined", "recent", "refresh")
+COLD = ("fresh", "joined", "refresh")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS minutes (minute INTEGER PRIMARY KEY, requests INTEGER NOT NULL);
@@ -304,7 +306,12 @@ def summarize(db, since, now, days, retention_days=RETENTION_DAYS):
 
     # Ticker queries: latency, where answers came from, cache hit rate per day, popular tickers
     rows = db.execute("SELECT ts, ticker, source, latency_s FROM queries WHERE ts >= ?", (since,)).fetchall()
-    out["latency"] = cdf([r[3] for r in rows])
+    # Cold lookups (an analysis ran): their count, per minute with any, and latency. A cache hit's few
+    # milliseconds say nothing about how long a lookup takes.
+    cold = [r for r in rows if r[2] in COLD]
+    cold_pm = collections.Counter(int(r[0] // 60) for r in cold)
+    out["cold"] = {"total": len(cold), "rpm": cdf(list(cold_pm.values()))}
+    out["latency"] = cdf([r[3] for r in cold])
     by_source = collections.Counter(r[2] for r in rows)
     out["sources"] = {s: by_source.get(s, 0) for s in SOURCES}
     per_day = collections.defaultdict(lambda: [0, 0])

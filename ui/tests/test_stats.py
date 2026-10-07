@@ -268,7 +268,9 @@ def test_summary(rec):
     s = rec.summary(7)
     assert s["days"] == 7 and s["retention_days"] == 30
     assert s["rpm"]["requests"]["n"] == 2 and s["rpm"]["requests"]["max"] == 10 and s["rpm"]["requests"]["min"] == 2
-    assert s["latency"]["n"] == 8 and s["latency"]["p50"] == 0.002 and s["latency"]["p999"] == 9.0
+    # latency and the cold counts: only the lookups that waited for an analysis (fresh / joined / refresh)
+    assert s["latency"]["n"] == 3 and s["latency"]["p50"] == 9.0 and s["latency"]["min"] == 9.0
+    assert s["cold"]["total"] == 3 and s["cold"]["rpm"]["n"] == 2 and s["cold"]["rpm"]["max"] == 2
     assert s["sources"] == {"cache": 5, "fresh": 2, "joined": 1, "recent": 0, "refresh": 0}
     assert [d["rate"] for d in s["cache"]["days"]] == [50.0, 75.0] and s["cache"]["hit_rate"] == 62.5
     assert s["cache"]["cdf"]["n"] == 2
@@ -285,6 +287,7 @@ def test_summary(rec):
 
     one = rec.summary(1)
     assert one["tickers"]["total"] == 4 and one["rpm"]["requests"]["n"] == 1
+    assert one["cold"]["total"] == 1 and one["latency"]["n"] == 1
     assert rec.summary(365)["days"] == 30  # never past the retention window
 
 
@@ -386,12 +389,38 @@ def test_portal_counts_requests_rejections_and_cache_hits(settings, rec):
         assert json.loads(body)["cached"] is True
         rec.flush(final=True)
         s = rec.summary(1)
-        assert s["rejections"]["requests"] >= 7
+        assert s["rejections"]["requests"] == 6  # the ?poll=1 requests aren't counted
         assert {r["reason"]: r["n"] for r in s["rejections"]["reasons"]} == \
             {"bad_ticker": 1, "read_only": 1, "foreign_host": 1}
         assert s["sources"]["fresh"] == 1 and s["sources"]["cache"] == 1
         assert s["tickers"]["top"] == [{"ticker": "MSFT", "n": 2, "pct": 100.0}]
-        assert s["latency"]["min"] < 1
+        assert s["latency"]["n"] == 1 and s["latency"]["min"] < 1  # the fresh lookup; the cache hit isn't timed
+        assert s["cold"]["total"] == 1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        jm.shutdown()
+
+
+def test_page_polling_is_not_counted_as_requests(settings, rec):
+    """Health checks and lookup / AI polls are the open page talking to the server, not a visitor's requests."""
+    jm = make_jm(settings, rec)
+    httpd = serve(make_handler(PortalApp(settings, jobs=jm, stats=rec)))
+    try:
+        get(httpd, "/api/ticker/MSFT")  # the lookup: counted
+        deadline = time.time() + 5
+        polls = 0
+        while json.loads(get(httpd, "/api/ticker/MSFT?poll=1")[1])["status"] != "done" and time.time() < deadline:
+            polls += 1
+            time.sleep(0.02)
+        for _ in range(5):
+            assert get(httpd, "/api/health")[0].status == 200
+        assert get(httpd, "/api/ticker/MSFT/ai?poll=1")[0].status in (200, 404)
+        assert get(httpd, "/api/health", method="POST")[0].status == 405  # refused: still counted
+        rec.flush(final=True)
+        s = rec.summary(1)
+        assert s["rejections"]["requests"] == 2 and s["rejections"]["total"] == 1
+        assert s["cold"]["total"] == 1
     finally:
         httpd.shutdown()
         httpd.server_close()
