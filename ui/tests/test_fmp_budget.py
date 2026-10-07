@@ -93,9 +93,13 @@ def test_every_answered_request_counts(tmp_path, fmp):
     replies[:] = [FakeResp(data=ESTIMATES)]
     assert round(ge._fmp_5y_growth("NVDA")) == 15 and b.status()["used"] == 1   # data
     for i, reply in enumerate((FakeResp(402, {"Error Message": "Premium Query Parameter"}), FakeResp(data=[]),
-                               FakeResp(200, {"Error Message": "Limit Reach"}), FakeResp(500, None)), start=2):
+                               FakeResp(200, {"Error Message": "Limit Reach"}),
+                               FakeResp(403, {"Error Message": "Invalid API KEY"})), start=2):
         replies[:] = [reply]
         assert ge._fmp_5y_growth("XYZ") is None and b.status()["used"] == i     # "Not enriched", still counted
+    for reply in (FakeResp(500, None), FakeResp(502, None), FakeResp(503, None)):
+        replies[:] = [reply]
+        assert ge._fmp_5y_growth("XYZ") is None and b.status()["used"] == 5     # FMP unavailable: handed back
     replies[:] = [FakeResp(429), FakeResp(data=ESTIMATES)]
     assert round(ge._fmp_5y_growth("AMD")) == 15 and b.status()["used"] == 7    # the 429 and its retry: two
     replies[:] = [FakeResp(data=ESTIMATES)]

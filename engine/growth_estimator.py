@@ -18,8 +18,8 @@ FMP_KEY = os.environ.get("FMP_API_KEY")
 
 # Optional quota gate: called with the symbol before every FMP request (a retry included). A falsy answer skips
 # the request; otherwise it returns ``done(answered)``, called once the request is over with whether FMP answered
-# at all: FMP counts every request it answers, errors included (a 402 for a symbol outside the plan counts), so
-# only a request that got no response (network error, timeout) is handed back. None (main.py) = no gate. The
+# at all: FMP counts the requests it answers, errors included (a 402 for a symbol outside the plan counts), so
+# only a request that got no answer from FMP (network error, timeout, a 5xx server failure) is handed back. None (main.py) = no gate. The
 # web portal installs one that caps its own requests so the daily scans keep their share (ui/fmp_budget.py).
 FMP_GATE = None
 
@@ -47,7 +47,7 @@ def _fmp_request(symbol):
         url = (f"https://financialmodelingprep.com/stable/analyst-estimates"
                f"?symbol={symbol}&period=annual&apikey={FMP_KEY}")
         resp = _SESSION.get(url)
-        answered = True  # FMP answered: it counts the request, whatever the status
+        answered = resp.status_code < 500  # FMP answered (4xx included: it counts them); a 5xx = unavailable
         if resp.status_code == 429:
             return 429, None
         return resp.status_code, resp.json()
