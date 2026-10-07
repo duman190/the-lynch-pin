@@ -363,6 +363,9 @@ class LynchPinResearcher:
                 f"terminal PEG {t_peg:.2f} × {terminal_growth:.1f}% = {implied_pe:.0f}x implied PE. "
                 f"Current FwdPE is {d['FwdPE']}x → re-rates to {implied_pe:.0f}x at maturity."
             )
+            div = str(d.get('DivYield') or '0%')
+            if div.rstrip('%').replace('.', '', 1).isdigit() and float(div.rstrip('%')) >= 0.05:
+                line += f" The ROIs include its {div} dividend yield (total return = price return + dividends)."
             if grader_data and ticker in grader_data:
                 line += "\n" + LynchPinResearcher._format_grader(grader_data[ticker])
             if bs_data and ticker in bs_data:

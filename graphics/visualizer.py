@@ -15,6 +15,15 @@ BENCHMARKS = {
     "spy":    ("SPY",  "S&P 500"),
 }
 
+
+def _div_pct(row):
+    """The dividend yield (%) the engine included in the row's ROIs, or 0 (non-payers, older rows)."""
+    try:
+        return float(str(row.get('DivYield', '0')).rstrip('%'))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class LynchPinVisualizer:
     def __init__(self, output_dir="tmp"):
         self.output_dir = output_dir
@@ -219,7 +228,8 @@ class LynchPinVisualizer:
             f"- Fwd PE:   {row.get('FwdPE', 0):>8.1f}\n"
             f"- 2YFwd PE: {row.get('2YFwd', 0):>8.1f}\n" 
             f"- PEG:      {current_peg:>8.2f}\n"
-            f"- 5Y Growth:{row.get('5YGrowth', '0%'):>8}\n"   
+            f"- 5Y Growth:{row.get('5YGrowth', '0%'):>8}\n"
+            + (f"- Div Yield:{row['DivYield']:>8}\n" if _div_pct(row) else "") +  # included in the ROIs
             f"- Bull ROI: {row.get('Bull', '0%'):>8}\n"
             f"- Base ROI: {row.get('Base', '0%'):>8}\n"
             f"- Bear ROI: {row.get('Bear', '0%'):>8}"

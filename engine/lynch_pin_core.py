@@ -53,6 +53,33 @@ def _growth_decay(growth_pct):
     return 0.85
 
 
+# A yield above this is a data error (a stale dividend on a collapsed price, a special payout), not income
+_MAX_DIVIDEND_YIELD = 0.25
+
+
+def _dividend_yield(info, price):
+    """Cash dividend yield (fraction) added to every ROI scenario: the ROI is otherwise price return only
+    (EPS growth x multiple), which shortchanges dividend payers, whose EPS grows slower because earnings
+    are paid out. Forward annual dividend / price (unit-free), else Yahoo's trailing yield (a fraction).
+    A payout above 100% of earnings can't last: only the covered share counts (yield / payout). Buybacks
+    are not added: they already lift EPS growth through the share count."""
+    rate = info.get('dividendRate')
+    if rate and rate > 0 and price and price > 0:
+        y = rate / price
+    else:
+        y = info.get('trailingAnnualDividendYield') or 0.0
+    try:
+        y = float(y)
+    except (TypeError, ValueError):
+        return 0.0
+    if not 0 < y <= _MAX_DIVIDEND_YIELD:
+        return 0.0
+    payout = info.get('payoutRatio')
+    if isinstance(payout, (int, float)) and payout > 1:
+        y /= payout
+    return y
+
+
 def _eps_path(growth_pct):
     """Year-by-year EPS growth (%) over the 5-year projection: fades linearly from today's 5Y estimate in
     year 1 to the decayed terminal growth in year 5, the growth the terminal multiple is priced on. Below
@@ -513,11 +540,13 @@ class LynchPinEngine:
                 pt = target_peg * terminal_growth * proj_eps
                 return ((pt / curr_price) ** 0.2) - 1 if pt > 0 else -1
 
-            # ROI scenarios: mean-reversion below the mean, "multiple holds" above it
+            # ROI scenarios: mean-reversion below the mean, "multiple holds" above it; the cash dividend
+            # yield is added to all three (total return = price return + dividends)
             bull_peg, base_peg, bear_peg = _scenario_pegs(growth_pct, mean_peg, curr_peg, std_peg)
-            base_roi = roi(base_peg) * 100
-            bull_roi = roi(bull_peg) * 100
-            bear_roi = roi(bear_peg) * 100
+            div_yield = _dividend_yield(self.info, curr_price) * 100
+            base_roi = roi(base_peg) * 100 + div_yield
+            bull_roi = roi(bull_peg) * 100 + div_yield
+            bear_roi = roi(bear_peg) * 100 + div_yield
             risk = growth_pct > 99 or curr_peg >= 2.5 or dev_sd == 0.0 or not curr_pe or curr_pe <= 0 or base_roi < 9.0
 
             return {
@@ -532,6 +561,7 @@ class LynchPinEngine:
                 "Bull": f"{round(bull_roi, 1)}%",
                 "Base": f"{round(base_roi, 1)}%",
                 "Bear": f"{round(bear_roi, 1)}%",
+                "DivYield": f"{round(div_yield, 1)}%",  # included in Bull / Base / Bear
             }
         except Exception:
             return None

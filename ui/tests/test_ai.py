@@ -341,6 +341,13 @@ def test_portal_messages_static_system_then_terse_data(settings):
     assert len(text) < 750
 
 
+def test_portal_data_reverse_dcf_mentions_the_dividend(settings):
+    data = _analysed(settings)
+    data["stats"]["div_yield"] = 2.5
+    assert "Reverse DCF: 13.5% base ROI (2.5% of it dividend yield) requires EPS +13.0%/yr for 5 years" \
+        in L.portal_data(data)
+
+
 def test_portal_data_profile_analyst_target_and_flags():
     d = {"ticker": "INTC", "name": "Intel Corporation", "industry": "Semiconductors", "price": 119.33,
          "market_cap": 6.3e11, "currency": "USD",

@@ -42,6 +42,7 @@ def format_stats(row):
         "PE": _num(row.get("PE")), "FwdPE": _num(row.get("FwdPE")), "2YFwd": _num(row.get("2YFwd")),
         "growth_pct": _pct(row.get("5YGrowth")), "PEG": peg, "Mean": mean, "SD": sd, "Dev_SD": dev,
         "Bull": _pct(row.get("Bull")), "Base": _pct(row.get("Base")), "Bear": _pct(row.get("Bear")),
+        "div_yield": _pct(row.get("DivYield")),  # cash dividend yield, already included in Bull / Base / Bear
         "display": {k: str(row.get(k)) for k in ("5YGrowth", "Bull", "Base", "Bear")},
         # The engine falls back to (PEG, 0.2·PEG, Dev 0.0) when the 5Y price/EPS history could not be
         # fetched — that is a data outage, not "exactly at the mean".

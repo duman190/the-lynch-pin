@@ -264,6 +264,14 @@ class TestAIResearch(unittest.TestCase):
         mature = [dict(data[0], Ticker='MATURE', **{'5YGrowth': '13.0%'})]
         self.assertIn("EPS compounds at 13.0%/yr for 5 years,", LynchPinResearcher.build_prompt(mature))
 
+    def test_build_prompt_mentions_the_dividend_in_the_rois(self):
+        from engine.ai_research import LynchPinResearcher
+        row = {'Ticker': 'PEP', 'PE': 16.2, 'FwdPE': 13.9, '2YFwd': 13.2, '5YGrowth': '5.5%', 'PEG': 2.52,
+               'Mean': 3.92, 'Dev_SD': -1.9, 'Bull': '13.0%', 'Base': '10.1%', 'Bear': '6.9%', 'DivYield': '4.8%'}
+        self.assertIn("The ROIs include its 4.8% dividend yield", LynchPinResearcher.build_prompt([row]))
+        for div in ('0.0%', None):
+            self.assertNotIn("dividend yield", LynchPinResearcher.build_prompt([dict(row, DivYield=div)]))
+
     def test_build_prompt_base_math_follows_above_mean_scenario(self):
         from engine.ai_research import LynchPinResearcher
         # MU-like row: PEG 0.22 above mean 0.09 → base PEG anchors on current − 0.5 SD, not the 0.09 mean
@@ -1531,6 +1539,34 @@ class TestLynchPinCore(unittest.TestCase):
         # Huge SD: bear at most halves the base (proportional floor), still capped at today's PEG
         bull, base, bear = _scenario_pegs(25.0, 1.4, 1.2, 3.0)
         self.assertAlmostEqual(bear, 0.7)
+
+    def test_dividend_yield(self):
+        from engine.lynch_pin_core import _dividend_yield
+        self.assertAlmostEqual(_dividend_yield({'dividendRate': 5.92, 'payoutRatio': 0.75}, 123.73), 5.92 / 123.73)  # PEP
+        self.assertAlmostEqual(_dividend_yield({'trailingAnnualDividendYield': 0.024}, 85.0), 0.024)  # no forward rate
+        self.assertAlmostEqual(_dividend_yield({'dividendRate': 2.0, 'payoutRatio': 1.6}, 20.0), 0.1 / 1.6)  # uncovered
+        self.assertEqual(_dividend_yield({'dividendRate': 9.0}, 20.0), 0.0)  # 45%: a data error, not income
+        self.assertEqual(_dividend_yield({'dividendRate': None, 'trailingAnnualDividendYield': 0.0}, 382.0), 0.0)
+        self.assertEqual(_dividend_yield({}, 100.0), 0.0)
+        self.assertEqual(_dividend_yield({'trailingAnnualDividendYield': 'n/a'}, 100.0), 0.0)
+        self.assertEqual(_dividend_yield({'dividendRate': 1.0}, None), 0.0)
+
+    def test_roi_scenarios_include_the_dividend_yield(self):
+        from engine.lynch_pin_core import LynchPinEngine
+        e = LynchPinEngine.__new__(LynchPinEngine)  # no network: inputs set by hand
+        e.symbol = 'DIV'
+        e.info = {'currentPrice': 100.0, 'forwardPE': 15.0, 'forwardEps': 100 / 15, 'trailingEps': 6.0,
+                  'trailingPE': 16.7}
+        e._get_growth = lambda *a, **k: 10.0
+        e.calculate_peg_statistics = lambda peg, g: (1.8, 0.3, -1.0)
+        plain = e.get_ticker_stats()
+        e.info = dict(e.info, dividendRate=3.0, payoutRatio=0.5)
+        paying = e.get_ticker_stats()
+        for k in ('Bull', 'Base', 'Bear'):  # the same 3% on all three scenarios
+            self.assertAlmostEqual(float(paying[k][:-1]) - float(plain[k][:-1]), 3.0, delta=0.11)
+        self.assertEqual((plain['DivYield'], paying['DivYield']), ('0.0%', '3.0%'))
+        from graphics.visualizer import _div_pct
+        self.assertEqual((_div_pct(paying), _div_pct(plain), _div_pct({'Ticker': 'OLD'})), (3.0, 0.0, 0.0))
 
     def test_eps_path_fades_only_from_20_percent_growth(self):
         from engine.lynch_pin_core import _eps_path, _eps_multiple, _avg_eps_growth, _growth_decay

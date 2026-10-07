@@ -566,7 +566,11 @@ def portal_data(d):
             math = implied_terminal_pe(st)
             if math:
                 verdict = _VERDICTS.get(quick.get("dcf_verdict"))  # rule-based: small models muddle it
-                out.append(f"Reverse DCF: {base:.1f}% base ROI requires EPS +{math[0]:.1f}%/yr for 5 years, "
+                from engine.lynch_pin_core import _avg_eps_growth  # growth fades from 20% (engine ROI math)
+                div = _num(st.get("div_yield")) or 0.0
+                out.append(f"Reverse DCF: {base:.1f}% base ROI"
+                           + (f" ({div:.1f}% of it dividend yield)" if div >= 0.05 else "")
+                           + f" requires EPS +{_avg_eps_growth(math[0]):.1f}%/yr for 5 years, "
                            f"re-rating {fwd:.1f}x to {math[1]:.1f}x forward PE" + (f"; assumptions: {verdict}" if verdict else ""))
     inc = d.get("income") or {}
     if inc.get("grade"):

@@ -160,7 +160,10 @@ def _reverse_dcf(d):
     per_year = ((term / fwd) ** 0.2 - 1) * 100  # the multiple's contribution, %/yr over the 5 years
     fade = (f" (growth fading from {g5:.1f}% to {g5 ** _growth_decay(g5):.1f}%)"
             if _growth_decay(g5) < 1 else "")
-    out = [f"{base:.1f}% base ROI requires EPS to compound at {g:.1f}%/yr for the next 5 years{fade} and the "
+    div = _num(st.get("div_yield")) or 0.0  # included in the base ROI: total return = price + dividends
+    lead = (f"{base:.1f}% base ROI = {div:.1f}% dividend yield + {base - div:.1f}%/yr from the share price, which "
+            if div >= 0.05 else f"{base:.1f}% base ROI ")
+    out = [f"{lead}requires EPS to compound at {g:.1f}%/yr for the next 5 years{fade} and the "
            f"stock to re-rate from a forward PE of {fwd:.1f}x today to a terminal forward PE of {term:.1f}x."]
     if change > 5:
         out.append(f"That is {change:.0f}% multiple expansion ({per_year:+.1f}%/yr) on top of the earnings growth: "

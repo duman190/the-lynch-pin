@@ -90,6 +90,21 @@ def test_reverse_dcf_quotes_the_faded_growth_from_20_percent(msft):
             f"45.0% to {45.0 ** 0.9:.1f}%) and the stock to re-rate") in dcf
 
 
+def test_reverse_dcf_splits_out_the_dividend(msft):
+    d = copy.deepcopy(msft)
+    d["stats"]["div_yield"] = 2.5  # included in the base ROI by the engine
+    base = d["stats"]["Base"]
+    dcf = quick.quick_overview(d)["reverse_dcf"]
+    assert dcf.startswith(f"{base:.1f}% base ROI = 2.5% dividend yield + {base - 2.5:.1f}%/yr from the share price, "
+                          f"which requires EPS to compound at 13.0%/yr for the next 5 years")
+
+
+def test_format_stats_carries_the_dividend_yield():
+    from ui.formats import format_stats
+    assert format_stats({"DivYield": "2.5%", "Base": "12.0%"})["div_yield"] == 2.5
+    assert format_stats({"Base": "12.0%"})["div_yield"] is None  # rows from before the dividend was added
+
+
 def test_nodata_has_an_overview_but_no_dcf(settings):
     eng = type("E", (fakes.FakeEngine,), {"infos": {"SPY": {"quoteType": "ETF", "regularMarketPrice": 500.0,
                                                             "longName": "SPDR S&P 500 ETF Trust"}}, "rows": {}})

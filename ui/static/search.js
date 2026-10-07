@@ -188,7 +188,7 @@
         ["5Y Growth", [growthTag(d.growth_enriched), " ", st.display["5YGrowth"]]],
         ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
       ]),
-      el("h3", { class: "sub-h", text: "5Y ROI projection" }),
+      el("h3", { class: "sub-h", text: "5Y ROI projection" + (st.div_yield >= 0.05 ? ` · incl. ${fx(st.div_yield, 1)}% dividend` : "") }),
       roiBars(st),
       el("div", { class: "chart-slot", id: "chart-slot" }, chartButton()));
     fillChart();

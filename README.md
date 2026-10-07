@@ -271,7 +271,18 @@ When the stock already trades **above** its historical mean PEG, mean reversion 
 
 The AI prompt's "Base ROI math" line uses the same scenario logic, so the implied terminal PE it cites always matches the Base ROI shown.
 
-**Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`, with `projected_EPS = forward_EPS × Π(1 + gₜ)` over the faded path `g₁ … g₅`.
+**Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1 + dividend_yield`, with `projected_EPS = forward_EPS × Π(1 + gₜ)` over the faded path `g₁ … g₅`.
+
+**Dividend yield** — the EPS × multiple projection is a price return only, so a dividend payer's total return was understated by its yield (a 10% price return plus a 2% yield is a 12% total return). The cash dividend yield is therefore added to all three scenarios equally, so it lifts Bull, Base and Bear by the same amount and never changes their order. Notes:
+
+- The yield is the forward `dividendRate / price` from Yahoo, falling back to `trailingAnnualDividendYield`.
+- Buybacks are not added: they shrink the share count and so are already in EPS growth.
+- When the payout ratio is above 100%, the yield is scaled down by it (`yield / payout`), since that part of the dividend isn't covered by earnings and is unlikely to last.
+- A yield above 25% is treated as a data error and ignored.
+- Every ROI consumer sees the total: the 9% base ROI risk flag (`--excl-bad`), the ranking tables, charts, the AI prompt and the portal.
+- The yield is reported as `DivYield` and shown as its own line in the chart's stats box when non-zero. The portal labels the projection "incl. X% dividend", and the Quick Overview / AI "Base ROI math" lines split the base ROI into dividend yield + price return.
+
+Effect (Oct 2026), base ROI before → after: PEP 14.0% → 18.8% (4.8% yield), PAYX 13.9% → 18.6% (4.7%), MDLZ 26.5% → 30.0% (3.5%), KO −2.9% → −0.4% (2.5%), TXN 19.5% → 21.6% (2.1%), ADI 23.4% → 24.5%, MSFT 13.4% → 14.1%, AVGO 18.2% → 18.9%, NVDA 32.3% → 32.7%.
 
 **Effect (Oct 2026, `--top 8 --excl-bad` on Nasdaq 100 + SMH + IGV, 22 tickers, base ROI before → after):** MCHP 82% → 35%, ALNY 80% → 55%, HUBS 72% → 52%, ALAB 68% → 28%, WK 62% → 32%, NXPI 50% → 40%, ADI 36% → 24%, TXN 31% → 20%, NVDA 44% → 37% (bear 48% → 29%); names growing under 20% without a rebound (ADSK, INTU, MDLZ, PAYX, PEP, TRI, DSGX, QTWO) are unchanged. Base ROIs still above 50% (HUBS, ALNY, ON) come from a deep discount to the stock's own historical multiple plus 27–41% next-year growth, i.e. the mean-reversion thesis rather than a data artifact.
 
