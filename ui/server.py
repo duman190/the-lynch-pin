@@ -622,7 +622,7 @@ def parse_args(argv=None):
     p.add_argument("--gemini-rpd", type=int, default=s.gemini_rpd, metavar="N",
                    help="Gemini overviews per Pacific day (default 975: room for the daily scans' backup tier)")
     p.add_argument("--no-gemini", action="store_true", help="local model only: no Gemini offload")
-    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 500)")
+    p.add_argument("--cache-size", type=int, default=s.cache_capacity, help="tickers cached per day (default 2500)")
     p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--fmp-limit", type=int, default=s.fmp_limit, metavar="N",

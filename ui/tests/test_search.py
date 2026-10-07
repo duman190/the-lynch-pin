@@ -341,7 +341,7 @@ def test_enrich_env_values(monkeypatch, raw, mode):
 
 def test_cli_enrich_and_cache_defaults():
     from ui.server import parse_args
-    assert (parse_args([])[0].enrich, parse_args([])[0].cache_capacity) == ("auto", 500)
+    assert (parse_args([])[0].enrich, parse_args([])[0].cache_capacity) == ("auto", 2500)
     s, _ = parse_args(["--enrich", "on", "--cache-size", "40"])
     assert (s.enrich, s.cache_capacity) == ("on", 40)
 

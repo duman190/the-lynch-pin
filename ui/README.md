@@ -52,7 +52,11 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 - **Deep Dive Prompt** (above *How to read*): a research brief to paste into Claude, ChatGPT or Gemini. It casts the model as a hedge-fund portfolio manager and walks it through the last two earnings reports, call transcripts, the 10-Q, news, management's answers and red flags. It then makes the model loop, stress-testing its bull and bear case until another pass changes nothing, and asks for a verdict against the S&P 500 with price levels and signals to watch. The quant data, the price levels and the local AI overview are attached at the end. **Copy** works on plain-http LAN and Tailscale URLs too; **Show / Hide** toggles the full text.
 - The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
 - **Concurrent lookups** with the AI overview off: several users' tickers are analysed at the same time, each in its own worker process (1.5 per CPU core, at most 16, and no more than free RAM holds at ~200 MB each; `--workers` to change). A model loaded in LM Studio can take most of an 8 GB Mac: unload it when running `--no-ai`. On an 8-core M1 this takes cold lookups from ~11 to ~117 tickers/min (`ui/tests/cold_bench.py`). Through `--public` with every visitor on its own IP and loading the full home page first (22 requests, ~1.3 MB: Latest scans and Socials included), the same 48 tickers ran at 110 tickers/min (2026-10-05). A burst of 200 visitors at once, each with a new ticker, ran at 62 tickers/min: 12 analyse, 20 queue, the rest get "queue full" and their page retries, and Yahoo answered 429 eleven times, so the circuit breaker paused new work; all 200 finished, the slowest in ~3 min. With the AI overview on, tickers are analysed one at a time unless `--workers` is set. Yahoo throttles at a few hundred tickers in a short burst (each cold lookup makes ~12 Yahoo calls), so the cache below does the heavy lifting under sustained load.
-- A daily LFU cache of 500 tickers (~10 MB of RAM, ~280 MB of charts on disk). Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
+- A daily LFU cache of 2500 tickers: about what the AI writes in a day at full load before Gemini's daily cap runs out (39 overviews a minute, 24 local + 15 Gemini, for 975 / 15 = 65 minutes). Typing a ticker again the same day skips the quant pipeline, the chart and the LLM. The cache and old charts are cleared at the first access after midnight.
+  - **RAM:** ~35 KB per entry with its AI overview (~21 KB without), ~85 MB when full.
+  - **Disk:** ~560 KB of charts per ticker analysed that day, evicted or not, until midnight.
+  - **Measured** on an 8-core M1 with 8 GB RAM, AI off, 2026-10-07: the server's RSS was 80 MB higher with a full 2500 cache than with a full 500 cache. Cold lookups (`cold_bench.py --clients 24 --count 48`, 12 workers, every lookup evicting, A/B/B/A) ran at 108.7/min against 105.8/min, within the ±2.5% between repeat runs, with no swapping.
+  - Every cache operation is O(1). The top-5 list in `/api/health` is a partial selection, 0.3 ms at 2500 entries.
 
 ## Stats page (`--lan` or `--public`)
 
@@ -112,7 +116,7 @@ Measured cost:
 | `--gemini-model` | `LYNCH_GEMINI_MODEL` | `gemini-flash-lite-latest`: offload above the low watermark, with `GEMINI_API_KEY` set |
 | `--gemini-rpm` / `--gemini-rpd` | `LYNCH_GEMINI_RPM` / `LYNCH_GEMINI_RPD` | `15` a minute (the free tier's limit per model) / `975` a Pacific day (room for the daily scans' backup tier) |
 | `--no-gemini` | `LYNCH_GEMINI=0` | Gemini offload on when `GEMINI_API_KEY` is set |
-| `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `500` |
+| `--cache-size` | `LYNCH_UI_CACHE_SIZE` | `2500` |
 | | `LYNCH_UI_SCANS_DIR` / `LYNCH_UI_SCANS` | `scans/` / `7`: the scan archive and how many scans *Latest scans* shows |
 | | `LYNCH_UI_SOCIALS=0` / `LYNCH_UI_SOCIAL_ENV` | on / `venv/bin/activate`: turn the Latest on X read off / where the X tokens are read from |
 | `--social-read-at` | `LYNCH_UI_SOCIAL_READ_AT` / `LYNCH_UI_SOCIAL_TZ` | `09:00` / `America/Los_Angeles`: when the daily Latest on X read happens (9 AM PDT / PST) |

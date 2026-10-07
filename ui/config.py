@@ -113,10 +113,14 @@ class Settings:
     precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 100))
     # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; the daily scans need up to 25)
     fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 225))
-    # Tickers cached per day. An entry is ~21 KB of RAM plus ~560 KB of chart files on disk (swept at
-    # midnight), so 500 costs ~10 MB RAM / ~280 MB disk. FMP is only called on a miss (free plan: 250
-    # calls/day), so a bigger cache never adds FMP calls; it saves Yahoo calls (~12 per cold lookup).
-    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 500))
+    # Tickers cached per day: 2500 is about what the AI writes in a day at full load before Gemini's daily cap runs
+    # out (39 overviews a minute, 24 local + 15 Gemini, for 975 / 15 = 65 minutes). An entry is ~35 KB of RAM with
+    # its AI overview (~21 KB without), so 2500 cost ~85 MB (measured: server RSS +80 MB over 500, and cold lookups
+    # with AI off were not slower with a full 2500 cache, see ui/README.md). Charts on disk (~560 KB per ticker, swept
+    # at midnight) grow with the distinct tickers analysed that day, not with the capacity: an evicted ticker's
+    # chart stays until midnight. FMP is only called on a miss (free plan: 250 calls/day), so a bigger cache never
+    # adds FMP calls; it saves Yahoo calls (~12 per cold lookup).
+    cache_capacity: int = field(default_factory=lambda: _env_int("LYNCH_UI_CACHE_SIZE", 2500))
     # Tickers analysed at the same time. 0 = auto: 1 with the AI overview on (the local model is the
     # bottleneck and shares the machine), auto_workers() with it off. Above 1, each worker is a process.
     workers: int = field(default_factory=lambda: _env_int("LYNCH_UI_WORKERS", 0))
