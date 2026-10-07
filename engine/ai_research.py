@@ -322,7 +322,7 @@ class LynchPinResearcher:
         6M edge and the Quick Overview's red flags. A ticker with a brief is described by it alone;
         others fall back to the raw metrics below.
         """
-        from engine.lynch_pin_core import _growth_decay, _scenario_pegs
+        from engine.lynch_pin_core import _avg_eps_growth, _growth_decay, _scenario_pegs
         context_lines = []
         for d in tickers_data:
             ticker = d['Ticker'].replace('*', '')
@@ -343,13 +343,18 @@ class LynchPinResearcher:
                 # Same scenario logic as the engine, so the "Base ROI math" matches the Base ROI shown
                 _, t_peg, _ = _scenario_pegs(growth_val, mean_peg_val, curr_peg_val, std_val)
                 implied_pe = t_peg * terminal_growth
+                avg_growth = _avg_eps_growth(growth_val)  # EPS growth fades to the terminal growth (≥20%)
             except (ValueError, TypeError, ZeroDivisionError):
-                growth_val, t_peg, terminal_growth, implied_pe = 0, 0, 0, 0
+                growth_val, t_peg, terminal_growth, implied_pe, decay = 0, 0, 0, 0, 1.0
+                avg_growth = 0
+            eps_path = (f"EPS compounds at {avg_growth:.1f}%/yr for 5 years (growth fading from "
+                        f"{d['5YGrowth']} to {terminal_growth:.1f}%)" if decay < 1
+                        else f"EPS compounds at {d['5YGrowth']}/yr for 5 years")
             line = (
                 f"- {d['Ticker']}{w_tag}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
                 f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
                 f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}. "
-                f"Base ROI math: EPS compounds at {d['5YGrowth']}/yr for 5 years, "
+                f"Base ROI math: {eps_path}, "
                 f"terminal growth decays to {terminal_growth:.1f}% (decay {decay}), "
                 f"terminal PEG {t_peg:.2f} × {terminal_growth:.1f}% = {implied_pe:.0f}x implied PE. "
                 f"Current FwdPE is {d['FwdPE']}x → re-rates to {implied_pe:.0f}x at maturity."

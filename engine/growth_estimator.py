@@ -174,6 +174,48 @@ def _fallback_growth(info, ticker_obj, fwd_pe):
     return 0, None
 
 
+# Next-year cap (see _cap_at_next_year): a fiscal year whose consensus growth runs above REBOUND_RATIO x the
+# 5Y rate is a rebound from depressed earnings; at HIGH_GROWTH and above a 5Y rate above next year's is
+# implausible (growth decays, it rarely accelerates). Single-year estimates are too noisy to cap below that.
+REBOUND_RATIO = 1.5
+HIGH_GROWTH = 20.0
+
+
+def _fy_growth(ticker_obj):
+    """(this fiscal year's, next fiscal year's) consensus EPS growth in %, from Yahoo's earnings estimates
+    (``0y`` / ``+1y``); None where missing."""
+    try:
+        ee = ticker_obj.earnings_estimate
+        if not isinstance(ee, pd.DataFrame) or 'growth' not in ee.columns:
+            return None, None
+
+        def pick(period):
+            if period not in ee.index:
+                return None
+            v = ee.loc[period, 'growth']
+            return float(v) * 100 if pd.notna(v) else None
+        return pick('0y'), pick('+1y')
+    except Exception:
+        return None, None
+
+
+def _cap_at_next_year(growth, ticker_obj):
+    """Cap the 5Y growth at next fiscal year's consensus growth when it exceeds it and either this year is a
+    rebound (this year's growth > REBOUND_RATIO x the 5Y rate) or growth is HIGH_GROWTH+.
+
+    The 5Y rate is reverse-engineered from Yahoo's PEG (forward PE / PEG) or FMP's 5Y estimate CAGR, both
+    measured from today's earnings: after a trough they include this year's rebound (MCHP: +122% this year,
+    +26% next, 70% "5Y"). The projection starts from forward EPS, i.e. next fiscal year, which already holds
+    the rebound, so compounding the 5Y rate on top counted it twice. Returns ``(growth, capped)``."""
+    g0, g1 = _fy_growth(ticker_obj)
+    if g1 is None or g1 <= 3 or growth <= g1:
+        return growth, False
+    rebound = g0 is not None and g0 > REBOUND_RATIO * growth
+    if rebound or growth >= HIGH_GROWTH:
+        return g1, True
+    return growth, False
+
+
 def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
     """Blends 5Y growth sources into a single robust estimate.
 
@@ -206,6 +248,9 @@ def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
             avg = avg * 0.6 + fund_cap * 0.4
 
         sources = [s for s, _ in five_year_sources]
+        avg, capped = _cap_at_next_year(avg, ticker_obj)
+        if capped:
+            sources.append('fy1_cap')
         return (avg if avg > 3 else 0), sources
 
     # No 5Y sources — use fallbacks with cap validation
@@ -214,6 +259,7 @@ def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
         fund_cap = _fundamental_cap(ticker_obj)
         if fund_cap and fallback_g > fund_cap * 1.5:
             fallback_g = fallback_g * 0.6 + fund_cap * 0.4
-        return fallback_g, [fallback_src]
+        fallback_g, capped = _cap_at_next_year(fallback_g, ticker_obj)
+        return fallback_g, [fallback_src] + (['fy1_cap'] if capped else [])
 
     return 0, []

@@ -84,11 +84,12 @@ investments). Forward PE = price / analyst consensus EPS for the next fiscal yea
 forward PE = price / forward EPS grown one more year at the 5-year growth estimate.
 - PEG = forward P/E / blended 5-year EPS growth. "Enriched" growth averages the Yahoo analyst \
 consensus with FMP analyst estimates; otherwise it is Yahoo only. A haircut applies when the estimate runs far \
-above the company's historical revenue, margin and buyback growth.
+above the company's historical revenue, margin and buyback growth, and it is capped at next fiscal year's \
+consensus EPS growth after a rebound year (this year's growth above 1.5x the 5-year rate) or from 20% growth.
 - Hist. mean PEG / SD / Dev (SD): today's PEG against the stock's own reconstructed 5-year forward-PEG \
 history. Negative = cheaper than usual. Cyclicals coming off trough earnings can have a distorted history.
-- ROI scenarios: annualised 5-year return from EPS compounding at the growth rate with growth decay and a \
-terminal multiple. The Base case is mean reversion toward the historical PEG, or today's multiple holding when \
+- ROI scenarios: annualised 5-year return from EPS growth (from 20% growth it fades over the 5 years to the \
+decayed terminal growth) and a terminal multiple. The Base case is mean reversion toward the historical PEG, or today's multiple holding when \
 the stock already trades above its mean.
 - Income grade (A++ to D): year-over-year change of each income statement line relative to revenue. Net \
 income and EPS are GAAP, so non-operating gains or losses flow into them and into the grade.

@@ -137,13 +137,17 @@ The growth estimate is the keystone of the entire PEG valuation framework. A sin
 | **Yahoo PEG** | `Forward PE / PEG Ratio` = implied 5Y EPS growth | Always |
 | **FMP Analyst Estimates** | 5Y forward EPS CAGR from analyst consensus | Enrichment only |
 | **Fundamental Cap** | Revenue CAGR + Margin Expansion + Buyback Rate (3Y trailing) | Ceiling validation |
+| **Next-year consensus** | Yahoo's fiscal-year EPS estimates (`0y` this year, `+1y` next year) | Ceiling after a rebound year or from 20% growth |
 
 **Blend logic:**
 1. Simple average across all available 5Y sources
 2. If the average exceeds 1.5× the fundamental cap → haircut: `avg × 0.6 + cap × 0.4`
 3. Fallbacks (2Y analyst CAGR, trailing earnings growth) only used when no 5Y source is available
+4. **Next-year cap:** if the result exceeds next fiscal year's consensus EPS growth (`+1y`, above 3%) and either this year's growth is a rebound (`0y` > 1.5× the 5Y rate) or the 5Y rate is 20%+, it is capped at next year's growth (source tag `fy1_cap`). Below 20% with no rebound, single-year estimates are too noisy to cap with.
 
 This prevents fantasy projections (e.g., TSLA 40% growth with 1% fundamental support) from making expensive stocks appear cheap, while trusting analyst consensus when it aligns with demonstrated performance.
+
+**Why the next-year cap.** Both 5Y sources are measured from today's earnings: Yahoo's growth is reverse-engineered from its PEG (`forward PE / PEG`) and FMP's is the CAGR of its estimate series. After a trough they include this year's rebound (MCHP, Oct 2026: +122% this year, +26% next, "5Y" 70%; Yahoo's PEG for ON implied 96%). The ROI projection starts from forward EPS, which is next fiscal year's estimate and already holds that rebound, so compounding the 5Y rate on top counted it twice, and the low PEG it produced also pushed such names to the top of the screen. The 2Y fallback has the same problem (WK: 2Y CAGR lifted by +89% this year). For 20%+ growth a 5Y rate above next year's means growth accelerating for 5 years, which rarely happens (ALNY 63% vs +41% next year, HUBS 40% vs +27%). Because the cap changes the growth itself, PEG, the reconstructed PEG history, Dev(SD) and the ranking all use the capped rate. It costs one extra Yahoo request per ticker (the earnings estimates; already fetched for the 2Y fallback).
 
 ## Historical Forward PEG Reconstruction
 
@@ -225,7 +229,7 @@ The directional edge is incorporated into the AI narrative, displayed on per-tic
 
 ## 5Y ROI Projections
 
-Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) using a **terminal multiple framework** that accounts for growth deceleration.
+Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) using a **terminal multiple framework** that accounts for growth deceleration, both in the 5 years of EPS growth and in the terminal multiple.
 
 **Terminal Growth Decay** — higher current growth rates receive more aggressive deceleration assumptions:
 
@@ -235,6 +239,8 @@ Projects annualized 5-year returns under three scenarios (Bull, Base, Bear) usin
 | 20–30% | 0.95 | 25% → 21.3% |
 | 30–50% | 0.90 | 40% → 27.7% |
 | 50%+ | 0.85 | 60% → 32.5% |
+
+**EPS path** — EPS grows from forward EPS for 5 years, with the yearly growth **fading linearly** from today's estimate (year 1) to the decayed terminal growth above (year 5), the growth the terminal multiple is priced on. Below 20% nothing fades. Compounding the full estimate for 5 years while pricing the multiple on decayed growth was internally inconsistent and overstated hypergrowth names (ALAB at 86%: 22.5× EPS in 5 years flat, ~12× faded; 45% growth compounds like ~37.8%/yr). The "Base ROI math" lines (AI prompt, Quick Overview) quote this equivalent yearly rate and the fade.
 
 **Terminal PEG** — the multiple assigned at maturity:
 
@@ -251,7 +257,9 @@ The **28x mature terminal PE cap** exists because mature names get no growth dec
 |---|---|---|
 | **Bull** | `terminal_peg + 0.5 × SD` | Market re-rates above mean — multiple expansion. |
 | **Base** | `terminal_peg` | Mean reversion — fair value at maturity. |
-| **Bear** | `max(0.5, min(curr_peg, terminal_peg - 0.5 × SD))` | No re-rating or compression — market stays skeptical. |
+| **Bear** | `min(curr_peg, max(terminal_peg - 0.5 × SD, 0.5 × terminal_peg))` | No re-rating or compression — market stays skeptical. |
+
+The bear case never sits above the base case or above today's PEG, so `Bull ≥ Base ≥ Bear` always holds. It used to be floored at an absolute 0.5 PEG, which put bear above base whenever the historical mean PEG was under 0.5 (NVDA, Oct 2026: base 44.2%, bear 48.2%) and assumed an upward re-rating even in the bear case whenever today's PEG was under 0.5 (ALNY, HUBS, MCHP, WK). The floor is now proportional (at most halving the base PEG), like the above-mean branch below.
 
 When the stock already trades **above** its historical mean PEG, mean reversion would assume a *de-rating* — and for names whose reconstructed history is distorted (e.g. a memory cyclical whose trough EPS drags the 5Y mean PEG toward zero, MU) it produces absurd terminal multiples. In that case the scenarios anchor on **today's multiple holding** instead (the growth-regime cap on the terminal PEG still applies):
 
@@ -263,7 +271,9 @@ When the stock already trades **above** its historical mean PEG, mean reversion 
 
 The AI prompt's "Base ROI math" line uses the same scenario logic, so the implied terminal PE it cites always matches the Base ROI shown.
 
-**Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`
+**Final formula:** `ROI = ((terminal_peg × terminal_growth × projected_EPS) / current_price) ^ (1/5) - 1`, with `projected_EPS = forward_EPS × Π(1 + gₜ)` over the faded path `g₁ … g₅`.
+
+**Effect (Oct 2026, `--top 8 --excl-bad` on Nasdaq 100 + SMH + IGV, 22 tickers, base ROI before → after):** MCHP 82% → 35%, ALNY 80% → 55%, HUBS 72% → 52%, ALAB 68% → 28%, WK 62% → 32%, NXPI 50% → 40%, ADI 36% → 24%, TXN 31% → 20%, NVDA 44% → 37% (bear 48% → 29%); names growing under 20% without a rebound (ADSK, INTU, MDLZ, PAYX, PEP, TRI, DSGX, QTWO) are unchanged. Base ROIs still above 50% (HUBS, ALNY, ON) come from a deep discount to the stock's own historical multiple plus 27–41% next-year growth, i.e. the mean-reversion thesis rather than a data artifact.
 
 **EPS Base Selection** — the projection base uses forward EPS to reflect the market's current pricing of near-term earnings trajectory (e.g., AMD's AI shift). Falls back to trailing EPS only when forward EPS is unavailable or negative (temporary headwinds).
 

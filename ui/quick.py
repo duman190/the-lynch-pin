@@ -7,8 +7,9 @@ or a threshold check, so the same data always gives the same text.
 * Overview: who the company is (name, sector, HQ, size, Yahoo's business summary, margins, dividend,
   analyst consensus) and a one-line valuation snapshot.
 * Reverse DCF: the base ROI's arithmetic, the same "Base ROI math" the AI prompt and the daily scan's
-  research prompt cite (engine._scenario_pegs + _growth_decay): X% base ROI requires EPS to compound
-  at Y%/yr for 5 years and the forward PE to move from Z to the implied terminal PE.
+  research prompt cite (engine._scenario_pegs + _growth_decay + _avg_eps_growth): X% base ROI requires
+  EPS to compound at Y%/yr for 5 years (from 20% growth, the average of a path fading to the terminal
+  growth) and the forward PE to move from Z to the implied terminal PE.
 * Stomach test: rule-based red flags (``RULES``), most serious first.
 """
 import re
@@ -137,7 +138,7 @@ def _overview(d):
 
 def implied_terminal_pe(st):
     """(growth %, terminal forward PE) behind the base ROI — the engine's scenario math, or None."""
-    from engine.lynch_pin_core import _growth_decay, _scenario_pegs
+    from engine.lynch_pin_core import _growth_decay, _scenario_pegs  # noqa: F401 (_growth_decay below)
     g, peg, mean, dev = (_num(st.get(k)) for k in ("growth_pct", "PEG", "Mean", "Dev_SD"))
     if not g or g <= 0 or peg is None or mean is None:
         return None
@@ -152,11 +153,15 @@ def _reverse_dcf(d):
     math = implied_terminal_pe(st) if base is not None and fwd else None
     if math is None:
         return None, None
-    g, term = math
+    from engine.lynch_pin_core import _avg_eps_growth, _growth_decay
+    g5, term = math
+    g = _avg_eps_growth(g5)  # from 20% growth the engine fades EPS growth to the terminal growth
     change = (term / fwd - 1) * 100
     per_year = ((term / fwd) ** 0.2 - 1) * 100  # the multiple's contribution, %/yr over the 5 years
-    out = [f"{base:.1f}% base ROI requires EPS to compound at {g:.1f}%/yr for the next 5 years and the stock to "
-           f"re-rate from a forward PE of {fwd:.1f}x today to a terminal forward PE of {term:.1f}x."]
+    fade = (f" (growth fading from {g5:.1f}% to {g5 ** _growth_decay(g5):.1f}%)"
+            if _growth_decay(g5) < 1 else "")
+    out = [f"{base:.1f}% base ROI requires EPS to compound at {g:.1f}%/yr for the next 5 years{fade} and the "
+           f"stock to re-rate from a forward PE of {fwd:.1f}x today to a terminal forward PE of {term:.1f}x."]
     if change > 5:
         out.append(f"That is {change:.0f}% multiple expansion ({per_year:+.1f}%/yr) on top of the earnings growth: "
                    f"the market has to pay more for each dollar of earnings in 5 years than it does today.")

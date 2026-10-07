@@ -81,6 +81,15 @@ def test_dcf_verdicts(msft, growth, peg, mean, verdict, phrase):
     assert trails == (d["stats"]["Base"] < 9)
 
 
+def test_reverse_dcf_quotes_the_faded_growth_from_20_percent(msft):
+    from engine.lynch_pin_core import _avg_eps_growth
+    d = copy.deepcopy(msft)
+    d["stats"].update(growth_pct=45.0, PEG=0.9, Mean=1.2, Dev_SD=-1.0)
+    dcf = quick.quick_overview(d)["reverse_dcf"]
+    assert (f"requires EPS to compound at {_avg_eps_growth(45.0):.1f}%/yr for the next 5 years (growth fading from "
+            f"45.0% to {45.0 ** 0.9:.1f}%) and the stock to re-rate") in dcf
+
+
 def test_nodata_has_an_overview_but_no_dcf(settings):
     eng = type("E", (fakes.FakeEngine,), {"infos": {"SPY": {"quoteType": "ETF", "regularMarketPrice": 500.0,
                                                             "longName": "SPDR S&P 500 ETF Trust"}}, "rows": {}})

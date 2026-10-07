@@ -253,6 +253,17 @@ class TestAIResearch(unittest.TestCase):
         prompt = LynchPinResearcher.build_prompt(data)
         self.assertIn('terminal PEG 1.00', prompt)
 
+    def test_build_prompt_base_math_quotes_the_faded_growth(self):
+        from engine.ai_research import LynchPinResearcher
+        from engine.lynch_pin_core import _avg_eps_growth
+        data = [{'Ticker': 'HIGH', 'PE': 40.0, 'FwdPE': 25.0, '2YFwd': 18.0, '5YGrowth': '45.0%', 'PEG': 0.56,
+                 'Mean': 0.9, 'Dev_SD': -1.0, 'Bull': '40.0%', 'Base': '35.0%', 'Bear': '20.0%'}]
+        prompt = LynchPinResearcher.build_prompt(data)
+        self.assertIn(f"EPS compounds at {_avg_eps_growth(45.0):.1f}%/yr for 5 years (growth fading from 45.0% to "
+                      f"{45.0 ** 0.9:.1f}%)", prompt)
+        mature = [dict(data[0], Ticker='MATURE', **{'5YGrowth': '13.0%'})]
+        self.assertIn("EPS compounds at 13.0%/yr for 5 years,", LynchPinResearcher.build_prompt(mature))
+
     def test_build_prompt_base_math_follows_above_mean_scenario(self):
         from engine.ai_research import LynchPinResearcher
         # MU-like row: PEG 0.22 above mean 0.09 → base PEG anchors on current − 0.5 SD, not the 0.09 mean
@@ -1337,6 +1348,44 @@ class TestGrowthEstimator(unittest.TestCase):
         self.assertAlmostEqual(g, 20.0)
         self.assertEqual(sources, ['fallback_eg'])
 
+    @staticmethod
+    def _ee(g0, g1):
+        return pd.DataFrame({'avg': [1.0, 1.0], 'growth': [g0, g1]}, index=['0y', '+1y'])
+
+    def test_cap_at_next_year(self):
+        from engine.growth_estimator import _cap_at_next_year
+        t = MagicMock()
+        t.earnings_estimate = self._ee(1.223, 0.257)   # MCHP: +122% this year (rebound), +26% next
+        self.assertEqual(_cap_at_next_year(69.8, t), (25.7, True))
+        t.earnings_estimate = self._ee(0.372, 0.266)   # HUBS: 20%+ growth above next year's rate
+        self.assertEqual(_cap_at_next_year(40.1, t), (26.6, True))
+        t.earnings_estimate = self._ee(0.209, 0.126)   # ADSK: mature (<20%), no rebound → untouched
+        self.assertEqual(_cap_at_next_year(18.0, t), (18.0, False))
+        t.earnings_estimate = self._ee(0.952, 0.709)   # NVDA: next year runs faster → untouched
+        self.assertEqual(_cap_at_next_year(46.4, t), (46.4, False))
+        t.earnings_estimate = self._ee(0.5, 0.02)      # next year flat: too thin to cap with
+        self.assertEqual(_cap_at_next_year(40.0, t), (40.0, False))
+        t.earnings_estimate = self._ee(0.5, float('nan'))
+        self.assertEqual(_cap_at_next_year(40.0, t), (40.0, False))
+        t.earnings_estimate = None                     # no estimates (or a MagicMock): untouched
+        self.assertEqual(_cap_at_next_year(40.0, t), (40.0, False))
+        self.assertEqual(_cap_at_next_year(40.0, MagicMock()), (40.0, False))
+
+    def test_estimate_growth_caps_at_next_year_on_both_paths(self):
+        from engine.growth_estimator import estimate_growth
+        ticker = MagicMock()
+        ticker.income_stmt = pd.DataFrame()
+        ticker.balance_sheet = pd.DataFrame()
+        ticker.earnings_estimate = self._ee(1.223, 0.257)
+        g, sources = estimate_growth('MCHP', {'pegRatio': 0.24, 'forwardPE': 16.8}, ticker, 16.8, enrich=False)
+        self.assertAlmostEqual(g, 25.7)
+        self.assertEqual(sources, ['yahoo_peg', 'fy1_cap'])
+        # fallback (2Y analyst CAGR, itself lifted by this year's +89%): WK
+        ticker.earnings_estimate = self._ee(0.887, 0.206)
+        g, sources = estimate_growth('WK', {'pegRatio': None, 'forwardPE': 17.7}, ticker, 17.7, enrich=False)
+        self.assertAlmostEqual(g, 20.6)
+        self.assertEqual(sources, ['fallback_2y', 'fy1_cap'])
+
     def test_estimate_growth_returns_zero_when_nothing(self):
         from engine.growth_estimator import estimate_growth
         info = {'pegRatio': None, 'forwardPE': None}
@@ -1467,6 +1516,35 @@ class TestLynchPinCore(unittest.TestCase):
         bull, base, bear = _scenario_pegs(15, 1.0, 1.2, 5.0)
         self.assertAlmostEqual(base, 0.6)
         self.assertAlmostEqual(bear, 0.3)
+
+    def test_scenario_pegs_below_mean_never_puts_bear_above_base_or_today(self):
+        from engine.lynch_pin_core import _scenario_pegs
+        # NVDA, 7 Oct 2026: mean PEG 0.44 < the old absolute 0.5 bear floor → bear used to beat base
+        bull, base, bear = _scenario_pegs(46.4, 0.44, 0.32, 0.17)
+        self.assertAlmostEqual(base, 0.44)
+        self.assertTrue(bull > base >= bear)
+        self.assertLessEqual(bear, 0.32)  # never a re-rating up from today's PEG
+        # MCHP: today's PEG 0.24 under the old floor → bear 0.5 assumed a doubling of the multiple
+        bull, base, bear = _scenario_pegs(69.8, 0.64, 0.24, 0.71)
+        self.assertTrue(bull > base > bear)
+        self.assertAlmostEqual(bear, 0.24)
+        # Huge SD: bear at most halves the base (proportional floor), still capped at today's PEG
+        bull, base, bear = _scenario_pegs(25.0, 1.4, 1.2, 3.0)
+        self.assertAlmostEqual(bear, 0.7)
+
+    def test_eps_path_fades_only_from_20_percent_growth(self):
+        from engine.lynch_pin_core import _eps_path, _eps_multiple, _avg_eps_growth, _growth_decay
+        self.assertEqual(_eps_path(15.0), [15.0] * 5)
+        self.assertAlmostEqual(_eps_multiple(15.0), 1.15 ** 5)
+        self.assertAlmostEqual(_avg_eps_growth(12.0), 12.0)
+        path = _eps_path(45.0)
+        self.assertAlmostEqual(path[0], 45.0)
+        self.assertAlmostEqual(path[-1], 45.0 ** _growth_decay(45.0))  # the terminal multiple's growth
+        self.assertTrue(all(a > b for a, b in zip(path, path[1:])))
+        self.assertLess(_eps_multiple(45.0), 1.45 ** 5)
+        self.assertTrue(30.7 < _avg_eps_growth(45.0) < 45.0)
+        # ALAB at 86%: 22.5x EPS in 5 years compounded flat, about half of that faded
+        self.assertLess(_eps_multiple(86.4), 0.6 * 1.864 ** 5)
 
     def test_terminal_peg_high_growth_uses_mean_when_lower(self):
         from engine.lynch_pin_core import _terminal_peg

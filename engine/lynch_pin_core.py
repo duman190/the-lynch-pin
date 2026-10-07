@@ -53,6 +53,29 @@ def _growth_decay(growth_pct):
     return 0.85
 
 
+def _eps_path(growth_pct):
+    """Year-by-year EPS growth (%) over the 5-year projection: fades linearly from today's 5Y estimate in
+    year 1 to the decayed terminal growth in year 5, the growth the terminal multiple is priced on. Below
+    20% (no decay) it stays flat. Compounding the full estimate for 5 years while pricing the terminal
+    multiple on decayed growth overstated hypergrowth names (ALAB at 86% → 22.5x EPS in 5 years)."""
+    terminal = growth_pct ** _growth_decay(growth_pct) if growth_pct > 0 else growth_pct
+    return [growth_pct + (terminal - growth_pct) * (t - 1) / 4 for t in range(1, 6)]
+
+
+def _eps_multiple(growth_pct):
+    """EPS in 5 years over forward EPS along the faded path (``_eps_path``)."""
+    m = 1.0
+    for g in _eps_path(growth_pct):
+        m *= 1 + g / 100
+    return m
+
+
+def _avg_eps_growth(growth_pct):
+    """The constant yearly rate (%) that compounds to the same 5-year EPS as the faded path: what the
+    "Base ROI math" lines quote. Equal to the estimate below 20% growth."""
+    return (_eps_multiple(growth_pct) ** 0.2 - 1) * 100
+
+
 # Ceiling on the terminal (year-5 forward) PE for mature (<20% growth)
 # names. Their terminal growth is undecayed, so PE = PEG × growth; a stock
 # whose reconstructed history is inflated by depressed earnings years
@@ -81,7 +104,11 @@ def _scenario_pegs(growth_pct, mean_peg, curr_peg, std_peg):
 
     Below-or-at its historical mean (the classic GARP setup): base is the
     terminal PEG (mean, capped for growth regime), bull adds half an SD,
-    bear takes half an SD off but never below 0.5 or above today's PEG.
+    bear takes half an SD off (at most halving the base) and never sits above
+    today's PEG, so bull ≥ base ≥ bear always holds. (The old absolute 0.5
+    floor put bear above base whenever the mean PEG was under 0.5, NVDA,
+    and above today's PEG when that was under 0.5, i.e. a bear case that
+    re-rates the stock upward.)
 
     Above its historical mean: the market is already paying more than the
     stock's own history — either a re-rating or a broken history (e.g. a
@@ -101,7 +128,7 @@ def _scenario_pegs(growth_pct, mean_peg, curr_peg, std_peg):
         return bull, base, bear
     terminal_peg = _terminal_peg(growth_pct, mean_peg)
     bull = terminal_peg + 0.5 * std_peg
-    bear = max(0.5, min(curr_peg, terminal_peg - 0.5 * std_peg))
+    bear = min(curr_peg, max(terminal_peg - 0.5 * std_peg, 0.5 * terminal_peg))
     return bull, terminal_peg, bear
 
 
@@ -475,7 +502,8 @@ class LynchPinEngine:
             base_eps = fwd_eps if fwd_eps and fwd_eps > 0 else eps
             if not base_eps or base_eps <= 0: return None
                 
-            proj_eps = base_eps * ((1 + growth_pct / 100) ** 5)
+            # 5 years of EPS growth fading from the estimate to the decayed terminal growth (_eps_path)
+            proj_eps = base_eps * _eps_multiple(growth_pct)
 
             # Terminal growth decay: higher growth → more skepticism
             decay = _growth_decay(growth_pct)
