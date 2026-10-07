@@ -16,9 +16,10 @@ _SESSION = Session(impersonate="chrome", timeout=15, verify=True)
 
 FMP_KEY = os.environ.get("FMP_API_KEY")
 
-# Optional quota gate: called with the symbol before every FMP request (a retry included); a falsy answer
-# skips the request. None (main.py) = no gate. The web portal installs one that caps its own requests so the
-# daily scans keep their share of the FMP plan (ui/fmp_budget.py).
+# Optional quota gate: called with the symbol before every FMP request (a retry included). A falsy answer skips
+# the request; otherwise it returns ``done(answered)``, called once the request is over with whether FMP answered
+# with data (failed calls - errors, rate limits, empty answers - are handed back). None (main.py) = no gate. The
+# web portal installs one that caps its own requests so the daily scans keep their share (ui/fmp_budget.py).
 FMP_GATE = None
 
 
@@ -32,25 +33,47 @@ def _yahoo_5y_growth(info, fwd_pe):
     return None
 
 
+def _fmp_request(symbol):
+    """One analyst-estimates request → (HTTP status, JSON); (None, None) on a network or decoding error, and
+    ("gated", None) when the quota gate (if any) has no room, in which case nothing is sent."""
+    done = None
+    if FMP_GATE is not None:
+        done = FMP_GATE(symbol)
+        if not done:
+            return "gated", None
+    answered = False
+    try:
+        url = (f"https://financialmodelingprep.com/stable/analyst-estimates"
+               f"?symbol={symbol}&period=annual&apikey={FMP_KEY}")
+        resp = _SESSION.get(url)
+        if resp.status_code == 429:
+            return 429, None
+        data = resp.json()
+        answered = resp.status_code == 200 and isinstance(data, list) and len(data) > 0
+        return resp.status_code, data
+    except Exception:
+        return None, None
+    finally:
+        if callable(done):
+            done(answered)
+
+
 def _fmp_5y_growth(symbol):
     """5Y EPS CAGR from Financial Modeling Prep analyst estimates.
     Retries once after 60s on rate limit, gives up on second failure."""
     if not FMP_KEY:
         return None
     for attempt in range(2):
-        if FMP_GATE is not None and not FMP_GATE(symbol):
+        status, data = _fmp_request(symbol)
+        if status == "gated":
             return None  # over the caller's quota: no request, so FMP counts nothing
+        if status == 429:
+            if attempt == 0:
+                print(f"  ⏳ FMP rate limit — waiting 60s...")
+                time.sleep(60)
+                continue
+            return None
         try:
-            url = (f"https://financialmodelingprep.com/stable/analyst-estimates"
-                   f"?symbol={symbol}&period=annual&apikey={FMP_KEY}")
-            resp = _SESSION.get(url)
-            if resp.status_code == 429:
-                if attempt == 0:
-                    print(f"  ⏳ FMP rate limit — waiting 60s...")
-                    time.sleep(60)
-                    continue
-                return None
-            data = resp.json()
             if not data or not isinstance(data, list) or len(data) < 2:
                 return None
 

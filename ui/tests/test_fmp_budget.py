@@ -19,24 +19,33 @@ class Clock:
 def test_cap_and_rolling_window(tmp_path):
     clock = Clock()
     b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=3, clock=clock)
-    assert [b.acquire("A") for _ in range(4)] == [True, True, True, False]
+    assert [bool(b.acquire("A")) for _ in range(4)] == [True, True, True, False]
     assert b.status() == {"used": 3, "limit": 3, "remaining": 0, "next_free_s": 86400}
     clock.t += 3600
     assert b.acquire("B") is False and b.status()["next_free_s"] == 82800  # still 24 h back
     clock.t += 82801  # the first three are now more than 24 h old
-    assert b.acquire("C") is True and b.status()["used"] == 1
+    assert b.acquire("C") and b.status()["used"] == 1
+
+
+def test_failed_request_hands_its_slot_back(tmp_path):
+    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=2, clock=Clock())
+    ok, failed = b.acquire("A"), b.acquire("B")
+    assert b.acquire("C") is False  # both slots reserved while the requests are in flight
+    ok(True)
+    failed(False)
+    assert b.status()["used"] == 1 and b.acquire("D")
 
 
 def test_survives_a_restart(tmp_path):
     path, clock = str(tmp_path / "b.sqlite3"), Clock()
-    assert FmpBudget(path, limit=2, clock=clock).acquire("A")
-    assert FmpBudget(path, limit=2, clock=clock).acquire("B")
+    FmpBudget(path, limit=2, clock=clock).acquire("A")(True)
+    FmpBudget(path, limit=2, clock=clock).acquire("B")(True)
     assert FmpBudget(path, limit=2, clock=clock).acquire("C") is False
 
 
 def _grab(path, n, out):
     b = FmpBudget(path, limit=25)
-    out.put(sum(b.acquire(f"P{os.getpid()}") for _ in range(n)))
+    out.put(sum(bool(b.acquire(f"P{os.getpid()}")) for _ in range(n)))
 
 
 def test_processes_share_one_count(tmp_path):
@@ -76,19 +85,30 @@ def fmp(monkeypatch):
 ESTIMATES = [{"date": f"{y}-12-31", "epsAvg": 2.0 * 1.15 ** (y - 2025)} for y in range(2025, 2031)]
 
 
-def test_gate_counts_every_request_and_blocks_past_the_cap(tmp_path, fmp):
+def test_only_answered_requests_count(tmp_path, fmp):
     ge, calls, replies = fmp
-    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=3, clock=Clock())
+    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=2, clock=Clock())
     ge.FMP_GATE = b.acquire
     replies[:] = [FakeResp(data=ESTIMATES)]
-    assert round(ge._fmp_5y_growth("NVDA")) == 15 and len(calls) == 1           # enriched: 1 request
-    replies[:] = [FakeResp(data=[])]
-    assert ge._fmp_5y_growth("XYZ") is None and len(calls) == 2                 # "Not enriched", yet FMP counted it
-    assert b.status()["used"] == 2
+    assert round(ge._fmp_5y_growth("NVDA")) == 15 and b.status()["used"] == 1   # answered with data: counts
+    for reply in (FakeResp(data=[]), FakeResp(403, {"Error Message": "Invalid API KEY"}),
+                  FakeResp(200, {"Error Message": "Limit Reach"}), FakeResp(500, None)):
+        replies[:] = [reply]
+        assert ge._fmp_5y_growth("XYZ") is None and b.status()["used"] == 1     # failed calls: handed back
     replies[:] = [FakeResp(429), FakeResp(data=ESTIMATES)]
-    assert ge._fmp_5y_growth("AMD") is None and len(calls) == 3                 # 429 → the retry finds no room
-    assert b.status()["used"] == 3
-    assert ge._fmp_5y_growth("TSM") is None and len(calls) == 3                 # spent: no request at all
+    assert round(ge._fmp_5y_growth("AMD")) == 15 and b.status()["used"] == 2    # the 429 doesn't count, the retry does
+    n = len(calls)
+    assert ge._fmp_5y_growth("TSM") is None and len(calls) == n                 # spent: no request at all
+
+
+def test_network_error_does_not_count(tmp_path, fmp, monkeypatch):
+    ge, calls, replies = fmp
+    b = FmpBudget(str(tmp_path / "b.sqlite3"), limit=2, clock=Clock())
+    ge.FMP_GATE = b.acquire
+    def boom(url):
+        raise ConnectionError("down")
+    monkeypatch.setattr(ge._SESSION, "get", boom)
+    assert ge._fmp_5y_growth("NVDA") is None and b.status()["used"] == 0
 
 
 def test_no_key_or_no_gate(tmp_path, fmp, monkeypatch):

@@ -1,13 +1,15 @@
 """FMP request budget for the portal's growth enrichment.
 
-FMP's free plan allows 250 requests a day and counts each request that reaches it, whatever the answer: an
-estimate too thin to use (the lookup shows "Not enriched") still costs one. The daily scans (main.py) need up to
-25, so the portal keeps to ``limit`` (225) requests in any rolling 24 hours. A rolling window rather than a
-calendar day: FMP's reset time is not documented, and 225 per local day could put up to 450 inside one of FMP's
-days. Lookups that never call FMP (enrichment off, no forward earnings, the budget spent) cost nothing.
+FMP's free plan allows 250 requests a day; the daily scans (main.py) need up to 25, so the portal keeps to
+``limit`` (225) in any rolling 24 hours. Only requests FMP answered with data count: failed calls (an error
+status, a rate limit, a network error, an empty answer) are taken to cost nothing on FMP's side, and lookups
+that never call FMP (enrichment off, no forward earnings, the budget spent) cost nothing either. A rolling window
+rather than a calendar day: FMP's reset time is not documented, and 225 per local day could put up to 450 inside
+one of FMP's days.
 
-The engine asks before every request (``engine.growth_estimator.FMP_GATE``, a 429 retry included). Analyses
-run in several processes, so the count lives in SQLite (``<cache_dir>/fmp_budget.sqlite3``): each grant is one
+The engine asks before every request (``engine.growth_estimator.FMP_GATE``, a 429 retry included): the request
+reserves a slot first, so parallel lookups can't overshoot the cap, and hands it back if it failed. Analyses run
+in several processes, so the count lives in SQLite (``<cache_dir>/fmp_budget.sqlite3``): each grant is one
 ``BEGIN IMMEDIATE`` transaction, which serialises the processes, and it survives restarts.
 """
 import os
@@ -31,7 +33,8 @@ class FmpBudget:
         return sqlite3.connect(self.path, timeout=10, isolation_level=None)  # transactions by hand
 
     def acquire(self, symbol):
-        """One FMP request for ``symbol``: True (and counted) while the rolling window has room, else False."""
+        """Reserve one FMP request for ``symbol``: False when the rolling window is full, else ``done(answered)``,
+        which keeps the slot if FMP answered with data and hands it back if the request failed."""
         now = self._clock()
         db = self._connect()
         try:
@@ -45,16 +48,26 @@ class FmpBudget:
                     print(f"⚠️  FMP enrichment paused: {used}/{self.limit} requests in the last 24 h "
                           "(the rest of the plan is kept for the daily scans)", flush=True)
                 return False
-            db.execute("INSERT INTO calls VALUES (?, ?)", (now, str(symbol)))
+            slot = db.execute("INSERT INTO calls VALUES (?, ?)", (now, str(symbol))).lastrowid
             db.execute("COMMIT")
             self._warned = False
-            return True
+            return lambda answered: answered or self._release(slot)
         except sqlite3.Error:
             try:
                 db.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
             return False  # can't count it: don't spend it
+        finally:
+            db.close()
+
+    def _release(self, slot):
+        """A failed request: its reserved slot goes back."""
+        db = self._connect()
+        try:
+            db.execute("DELETE FROM calls WHERE rowid = ?", (slot,))
+        except sqlite3.Error:
+            pass  # stays counted: on the safe side
         finally:
             db.close()
 
