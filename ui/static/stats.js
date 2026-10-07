@@ -254,6 +254,51 @@
     }
   }
 
+  // ── part of a whole (SVG donut): slices clockwise from 12 o'clock, a 2px surface gap between them; the
+  //    legend beside it names each slice with its count and share (the chart's table view) ──
+  function pieChart(card, slices, center) {
+    const host = $(".st-pie", card);
+    host.textContent = "";
+    const total = slices.reduce((a, s) => a + s.value, 0);
+    if (!total) return empty(host, "No requests in this window yet");
+    const R = 74, W = 30, C = 2 * Math.PI * R, GAP = 2;  // ring radius (mid-stroke), width, circumference
+    const root = svg("svg", { viewBox: "0 0 200 200", role: "img", tabindex: "0",
+      "aria-label": slices.map((s) => `${s.name}: ${num(s.value)} (${pct(100 * s.value / total)})`).join(", ") }, host);
+    svg("circle", { cx: 100, cy: 100, r: R, fill: "none", stroke: COLOR.grid, "stroke-width": W }, root);
+    const shown = slices.filter((s) => s.value > 0);
+    let at = 0;
+    for (const s of shown) {
+      const len = C * s.value / total;
+      const gap = shown.length > 1 ? Math.min(GAP, len / 2) : 0;
+      const arc = svg("circle", { cx: 100, cy: 100, r: R, fill: "none", stroke: s.color, "stroke-width": W,
+        "stroke-dasharray": `${r1(len - gap)} ${r1(C)}`, "stroke-dashoffset": r1(-at),
+        transform: "rotate(-90 100 100)", class: "pie-slice" }, root);
+      const tipRows = () => [{ color: s.color, value: num(s.value), label: `${pct(100 * s.value / total)} of requests` }];
+      arc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, s.name, tipRows()));
+      arc.addEventListener("pointerleave", hideTip);
+      at += len;
+    }
+    const t1 = svg("text", { x: 100, y: 98, "text-anchor": "middle", class: "pie-total" }, root);
+    t1.textContent = num(total);
+    const t2 = svg("text", { x: 100, y: 118, "text-anchor": "middle", class: "pie-label" }, root);
+    t2.textContent = center;
+    root.addEventListener("focus", () => {
+      const r = root.getBoundingClientRect();
+      showTip(r.right, r.top + r.height / 2, `${num(total)} ${center}`,
+        slices.map((s) => ({ color: s.color, value: num(s.value), label: `${s.name} · ${pct(100 * s.value / total)}` })));
+    });
+    root.addEventListener("blur", hideTip);
+    const ul = h("ul", "pie-legend", null, host);
+    for (const s of slices) {
+      const li = h("li", null, null, ul);
+      h("i", "pie-key", null, li).style.background = s.color;
+      const txt = h("span", "pie-name", s.name, li);
+      if (s.note) h("small", "muted", s.note, txt);
+      h("b", null, num(s.value), li);
+      h("span", "pie-pct", pct(100 * s.value / total), li);
+    }
+  }
+
   // ── daily time series (SVG): one value per day, nulls before recording began ──
   function dayChart(card, days, key, title) {
     const host = $(".st-chart", card);
@@ -419,11 +464,11 @@
       `visitors ${d.visitors.retention_days} days (rolling)`;
     tiles(d);
 
-    const rpm = $("#c-rpm");
-    const rpmSeries = [{ name: "All requests", color: COLOR.s1, cdf: d.rpm.requests },
-                       { name: "Ticker queries", color: COLOR.s2, cdf: d.rpm.queries }];
-    cdfChart(rpm, rpmSeries, { title: "Requests/min", fmt: plain });
-    pcts(rpm, rpmSeries, plain);
+    const lookups = d.tickers.total || 0, requests = d.rejections.requests || 0;
+    pieChart($("#c-mix"), [
+      { name: "Ticker lookups", value: Math.min(lookups, requests), color: COLOR.s2 },
+      { name: "Other requests", note: "pages, charts, scans, AI overviews", value: Math.max(0, requests - lookups), color: COLOR.s1 },
+    ], "requests");
 
     const lat = $("#c-latency");
     cdfChart(lat, [{ color: COLOR.s1, cdf: d.latency }], { title: "Latency", fmt: dur, tick: durTick,

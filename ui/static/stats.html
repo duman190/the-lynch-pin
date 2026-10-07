@@ -47,13 +47,9 @@
     <section class="st-section" aria-labelledby="h-main">
       <h2 id="h-main">Requests &amp; lookups</h2>
       <div class="st-grid">
-        <article class="panel st-card" id="c-rpm">
-          <header><h3>Requests per minute</h3><p class="muted small">CDF over the minutes with traffic; the page's own polling and health checks are not counted</p></header>
-          <div class="st-legend" aria-hidden="true">
-            <span><i class="key key-1"></i>All requests</span><span><i class="key key-2"></i>Ticker queries</span>
-          </div>
-          <div class="st-chart"></div>
-          <div class="st-pcts"></div>
+        <article class="panel st-card" id="c-mix">
+          <header><h3>Ticker lookups vs other requests</h3><p class="muted small">Share of the requests the portal answered; the page's own polling and health checks are not counted</p></header>
+          <div class="st-pie"></div>
         </article>
         <article class="panel st-card" id="c-latency">
           <header><h3>Ticker query latency</h3><p class="muted small">CDF, log scale: cold lookups only (an analysis ran), from the lookup to its result</p></header>

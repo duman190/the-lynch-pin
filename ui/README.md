@@ -62,7 +62,7 @@ With `--lan` or `--public` the portal also starts a second server, the **stats p
 
 A range switch (24 h / 7 d / 30 d) scopes everything but *Visitors*; the page refreshes every minute.
 - **Tiles:** cold lookups (ticker queries that waited for an analysis: a new one, a ↻ Refresh, or one already running), peak cold lookups per minute, ticker queries, cold-lookup latency p99.9, cache hit rate, rejected %, DAU today, MAU.
-- **Requests per minute:** CDF over the minutes with traffic (an idle night is not a 0-RPM sample), all requests and ticker queries. The open page's own traffic is not counted: the health check every 30 s and the polls while a lookup or an AI overview runs (`?poll=1`), unless the portal refused them.
+- **Ticker lookups vs other requests:** a donut of the requests the portal answered in the window: ticker lookups against everything else (pages, charts, scans, AI overviews), with each slice's count and share beside it. The open page's own traffic is not counted: the health check every 30 s and the polls while a lookup or an AI overview runs (`?poll=1`), unless the portal refused them.
 - **Ticker query latency:** CDF on a log scale over cold lookups only, from the lookup to its result, with **p99.9 highlighted**: the time until its analysis finished, queue and Yahoo pauses included; a lookup that joins an analysis already running counts from when it joined. Cache hits (well under a millisecond) are left out.
 - **Cache hit rate per day:** CDF over days of the share of each day's lookups answered from the daily cache, plus where all lookups were answered from (cache, new analysis, joined one in progress, a recent result).
 - **Most queried tickers:** the top 10 as a share of all ticker queries.
