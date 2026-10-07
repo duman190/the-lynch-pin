@@ -55,6 +55,9 @@ h2 { color: var(--sky); font-size: 1.15rem; text-transform: uppercase; font-weig
 :focus-visible { outline: 2px solid var(--sky); outline-offset: 3px; border-radius: 6px; }
 
 /* ── top bar ─────────────────────────────────────────────────────────────── */
+/* Anything scrolled into view (a ticker's result, Latest scans) stops below the sticky header. --topbar-h is
+   its measured height (app.js): on an iPhone it includes the notch / Dynamic Island inset. */
+html { scroll-padding-top: calc(var(--topbar-h, 60px) + 12px); }
 .topbar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -167,7 +170,7 @@ body:not(.verbose) .aim { min-width: 0; white-space: nowrap; }
 body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Latest scans: iOS-style widget stack ────────────────────────────────── */
-.scans { display: grid; gap: 12px; min-width: 0; scroll-margin-top: 72px; }
+.scans { display: grid; gap: 12px; min-width: 0; }
 .scans-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .scans-nav { display: flex; gap: 8px; }
 .scan-arrow {
@@ -309,7 +312,7 @@ a.x-tag:hover { text-decoration: underline; }
 .thread-nav { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 
 /* ── result ──────────────────────────────────────────────────────────────── */
-.result { display: grid; gap: 16px; scroll-margin-top: 72px; }
+.result { display: grid; gap: 16px; }
 .result-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
   border-color: rgba(93,156,236,.35); box-shadow: 0 0 40px rgba(93,156,236,.10), 0 10px 40px rgba(0,0,0,.35); }
 .rh-ticker { font: 900 2.4rem/1 var(--mono); color: var(--white); letter-spacing: .02em; }

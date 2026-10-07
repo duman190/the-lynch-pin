@@ -49,6 +49,15 @@ function openLightbox(src, alt, filename) {
   if (typeof dlg.showModal === "function") dlg.showModal();
   else window.open(src, "_blank", "noopener");
 }
+/* The sticky header's height as --topbar-h (app.css scroll-padding-top): it changes with the notch inset,
+   the chips that appear and the font size, so it is measured rather than assumed. */
+function trackTopbar() {
+  const bar = document.querySelector(".topbar");
+  const set = () => document.documentElement.style.setProperty("--topbar-h", `${Math.ceil(bar.getBoundingClientRect().height)}px`);
+  set();
+  if ("ResizeObserver" in window) new ResizeObserver(set).observe(bar, { box: "border-box" });  // padding: notch inset
+  else window.addEventListener("resize", set);
+}
 function initLightbox() {
   const dlg = $("#lightbox");
   $("#lightbox-close").addEventListener("click", () => dlg.close());
@@ -194,6 +203,7 @@ async function refreshHealth() {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
+  trackTopbar();
   initLightbox();
   initViews();
   await refreshHealth();
