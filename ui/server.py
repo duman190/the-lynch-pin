@@ -40,6 +40,9 @@ from ui import netguard  # noqa: E402
 from ui.netguard import _ip, is_allowed_host, is_local_client  # noqa: E402
 from ui.stats import DEFAULT_REASON  # noqa: E402
 
+# A visitor's action (stats page): a scan thread opened, or a ticker looked up (not /ai, /deepdive under it)
+USER_ACTION_RE = re.compile(r"^/api/(?:scans|ticker)/[^/]+$")
+
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -164,7 +167,7 @@ def make_handler(app):
 
         def _begin(self):
             self._code = self._reason = None  # one handler serves every request of a keep-alive connection
-            self._background = False  # set by _get for the page's own polling (not counted as a request)
+            self._action = False  # set by _get for what a visitor did (counted as a request on the stats page)
             self._t0, self._t0_mono = time.time(), time.monotonic()
 
         _marked = None  # (visitor, hour) this connection last marked for DAU / MAU
@@ -174,7 +177,7 @@ def make_handler(app):
             its visitor (DAU / MAU)."""
             if app.stats is not None and self._code is not None:
                 refused = self._reason is not None or self._code in DEFAULT_REASON
-                if not self._background or refused:  # a refused poll still counts, under its reason
+                if self._action or refused:  # every refused request counts, under its reason
                     app.stats.hit(self._code, self._reason, ts=self._t0)
                 if self._code < 400:
                     mark = (self._visitor(), int(self._t0 // 3600))
@@ -303,10 +306,11 @@ def make_handler(app):
                 return
             url = urlsplit(self.path)
             path, query = url.path, parse_qs(url.query)
-            # What the open page asks for on its own (the health chip every 30 s, polls while a lookup or an AI
-            # overview runs) is not a visitor's request: the stats page leaves it out of the request counts.
-            self._background = path == "/api/health" or (
-                path.startswith("/api/ticker/") and query.get("poll", ["0"])[0] == "1")
+            # The stats page counts what visitors do: open the portal, open a scan thread, look up a ticker (↻ Refresh
+            # included). What the page then fetches on its own is not counted: its files and images, the scan list
+            # and X feed, the AI overview and its stream, the deep-dive prompt, health checks and polls (?poll=1).
+            poll = query.get("poll", ["0"])[0] == "1"
+            self._action = path in ("/", "/index.html") or (bool(USER_ACTION_RE.match(path)) and not poll)
             try:
                 self.route(path, query)
             except (BrokenPipeError, ConnectionResetError, TimeoutError):

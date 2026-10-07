@@ -402,6 +402,32 @@ def test_portal_counts_requests_rejections_and_cache_hits(settings, rec):
         jm.shutdown()
 
 
+def test_only_visitor_actions_are_counted_as_requests(settings, rec):
+    """Opening the portal, opening a scan thread and looking up a ticker are a visitor's actions; the files,
+    the scan list, the X feed, the AI overview and the deep-dive prompt the page then loads are not."""
+    jm = make_jm(settings, rec)
+    httpd = serve(make_handler(PortalApp(settings, jobs=jm, stats=rec)))
+    try:
+        assert get(httpd, "/")[0].status == 200                      # action
+        for path in ("/static/app.css", "/static/app.js", "/static/img/logo.png", "/api/scans", "/api/socials",
+                     "/manifest.webmanifest"):
+            get(httpd, path)                                          # loaded by the page: not counted
+        get(httpd, "/api/scans/nope")                                 # action (404: no such scan here)
+        get(httpd, "/api/ticker/MSFT")                                # action
+        deadline = time.time() + 5
+        while json.loads(get(httpd, "/api/ticker/MSFT?poll=1")[1])["status"] != "done" and time.time() < deadline:
+            time.sleep(0.02)
+        get(httpd, "/api/ticker/MSFT/deepdive")                       # not counted
+        get(httpd, "/api/ticker/MSFT/ai")                             # not counted
+        rec.flush(final=True)
+        s = rec.summary(1)
+        assert s["rejections"]["requests"] == 3 and s["rejections"]["total"] == 0
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        jm.shutdown()
+
+
 def test_page_polling_is_not_counted_as_requests(settings, rec):
     """Health checks and lookup / AI polls are the open page talking to the server, not a visitor's requests."""
     jm = make_jm(settings, rec)

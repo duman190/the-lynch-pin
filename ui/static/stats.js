@@ -260,7 +260,7 @@
     const host = $(".st-pie", card);
     host.textContent = "";
     const total = slices.reduce((a, s) => a + s.value, 0);
-    if (!total) return empty(host, "No requests in this window yet");
+    if (!total) return empty(host, "Nothing in this window yet");
     const R = 74, W = 30, C = 2 * Math.PI * R, GAP = 2;  // ring radius (mid-stroke), width, circumference
     const root = svg("svg", { viewBox: "0 0 200 200", role: "img", tabindex: "0",
       "aria-label": slices.map((s) => `${s.name}: ${num(s.value)} (${pct(100 * s.value / total)})`).join(", ") }, host);
@@ -273,7 +273,7 @@
       const arc = svg("circle", { cx: 100, cy: 100, r: R, fill: "none", stroke: s.color, "stroke-width": W,
         "stroke-dasharray": `${r1(len - gap)} ${r1(C)}`, "stroke-dashoffset": r1(-at),
         transform: "rotate(-90 100 100)", class: "pie-slice" }, root);
-      const tipRows = () => [{ color: s.color, value: num(s.value), label: `${pct(100 * s.value / total)} of requests` }];
+      const tipRows = () => [{ color: s.color, value: num(s.value), label: `${pct(100 * s.value / total)} of ${center}` }];
       arc.addEventListener("pointermove", (e) => showTip(e.clientX, e.clientY, s.name, tipRows()));
       arc.addEventListener("pointerleave", hideTip);
       at += len;
@@ -467,8 +467,8 @@
     const lookups = d.tickers.total || 0, requests = d.rejections.requests || 0;
     pieChart($("#c-mix"), [
       { name: "Ticker lookups", value: Math.min(lookups, requests), color: COLOR.s2 },
-      { name: "Other requests", note: "pages, charts, scans, AI overviews", value: Math.max(0, requests - lookups), color: COLOR.s1 },
-    ], "requests");
+      { name: "Other actions", note: "portal visits, scans opened", value: Math.max(0, requests - lookups), color: COLOR.s1 },
+    ], "actions");
 
     const lat = $("#c-latency");
     cdfChart(lat, [{ color: COLOR.s1, cdf: d.latency }], { title: "Latency", fmt: dur, tick: durTick,
