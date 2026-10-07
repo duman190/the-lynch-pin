@@ -187,13 +187,15 @@ class AIStream:
 
 
 class AIJob:
-    __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen", "stream")
+    __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen", "stream",
+                 "warm")
 
     def __init__(self, sym, entry, now):
         self.sym, self.entry = sym, entry
         self.status, self.result, self.error = "queued", None, None
         self.created, self.started, self.finished, self.gen = now, None, None, None
         self.stream = AIStream()
+        self.warm = False  # started by the nightly pre-cache, not a visitor: left off the stats page
 
 
 class JobManager:
@@ -381,6 +383,49 @@ class JobManager:
                 self._cv.notify_all()
             return self._ai_snapshot(job)
 
+    def warm(self, sym, ai=True, timeout=None):
+        """Pre-cache ``sym`` (ui/precache.py): analyse it if today's cache doesn't hold it, then, when the AI
+        overview is on, generate its overview; returns once both are finished → (analysis, ai) outcomes.
+        Not a visitor's lookup: no LFU use or hit/miss, nothing on the stats page (a visitor who looks the
+        ticker up meanwhile joins the analysis and is counted as usual)."""
+        limit = None if timeout is None else self._clock() + timeout
+        late = lambda: limit is not None and self._clock() > limit  # noqa: E731
+        with self._cv:
+            if self._stop:
+                return "stopped", None
+            entry = self.lookup(sym)
+            if entry is not None:
+                outcome = "cached"
+            else:
+                job = self._inflight.get(sym)
+                if job is None:
+                    job = Job(sym, self._clock(), self._today())
+                    self._inflight[sym] = job
+                    self._queue.append(job)
+                    self._cv.notify_all()
+                while self._inflight.get(sym) is job and not self._stop and not late():
+                    self._cv.wait(1.0)
+                if self._inflight.get(sym) is job:
+                    return ("stopped" if self._stop else "timeout"), None
+                outcome = job.status
+                entry = self.lookup(sym)
+        if not ai or self.llm is None or entry is None or entry.get("status") != "done":
+            return outcome, None
+        if entry.get("ai"):
+            return outcome, "cached"
+        snap = self.request_ai(sym)
+        if snap.get("status") in ("unavailable", "error", "busy"):
+            return outcome, snap.get("reason") or snap.get("status")
+        with self._cv:
+            aj = self._ai_inflight.get(sym)
+            if aj is not None:
+                aj.warm = True
+            while aj is not None and self._ai_inflight.get(sym) is aj and not self._stop and not late():
+                self._cv.wait(1.0)
+            if aj is not None and self._ai_inflight.get(sym) is aj:
+                return outcome, "stopped" if self._stop else "timeout"
+            return outcome, (aj.status if aj is not None else snap.get("status"))
+
     def deep_dive(self, sym):
         """Deep Dive Prompt for today's analysis of ``sym`` (with the AI overview once it is written)."""
         from ui.deepdive import build_deep_dive
@@ -547,7 +592,7 @@ class JobManager:
                     # written from (a quant ↻ Refresh meanwhile replaces the entry → it gets a fresh AI).
                     self.store.update(job.sym, lambda e: e.__setitem__("ai", ai) if e is job.entry else None)
                 self._finish_ai(job)
-            if self.stats is not None:
+            if self.stats is not None and not job.warm:
                 self.stats.ai(job.sym, job.status, result.get("metrics"), total_s=job.finished - job.started,
                               wait_s=job.started - job.created, model=result.get("model_short") or result.get("model"))
 

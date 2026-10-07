@@ -241,6 +241,19 @@ class StatsRecorder:
             self._db.close()
 
     # ── reader (stats page) ──────────────────────────────────────────────────
+    def top_tickers(self, n, days=MAU_DAYS, now=None):
+        """The ``n`` tickers visitors looked up most in the last ``days`` days (errors left out), most first;
+        ties go to the most recent. Read by the nightly pre-cache (ui/precache.py)."""
+        now = self._clock() if now is None else now
+        db = self._connect()
+        try:
+            rows = db.execute("SELECT ticker FROM queries WHERE ts >= ? AND status IN ('done', 'nodata') "
+                              "GROUP BY ticker ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT ?",
+                              (now - days * 86400, max(0, int(n)))).fetchall()
+        finally:
+            db.close()
+        return [t for (t,) in rows]
+
     def summary(self, days=None, now=None):
         """Everything the stats page draws, for the last ``days`` days (at most the retention window)."""
         days = self.retention_days if days is None else min(max(1, int(days)), self.retention_days)

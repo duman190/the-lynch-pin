@@ -125,6 +125,8 @@ class PortalApp:
             out["cache"] = self.jobs.cache_stats()
             if self.settings.enrich_enabled:
                 out["enrich"] = self._fmp_budget().status()  # FMP requests in the last 24 h vs the cap
+            if getattr(self, "precacher", None) is not None:
+                out["precache"] = self.precacher.last  # the last night's run (None until one has run)
         return self._public_health(out) if self.public else out
 
     def _fmp_budget(self):
@@ -139,6 +141,7 @@ class PortalApp:
         (cache top / running), this machine's LAN setting and the local model's address."""
         out.pop("lan", None)
         out.pop("enrich", None)  # this machine's FMP quota
+        out.pop("precache", None)
         cache = out.get("cache")
         if cache:
             for k in ("top", "running", "ai_running"):
@@ -605,6 +608,10 @@ def parse_args(argv=None):
     p.add_argument("--fmp-limit", type=int, default=s.fmp_limit, metavar="N",
                    help="FMP requests the portal may make in any rolling 24 h (default 225: the free plan's 250 a "
                         "day minus 25 for the daily scans); past it lookups are not enriched")
+    p.add_argument("--precache", type=int, default=s.precache, metavar="N",
+                   help="right after the cache resets at midnight, analyse the N most looked-up tickers of the "
+                        "last 30 days, one at a time with their AI overviews (default 100; 0 = off; needs the "
+                        "stats page, i.e. --lan or --public)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
     p.add_argument("-v", "--verbose", action="store_true", default=s.verbose,
@@ -633,6 +640,7 @@ def parse_args(argv=None):
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
     s.enrich = a.enrich
     s.fmp_limit = max(0, a.fmp_limit)
+    s.precache = max(0, a.precache)
     s.workers = max(0, a.workers)
     s.public = a.public
     s.verbose = a.verbose
@@ -713,6 +721,13 @@ def main(argv=None):
             print(f"⚠️  only {free} MB of RAM free: {app.jobs.workers} workers instead of {CPU_WORKERS} "
                   f"(~{WORKER_MB} MB each). Free memory (e.g. unload the LM Studio model) or set --workers.",
                   flush=True)
+    precacher = None
+    if app.jobs is not None and app.stats is not None and settings.precache:
+        from ui.precache import Precacher
+        precacher = app.precacher = Precacher(app.jobs, app.stats, settings.precache).start()
+        print(f"🌙 Pre-cache: each night after the cache resets, the {settings.precache} most looked-up tickers "
+              f"of the last 30 days{' with their AI overviews' if app.llm is not None else ''}, one at a time",
+              flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning} parallel={settings.llm_parallel}", flush=True)
@@ -725,6 +740,8 @@ def main(argv=None):
         if stats_httpd is not None:
             stats_httpd.shutdown()
             stats_httpd.server_close()
+        if precacher is not None:
+            precacher.stop()
         if app.jobs is not None:
             app.jobs.shutdown()
         if app.stats is not None:

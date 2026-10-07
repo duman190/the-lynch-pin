@@ -96,6 +96,9 @@ class Settings:
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
     # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
+    # Nightly pre-cache (ui/precache.py, needs the stats page: --lan / --public): right after midnight, analyse the
+    # N most looked-up tickers of the last 30 days, one at a time with their AI overviews (0 = off)
+    precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 100))
     # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; the daily scans need up to 25)
     fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 225))
     # Tickers cached per day. An entry is ~21 KB of RAM plus ~560 KB of chart files on disk (swept at
