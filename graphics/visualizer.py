@@ -45,16 +45,19 @@ class LynchPinVisualizer:
             os.makedirs(self.output_dir)
 
     def _get_benchmark_data(self, source_name):
+        """(label, 5Y CAGR %) of the scan's benchmark ETF as a total return: the dividend-adjusted close
+        reinvests the dividends, matching the dividend yield in the tickers' ROIs. The S&P 500 is SPY, not
+        ^GSPC, a price-only index that leaves its dividend yield out."""
         src = os.path.basename(source_name).lower().replace('.txt', '')
-        ticker_sym, label = "^GSPC", "S&P 500"
+        ticker_sym, label = "SPY", "S&P 500"
         for key, (sym, lbl) in BENCHMARKS.items():
             if key in src:
                 ticker_sym, label = sym, lbl
                 break
 
-        for sym, lbl in [(ticker_sym, label), ("^GSPC", "S&P 500")]:
+        for sym, lbl in dict.fromkeys([(ticker_sym, label), ("SPY", "S&P 500")]):
             try:
-                data = yf.download(sym, period="5y", progress=False)
+                data = yf.download(sym, period="5y", progress=False, auto_adjust=True)
                 if data.empty: continue
                 prices = data['Adj Close'] if 'Adj Close' in data.columns else data['Close']
                 if hasattr(prices, 'columns'): prices = prices.iloc[:, 0]

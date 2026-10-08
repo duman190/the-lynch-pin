@@ -1825,6 +1825,22 @@ class TestVisualizer(unittest.TestCase):
         self.assertEqual(label, "S&P 500")
         self.assertEqual(cagr, 10)
 
+    @patch('graphics.visualizer.yf.download')
+    def test_get_benchmark_data_is_a_total_return(self, mock_download):
+        """Dividend-adjusted closes, like the dividend yield in the ROIs; the S&P 500 is SPY, not the
+        price-only ^GSPC, both as the default and as the fallback."""
+        from graphics.visualizer import LynchPinVisualizer
+        mock_download.return_value = pd.DataFrame()
+        viz = LynchPinVisualizer(output_dir="/tmp/test_viz")
+
+        viz._get_benchmark_data("database/fintwit_100.txt")
+        self.assertEqual([c.args[0] for c in mock_download.call_args_list], ["SPY"])
+        self.assertTrue(all(c.kwargs.get('auto_adjust') for c in mock_download.call_args_list))
+
+        mock_download.reset_mock()
+        viz._get_benchmark_data("database/schd.txt")
+        self.assertEqual([c.args[0] for c in mock_download.call_args_list], ["SCHD", "SPY"])
+
     def test_output_dir_created(self):
         from graphics.visualizer import LynchPinVisualizer
         import tempfile

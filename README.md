@@ -280,6 +280,7 @@ The AI prompt's "Base ROI math" line uses the same scenario logic, so the implie
 - When the payout ratio is above 100%, the yield is scaled down by it (`yield / payout`), since that part of the dividend isn't covered by earnings and is unlikely to last.
 - A yield above 25% is treated as a data error and ignored.
 - Every ROI consumer sees the total: the 9% base ROI risk flag (`--excl-bad`), the ranking tables, charts, the AI prompt and the portal.
+- The index bar it is compared against (the benchmark chart's "index floor", the portfolio chart's QQQ / S&P 500) is a total return too: the benchmark ETF's 5Y CAGR from dividend-adjusted closes. The S&P 500 is SPY, not `^GSPC`, a price-only index (Oct 2026: 13.7% vs 12.2%).
 - The yield is reported as `DivYield` and shown as its own line in the chart's stats box when non-zero. The portal labels the projection "incl. X% dividend", and the Quick Overview / AI "Base ROI math" lines split the base ROI into dividend yield + price return.
 
 Effect (Oct 2026), base ROI before → after: PEP 14.0% → 18.8% (4.8% yield), PAYX 13.9% → 18.6% (4.7%), MDLZ 26.5% → 30.0% (3.5%), KO −2.9% → −0.4% (2.5%), TXN 19.5% → 21.6% (2.1%), ADI 23.4% → 24.5%, MSFT 13.4% → 14.1%, AVGO 18.2% → 18.9%, NVDA 32.3% → 32.7%.
