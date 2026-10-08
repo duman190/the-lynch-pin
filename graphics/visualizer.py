@@ -257,10 +257,9 @@ class LynchPinVisualizer:
                 accum_val = "$" + str(lo) + "-$" + str(hi)
                 stats_text += f"\n- ACCUM: {accum_val:>11}"
         if edge_result:
-            stats_text += (
-                f"\n- 6M Bull edge: {edge_result['bull_acc']:>3.0f}%\n"
-                f"- 6M Bear edge: {edge_result['bear_acc']:>3.0f}%"
-            )
+            # 6M bull / bear edge on one line, within the box's 20 characters (the Div Yield line took one)
+            edge = f"{edge_result['bull_acc']:.0f}/{edge_result['bear_acc']:.0f}"
+            stats_text += f"\n- Bull/Bear %:{edge:>6}"
         ax.text(0.02, 1.02, stats_text, transform=ax.transAxes, fontsize=16, 
                 color='#E0E0E0', family='monospace', verticalalignment='top',
                 bbox=box_style, zorder=9, fontweight='bold', parse_math=False)
