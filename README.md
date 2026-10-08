@@ -143,11 +143,19 @@ The growth estimate is the keystone of the entire PEG valuation framework. A sin
 1. Simple average across all available 5Y sources
 2. If the average exceeds 1.5× the fundamental cap → haircut: `avg × 0.6 + cap × 0.4`
 3. Fallbacks (2Y analyst CAGR, trailing earnings growth) only used when no 5Y source is available
-4. **Next-year cap:** if the result exceeds next fiscal year's consensus EPS growth (`+1y`, above 3%) and either this year's growth is a rebound (`0y` > 1.5× the 5Y rate) or the 5Y rate is 20%+, it is capped at next year's growth (source tag `fy1_cap`). Below 20% with no rebound, single-year estimates are too noisy to cap with.
+4. **Next-year cap:** if the result exceeds next fiscal year's consensus EPS growth (`+1y`, above 3%) and either this year's growth is a rebound (`0y` > 1.5× the 5Y rate) or the 5Y rate is 20%+, it is capped at next year's growth (source tag `fy1_cap`). Below 20% with no rebound, single-year estimates are too noisy to cap with. When next year is a dip rather than the trend, the cap is the higher trend rate instead (see *Next year as a dip* below), never above the uncapped rate.
 
 This prevents fantasy projections (e.g., TSLA 40% growth with 1% fundamental support) from making expensive stocks appear cheap, while trusting analyst consensus when it aligns with demonstrated performance.
 
 **Why the next-year cap.** Both 5Y sources are measured from today's earnings: Yahoo's growth is reverse-engineered from its PEG (`forward PE / PEG`) and FMP's is the CAGR of its estimate series. After a trough they include this year's rebound (MCHP, Oct 2026: +122% this year, +26% next, "5Y" 70%; Yahoo's PEG for ON implied 96%). The ROI projection starts from forward EPS, which is next fiscal year's estimate and already holds that rebound, so compounding the 5Y rate on top counted it twice, and the low PEG it produced also pushed such names to the top of the screen. The 2Y fallback has the same problem (WK: 2Y CAGR lifted by +89% this year). For 20%+ growth a 5Y rate above next year's means growth accelerating for 5 years, which rarely happens (ALNY 63% vs +41% next year, HUBS 40% vs +27%). Because the cap changes the growth itself, PEG, the reconstructed PEG history, Dev(SD) and the ranking all use the capped rate. It costs one extra Yahoo request per ticker (the earnings estimates; already fetched for the 2Y fallback).
+
+**Next year as a dip.** Capping at next year's EPS growth assumes next year is the trend. When it is a dip instead, one slow year was compounded for all five (META, Oct 2026: FY2025 EPS was cut by a one-off ~$16B tax charge, so this year reads +32%, while next year is only +10% because of AI depreciation, giving a capped 9.8%, PEG 2.14 and a 7.4% base ROI under the risk flag). The cap is therefore the higher of next year's EPS growth and a trend rate, never above the uncapped rate:
+
+- **With FMP estimates:** analysts' EPS CAGR from next fiscal year (the year forward EPS covers and the projection starts from) to their last estimate year. For META that is 2027 → 2030 = 17.3% (2028 +16%, 2029 +25%), giving PEG 1.21 and a 14.8% base ROI. The same FMP request feeds the 5Y source.
+- **Yahoo only:** next year's revenue growth. EPS growing slower than revenue is a margin squeeze rather than a slowdown. META: revenue +20.6% next year → 20.6%, PEG 1.02, 13.1% base ROI.
+- **Why the 5Y rate is not simply rebased past the rebound:** for MCHP and ON, Yahoo's figure is not a real five-year CAGR, so rebasing it implies 60–146%/yr after next year.
+
+Rebounds are unaffected, because their EPS outgrows revenue (MCHP: EPS +26% vs revenue +16% next year; ON: +41% vs +13%). Across Nasdaq 100 + SMH + IGV + SCHD (273 tickers, Yahoo only), 11 of the 56 capped names move, all with next-year EPS growth below revenue growth: META 9.8% → 20.6%, AVPT 10.0% → 20.4%, NFLX 6.1% → 11.2%, PLTR 44.7% → 49.7%, DDOG 17.7% → 22.5%, and small moves for THFF, FTNT, AAPL, ADM, PFG and MPWR. It costs one more Yahoo request per capped ticker (the revenue estimates).
 
 ## Historical Forward PEG Reconstruction
 

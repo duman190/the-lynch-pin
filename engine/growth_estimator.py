@@ -58,8 +58,8 @@ def _fmp_request(symbol):
             done(answered)
 
 
-def _fmp_5y_growth(symbol):
-    """5Y EPS CAGR from Financial Modeling Prep analyst estimates.
+def _fmp_eps_estimates(symbol):
+    """FMP's annual analyst EPS estimates as a date-sorted ``[(date, eps)]`` (positive EPS only), or None.
     Retries once after 60s on rate limit, gives up on second failure."""
     if not FMP_KEY:
         return None
@@ -85,24 +85,49 @@ def _fmp_5y_growth(symbol):
                     eps_estimates.append((date, eps))
 
             eps_estimates.sort(key=lambda x: x[0])
-
-            if len(eps_estimates) < 2:
-                return None
-
-            start = eps_estimates[-6] if len(eps_estimates) >= 6 else eps_estimates[0]
-            end = eps_estimates[-1]
-            n_years = int(end[0][:4]) - int(start[0][:4])
-
-            if n_years < 2 or start[1] <= 0 or end[1] <= start[1]:
-                return None
-
-            cagr = ((end[1] / start[1]) ** (1 / n_years) - 1) * 100
-            if 3 < cagr < 150:
-                return cagr
+            return eps_estimates if len(eps_estimates) >= 2 else None
         except Exception:
-            pass
-        return None
+            return None
     return None
+
+
+def _cagr(start, end):
+    """CAGR in % between two ``(date, eps)`` estimates, or None when they span under 2 years."""
+    n_years = int(end[0][:4]) - int(start[0][:4])
+    if n_years < 2 or start[1] <= 0:
+        return None
+    return ((end[1] / start[1]) ** (1 / n_years) - 1) * 100
+
+
+def _fmp_outyear_growth(eps_estimates, today=None):
+    """Analysts' EPS CAGR from next fiscal year, the year forward EPS covers and the ROI projection starts
+    from, to their last estimate year (META, Oct 2026: 2027 -> 2030), or None. The first estimate dated after
+    today is this fiscal year."""
+    today = today or time.strftime('%Y-%m-%d')
+    future = [e for e in eps_estimates if e[0][:10] > today]
+    if len(future) < 2:
+        return None
+    return _cagr(future[1], eps_estimates[-1])
+
+
+def _fmp_growth(symbol):
+    """``(5Y EPS CAGR, out-year CAGR)`` from one FMP request (see ``_fmp_outyear_growth``); None where missing.
+    The 5Y CAGR runs from five years before the last estimate year to it, if within 3-150%."""
+    eps_estimates = _fmp_eps_estimates(symbol)
+    if not eps_estimates:
+        return None, None
+    try:
+        start = eps_estimates[-6] if len(eps_estimates) >= 6 else eps_estimates[0]
+        end = eps_estimates[-1]
+        cagr = _cagr(start, end) if end[1] > start[1] else None
+        return (cagr if cagr is not None and 3 < cagr < 150 else None), _fmp_outyear_growth(eps_estimates)
+    except (TypeError, ValueError):  # a malformed date
+        return None, None
+
+
+def _fmp_5y_growth(symbol):
+    """5Y EPS CAGR from Financial Modeling Prep analyst estimates."""
+    return _fmp_growth(symbol)[0]
 
 
 def _fundamental_cap(ticker_obj):
@@ -181,11 +206,11 @@ REBOUND_RATIO = 1.5
 HIGH_GROWTH = 20.0
 
 
-def _fy_growth(ticker_obj):
+def _fy_growth(ticker_obj, table='earnings_estimate'):
     """(this fiscal year's, next fiscal year's) consensus EPS growth in %, from Yahoo's earnings estimates
-    (``0y`` / ``+1y``); None where missing."""
+    (``0y`` / ``+1y``), or revenue growth with ``table='revenue_estimate'``; None where missing."""
     try:
-        ee = ticker_obj.earnings_estimate
+        ee = getattr(ticker_obj, table)
         if not isinstance(ee, pd.DataFrame) or 'growth' not in ee.columns:
             return None, None
 
@@ -199,21 +224,30 @@ def _fy_growth(ticker_obj):
         return None, None
 
 
-def _cap_at_next_year(growth, ticker_obj):
-    """Cap the 5Y growth at next fiscal year's consensus growth when it exceeds it and either this year is a
+def _cap_at_next_year(growth, ticker_obj, fmp_outyears=None):
+    """Cap the 5Y growth when it exceeds next fiscal year's consensus EPS growth and either this year is a
     rebound (this year's growth > REBOUND_RATIO x the 5Y rate) or growth is HIGH_GROWTH+.
 
     The 5Y rate is reverse-engineered from Yahoo's PEG (forward PE / PEG) or FMP's 5Y estimate CAGR, both
     measured from today's earnings: after a trough they include this year's rebound (MCHP: +122% this year,
     +26% next, 70% "5Y"). The projection starts from forward EPS, i.e. next fiscal year, which already holds
-    the rebound, so compounding the 5Y rate on top counted it twice. Returns ``(growth, capped)``."""
+    the rebound, so compounding the 5Y rate on top counted it twice.
+
+    The cap is next year's EPS growth unless that year is a dip rather than the trend: with FMP estimates,
+    analysts' growth after next year (``fmp_outyears``) when higher; without, next year's revenue growth when
+    higher (EPS growing slower than revenue is a margin squeeze, e.g. META's AI depreciation: EPS +10%, revenue
+    +21%). Never above the uncapped rate. Returns ``(growth, capped)``."""
     g0, g1 = _fy_growth(ticker_obj)
     if g1 is None or g1 <= 3 or growth <= g1:
         return growth, False
     rebound = g0 is not None and g0 > REBOUND_RATIO * growth
-    if rebound or growth >= HIGH_GROWTH:
-        return g1, True
-    return growth, False
+    if not (rebound or growth >= HIGH_GROWTH):
+        return growth, False
+    if fmp_outyears is not None:
+        trend = fmp_outyears
+    else:
+        trend = _fy_growth(ticker_obj, 'revenue_estimate')[1]
+    return min(growth, max(g1, trend or 0)), True
 
 
 def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
@@ -233,8 +267,9 @@ def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
         five_year_sources.append(('yahoo_peg', yahoo_g))
 
     # Source 2: FMP 5Y forward EPS CAGR (only when enriching)
+    fmp_outyears = None
     if enrich:
-        fmp_g = _fmp_5y_growth(symbol)
+        fmp_g, fmp_outyears = _fmp_growth(symbol)
         if fmp_g:
             five_year_sources.append(('fmp', fmp_g))
 
@@ -248,7 +283,7 @@ def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
             avg = avg * 0.6 + fund_cap * 0.4
 
         sources = [s for s, _ in five_year_sources]
-        avg, capped = _cap_at_next_year(avg, ticker_obj)
+        avg, capped = _cap_at_next_year(avg, ticker_obj, fmp_outyears)
         if capped:
             sources.append('fy1_cap')
         return (avg if avg > 3 else 0), sources
@@ -259,7 +294,7 @@ def estimate_growth(symbol, info, ticker_obj, fwd_pe, enrich=False):
         fund_cap = _fundamental_cap(ticker_obj)
         if fund_cap and fallback_g > fund_cap * 1.5:
             fallback_g = fallback_g * 0.6 + fund_cap * 0.4
-        fallback_g, capped = _cap_at_next_year(fallback_g, ticker_obj)
+        fallback_g, capped = _cap_at_next_year(fallback_g, ticker_obj, fmp_outyears)
         return fallback_g, [fallback_src] + (['fy1_cap'] if capped else [])
 
     return 0, []

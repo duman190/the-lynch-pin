@@ -1379,6 +1379,49 @@ class TestGrowthEstimator(unittest.TestCase):
         self.assertEqual(_cap_at_next_year(40.0, t), (40.0, False))
         self.assertEqual(_cap_at_next_year(40.0, MagicMock()), (40.0, False))
 
+    def test_cap_at_next_year_uses_the_trend_when_next_year_is_a_dip(self):
+        from engine.growth_estimator import _cap_at_next_year
+        t = MagicMock()
+        t.earnings_estimate = self._ee(0.322, 0.098)   # META: tax-charge rebound this year, AI depreciation next
+        t.revenue_estimate = self._ee(0.265, 0.206)
+        r = lambda res: (round(res[0], 1), res[1])
+        self.assertEqual(r(_cap_at_next_year(21.3, t)), (20.6, True))         # Yahoo only: revenue growth
+        self.assertEqual(r(_cap_at_next_year(20.2, t, 17.3)), (17.3, True))   # FMP: growth after next year
+        self.assertEqual(r(_cap_at_next_year(20.2, t, 30.0)), (20.2, True))   # never above the uncapped rate
+        self.assertEqual(r(_cap_at_next_year(20.2, t, 5.0)), (9.8, True))     # never below next year's EPS growth
+        t.revenue_estimate = self._ee(0.357, 0.162)    # MCHP: EPS outgrows revenue (rebound) → next year's EPS
+        t.earnings_estimate = self._ee(1.223, 0.257)
+        self.assertEqual(r(_cap_at_next_year(69.8, t)), (25.7, True))
+        t.revenue_estimate = None
+        self.assertEqual(r(_cap_at_next_year(69.8, t)), (25.7, True))
+
+    def test_fmp_outyear_growth(self):
+        from engine.growth_estimator import _fmp_outyear_growth
+        est = [('2025-12-31', 22.92), ('2026-12-31', 31.12), ('2027-12-31', 34.01), ('2028-12-31', 39.36),
+               ('2029-12-31', 49.27), ('2030-12-31', 54.84)]          # META, FMP Oct 2026
+        self.assertAlmostEqual(_fmp_outyear_growth(est, today='2026-10-08'), 17.3, places=1)  # 2027 → 2030
+        self.assertAlmostEqual(_fmp_outyear_growth(est, today='2027-03-01'), 18.0, places=1)  # 2028 → 2030
+        self.assertIsNone(_fmp_outyear_growth(est, today='2028-03-01'))   # 2029 → 2030: under 2 years
+        mchp = [('2026-03-31', 1.64), ('2027-03-31', 3.65), ('2028-03-31', 4.58), ('2030-03-31', 6.0)]
+        self.assertAlmostEqual(_fmp_outyear_growth(mchp, today='2026-10-08'), 14.5, places=1)  # FY2028 → FY2030
+
+    @patch('engine.growth_estimator._SESSION')
+    def test_fmp_growth_one_request_for_both_rates(self, mock_session):
+        import engine.growth_estimator as ge
+        original_key = ge.FMP_KEY
+        ge.FMP_KEY = 'test_key'
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{'date': f'{y}-12-31', 'epsAvg': e} for y, e in
+                                  [(2025, 22.92), (2026, 31.12), (2027, 34.01), (2028, 39.36), (2029, 49.27), (2030, 54.84)]]
+        mock_session.get.return_value = resp
+        with patch('engine.growth_estimator.time.strftime', return_value='2026-10-08'):
+            five, out = ge._fmp_growth('META')
+        self.assertAlmostEqual(five, 19.1, places=1)   # 2025 → 2030
+        self.assertAlmostEqual(out, 17.3, places=1)    # 2027 → 2030
+        self.assertEqual(mock_session.get.call_count, 1)
+        ge.FMP_KEY = original_key
+
     def test_estimate_growth_caps_at_next_year_on_both_paths(self):
         from engine.growth_estimator import estimate_growth
         ticker = MagicMock()
