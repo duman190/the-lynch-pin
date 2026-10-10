@@ -144,6 +144,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 
 /* ── views: home = hero + search + Latest scans; ?t= = ticker page; ?scan= = thread page ── */
 body:not([data-view="home"]) .hero,
+body:not([data-view="home"]) #valuation,
 body:not([data-view="home"]) #scans,
 body:not([data-view="home"]) #socials,
 body:not([data-view="ticker"]) #result,
@@ -168,6 +169,30 @@ body:not(.verbose) .aim-tokens, body:not(.verbose) .aim-thinking { display: none
 body:not(.verbose) .ai-metrics { flex-wrap: nowrap; }
 body:not(.verbose) .aim { min-width: 0; white-space: nowrap; }
 body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
+
+/* ── US stock market valuation: rear view mirror + forward looking, then the Lynch quote ── */
+.valuation { display: grid; gap: 12px; min-width: 0; }
+.val-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.val-card { margin: 0; display: grid; grid-template-rows: auto 1fr; gap: 12px; padding: 14px 14px 12px; }
+.val-chart { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; border-radius: 14px; }
+.val-chart img, .val-pending {
+  width: 100%; aspect-ratio: 8 / 5; border-radius: 14px; border: 1px solid rgba(255,255,255,.06); background: #121212;
+}
+.val-chart:hover img { border-color: rgba(93,156,236,.45); }
+.val-pending { display: grid; place-content: center; gap: 6px; padding: 18px; text-align: center; color: var(--muted); }
+.val-pending strong { color: var(--text); font-size: .95rem; }
+.val-card figcaption { display: grid; gap: 2px; justify-items: center; text-align: center; align-self: end; }
+.val-cap { color: var(--white); font: 900 1.1rem/1.2 var(--sans); letter-spacing: .02em; }
+.val-sub { color: var(--dim); font-size: .82rem; }
+.val-quote {
+  margin: 4px 0 0; padding: 18px 24px; border-radius: 18px;
+  background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.06); border-left: 3px solid var(--sky);
+}
+.val-quote blockquote { margin: 0; }
+.val-quote p {
+  margin: 0; color: var(--text); font: italic 1.05rem/1.6 Georgia, "Times New Roman", serif; text-wrap: pretty;
+}
+.val-quote figcaption { margin-top: 8px; text-align: right; color: var(--sky); font: 800 .9rem var(--sans); letter-spacing: .04em; }
 
 /* ── Latest scans: iOS-style widget stack ────────────────────────────────── */
 .scans { display: grid; gap: 12px; min-width: 0; }
@@ -524,6 +549,10 @@ dialog#lightbox img { width: 100%; height: auto; }
   body:not(.verbose) .topbar .chip { padding: 9px 10px; font-size: .78rem; }
   .scans-nav { display: none; }  /* swipe on phones */
   .socials-grid { grid-template-columns: 1fr; }
+  .val-grid { grid-template-columns: 1fr; }
+  .val-card { padding: 10px 10px 12px; border-radius: 22px; }
+  .val-quote { padding: 14px 16px; }
+  .val-quote p { font-size: .98rem; }
   .sa-icons { grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .sa-app { grid-template-columns: 1fr; justify-items: center; gap: 8px; margin: 0; padding: 0; font-size: .78rem; }
   .sa-sub, .sa-chev { display: none; }

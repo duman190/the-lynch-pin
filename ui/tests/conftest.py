@@ -21,6 +21,8 @@ def _clean_env(monkeypatch):
             monkeypatch.delenv(k, raising=False)  # never call the real Gemini from a test
     # never read the real posting tokens or call X / Threads from a test (test_socials.py uses fakes)
     monkeypatch.setenv("LYNCH_UI_SOCIALS", "0")
+    # nor fetch the Shiller PE or sweep the S&P 500 on Yahoo (test_valuation.py uses fakes)
+    monkeypatch.setenv("LYNCH_UI_VALUATION", "0")
 
 
 @pytest.fixture(autouse=True)

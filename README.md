@@ -11,7 +11,8 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── mag7.txt           # Magnificent 7
 │   ├── nasdaq_100.txt     # Nasdaq 100
 │   ├── schd.txt           # Schwab US Dividend Equity ETF
-│   └── smh.txt            # VanEck Semiconductor ETF
+│   ├── smh.txt            # VanEck Semiconductor ETF
+│   └── sp500.txt          # S&P 500, one ticker per company (the portal's forward PEG sweep)
 ├── engine/
 │   ├── lynch_pin_core.py           # Core GARP engine (PEG, SD, ROI projections)
 │   ├── growth_estimator.py         # Multi-source 5Y EPS growth (Yahoo + FMP + fundamental cap)
@@ -22,7 +23,8 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   └── ai_research.py              # Gemini AI batch narrative generation
 ├── experimental/          # Quant trading research (order flow, IV surface, backtesting)
 ├── graphics/
-│   └── visualizer.py      # Dark-mode benchmark, distribution & portfolio X-ray charts
+│   ├── visualizer.py      # Dark-mode benchmark, distribution & portfolio X-ray charts
+│   └── market_valuation.py # The portal's S&P 500 Shiller PE & forward PEG charts
 ├── social/
 │   ├── x_publisher.py     # Threaded X (Twitter) publisher
 │   └── threads_publisher.py # Threaded Threads (Meta) publisher

@@ -94,7 +94,7 @@ def to_json(payload):
 class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
-    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None):
+    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None, valuation=None):
         self.settings = settings or Settings()
         self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
@@ -108,7 +108,16 @@ class PortalApp:
             socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file,
                                  read_at=self.settings.social_read_at, tz=self.settings.social_tz).start()
         self.socials = socials  # ui.socials.SocialFeed: latest X posts (None = profile links only)
+        if valuation is None and self.settings.valuation:
+            from ui.valuation import MarketValuation
+            valuation = MarketValuation(self.settings.cache_dir, run_at=self.settings.valuation_at,
+                                        tz=self.settings.valuation_tz, paused=self._yahoo_paused).start()
+        self.valuation = valuation  # ui.valuation.MarketValuation: Shiller PE + S&P 500 forward PEG (None = off)
         self.started = time.time()
+
+    def _yahoo_paused(self):
+        """The portal's Yahoo circuit breaker is open: the S&P 500 sweep waits so visitors' lookups go first."""
+        return self.jobs is not None and bool(self.jobs.cache_stats().get("rate_limited"))
 
     @property
     def public(self):
@@ -118,7 +127,8 @@ class PortalApp:
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark, "verbose": self.settings.verbose,
                "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
-                            "refresh": self.jobs is not None and self.jobs.allow_refresh}}
+                            "refresh": self.jobs is not None and self.jobs.allow_refresh,
+                            "valuation": self.valuation is not None}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
             if self.jobs is not None and self.jobs.gemini is not None:
@@ -377,6 +387,13 @@ def make_handler(app):
                 if not img:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
                 return self.send_file(img, "public, max-age=86400")
+            if path == "/api/valuation":
+                return self.send_json(app.valuation.snapshot() if app.valuation is not None else {"enabled": False})
+            if path.startswith("/valuation/"):  # URLs carry ?v=<chart mtime>: a redrawn chart gets a new URL
+                img = app.valuation.image_path(path[len("/valuation/"):]) if app.valuation is not None else None
+                if not img:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+                return self.send_file(img, "public, max-age=604800")
             if path == "/api/cache":
                 if app.jobs is None or app.public:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
@@ -645,6 +662,12 @@ def parse_args(argv=None):
     p.add_argument("--social-read-at", default=s.social_read_at, metavar="HH:MM",
                    help="time of the daily Latest on X read, Pacific time (LYNCH_UI_SOCIAL_TZ; default 09:00, "
                         "before the 1 PM scan posts)")
+    p.add_argument("--valuation-at", default=s.valuation_at, metavar="HH:MM",
+                   help="time of the US stock market valuation refresh, Pacific time (LYNCH_UI_VALUATION_TZ): the "
+                        "Shiller PE each weekday, the S&P 500 forward PEG each Friday (default 18:00, after the close "
+                        "and the 1 PM scan)")
+    p.add_argument("--no-valuation", action="store_true",
+                   help="no US stock market valuation section (no Shiller PE fetch, no nightly S&P 500 sweep)")
     p.add_argument("--stats-port", type=int, default=s.stats_port,
                    help="port of the stats page, with --lan or --public, for LAN / Tailscale clients only "
                         "(default 190)")
@@ -678,6 +701,12 @@ def parse_args(argv=None):
     except (ValueError, KeyError) as e:
         p.error(f"--social-read-at: {e}")
     s.social_read_at = a.social_read_at
+    try:
+        parse_hhmm(a.valuation_at)
+        ZoneInfo(s.valuation_tz)
+    except (ValueError, KeyError) as e:
+        p.error(f"--valuation-at: {e}")
+    s.valuation, s.valuation_at = s.valuation and not a.no_valuation, a.valuation_at
     if s.public and (s.lan or s.host not in LOOPBACK_HOSTS):
         p.error("--public listens on 127.0.0.1 only (the tunnel runs on this machine): drop --lan / --host")
     return s, a
@@ -751,6 +780,10 @@ def main(argv=None):
         print(f"🌙 Pre-cache: each night after the cache resets, the {settings.precache} most looked-up tickers "
               f"of the last 30 days{' with their AI overviews' if app.llm is not None else ''}, one at a time",
               flush=True)
+    if app.valuation is not None:
+        print(f"📉 Market valuation: the Shiller PE each weekday and the S&P 500 forward PEG (one constituent at a "
+              f"time) each Friday, at {settings.valuation_at} {settings.valuation_tz}, and now if a run was missed",
+              flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "
               f"reasoning={settings.llm_reasoning} parallel={settings.llm_parallel}", flush=True)
@@ -775,6 +808,8 @@ def main(argv=None):
             stats_httpd.server_close()
         if precacher is not None:
             precacher.stop()
+        if app.valuation is not None:
+            app.valuation.stop()
         if app.jobs is not None:
             app.jobs.shutdown()
         if app.stats is not None:
