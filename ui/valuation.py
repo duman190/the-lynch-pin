@@ -4,8 +4,8 @@ Lynch Pin style (graphics/market_valuation.py), with a Peter Lynch quote under t
 * Rear view mirror: the Shiller PE (CAPE), monthly since 1881. Robert Shiller's data as multpl.com publishes it,
   extended to the current month. One request a day.
 * Forward looking: the S&P 500 forward PEG. Its history, monthly from 1995 to January 2026, is Yardeni Research's
-  (forward P/E over I/B/E/S's long-term growth consensus, which is not public), traced from a Yahoo Finance chart into
-  ui/assets/sp500_peg_yardeni.csv. After it comes the Lynch Pin's own point each weekday: every constituent's PEG
+  (forward P/E over I/B/E/S's long-term growth consensus, which is not public), traced from a Yahoo Finance chart and
+  hard-coded in ui/sp500_peg_history.py. After it comes the Lynch Pin's own point each week: every constituent's PEG
   (Yahoo's "PEG Ratio (5yr expected)"), weighted by market cap as
 
       index PEG = Σ cap_i / Σ (cap_i / PEG_i)
@@ -40,7 +40,6 @@ RUN_AT = "18:00"                 # weekdays, after the US close and after the 1 
 RUN_TZ = "America/Los_Angeles"   # ...Pacific time, whatever the server's clock says
 PEG_WEEKDAY = 4                  # the S&P 500 sweep: weekly, after Friday's close
 TICKERS_FILE = os.path.join(REPO_ROOT, "database", "sp500.txt")
-REFERENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "sp500_peg_yardeni.csv")
 PEG_RANGE = (0.1, 50.0)          # a PEG outside it is a data glitch (a tiny one would swamp the harmonic mean)
 RETRY_S = {"shiller": 3600, "peg": 3 * 3600}
 PAUSE_S = 0.5                    # between two constituents: gentle on Yahoo, ~15 min a sweep
@@ -77,21 +76,6 @@ def load_tickers(path=TICKERS_FILE):
             if TICKER_RE.match(sym) and sym not in out:
                 out.append(sym)
     return out
-
-
-def load_reference(path=REFERENCE_FILE):
-    """The forward PEG's history before the Lynch Pin's own points: [(ISO date mid-month, PEG)] oldest first, from a
-    ``month,peg`` CSV (# comments); [] when the file is missing."""
-    out = []
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                m = re.match(r"^(\d{4})-(\d{2}),\s*([\d.]+)\s*$", line)
-                if m:
-                    out.append((f"{m.group(1)}-{m.group(2)}-15", float(m.group(3))))
-    except OSError:
-        pass
-    return sorted(out)
 
 
 # ── the Shiller PE (multpl.com) ──────────────────────────────────────────────
@@ -168,8 +152,7 @@ def _yahoo_429s():
 
 
 class MarketValuation:
-    def __init__(self, cache_dir, run_at=RUN_AT, tz=RUN_TZ, tickers_file=TICKERS_FILE, reference_file=REFERENCE_FILE,
-                 paused=None,
+    def __init__(self, cache_dir, run_at=RUN_AT, tz=RUN_TZ, tickers_file=TICKERS_FILE, reference=None, paused=None,
                  fetch_shiller=fetch_shiller, fetch_constituent=fetch_constituent, yahoo_429s=_yahoo_429s,
                  pause_s=PAUSE_S):
         from zoneinfo import ZoneInfo
@@ -188,7 +171,10 @@ class MarketValuation:
         self._failed_at = {}  # job → when it last failed
         self.shiller = self._load("shiller.json")
         self.peg = self._load("peg.json")
-        self.reference = load_reference(reference_file)  # the PEG's history before the first sweep
+        if reference is None:
+            from ui.sp500_peg_history import monthly
+            reference = monthly()
+        self.reference = list(reference)  # the PEG's hard-coded history before the first sweep: [(ISO date, PEG)]
 
     # ── scheduling ───────────────────────────────────────────────────────────
     def start(self, every_s=60):

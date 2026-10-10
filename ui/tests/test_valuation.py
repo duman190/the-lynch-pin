@@ -12,7 +12,8 @@ from ui import valuation as val
 from ui.config import Settings
 from ui.server import PortalApp
 from ui.tests.test_server import get, serve
-from ui.valuation import MarketValuation, index_peg, load_reference, load_tickers, parse_multpl, valuation_day
+from ui.sp500_peg_history import YARDENI_PEG, monthly
+from ui.valuation import MarketValuation, index_peg, load_tickers, parse_multpl, valuation_day
 
 PT = ZoneInfo("America/Los_Angeles")
 
@@ -66,14 +67,14 @@ def test_index_peg_is_the_cap_weighted_harmonic_mean_of_pegs():
     assert index_peg({"X": None, "Y": (10.0, None, -5.0)}) is None
 
 
-def test_reference_history_is_the_traced_yardeni_series():
-    ref = load_reference()
-    assert len(ref) >= 360 and ref[0][0] == "1995-03-15" and ref[-1] == ("2026-01-15", 0.70)
+def test_hard_coded_history_is_the_traced_yardeni_series():
+    ref = monthly()
+    assert len(ref) == 371 and ref[0][0] == "1995-03-15" and ref[-1] == ("2026-01-15", 0.70)
+    assert all(len(months) == 12 for y, months in YARDENI_PEG.items() if y < 2026)
     vals = dict(ref)
     assert all(0.5 < v < 2.5 for v in vals.values())
     assert max(v for d, v in ref if "2020" <= d < "2021-04") == 2.4  # the chart's labelled peaks
     assert max(v for d, v in ref if "1999-06" <= d < "2001-07") == 2.0
-    assert load_reference("/nonexistent.csv") == []
 
 
 @pytest.mark.parametrize("now, day", [
@@ -125,11 +126,11 @@ class FakeYahoo:
         return self.hits
 
 
-def make(tmp_path, table, throttle=(), shiller=None, reference="/nonexistent.csv", **kw):
+def make(tmp_path, table, throttle=(), shiller=None, reference=(), **kw):
     tickers = tmp_path / "sp500.txt"
     tickers.write_text("# test index\n" + "\n".join(table) + "\n\n")
     yahoo = FakeYahoo(table, throttle)
-    mv = MarketValuation(str(tmp_path / "cache"), tickers_file=str(tickers), reference_file=reference, pause_s=0,
+    mv = MarketValuation(str(tmp_path / "cache"), tickers_file=str(tickers), reference=reference, pause_s=0,
                          fetch_shiller=shiller or (lambda: parse_multpl(multpl_page())),
                          fetch_constituent=yahoo.fetch, yahoo_429s=yahoo.count, **kw)
     return mv, yahoo
@@ -245,7 +246,7 @@ def test_snapshot_and_images(tmp_path):
 
 
 def test_peg_chart_exists_before_the_first_sweep(tmp_path):
-    mv, _ = make(tmp_path, TABLE, reference=val.REFERENCE_FILE)
+    mv, _ = make(tmp_path, TABLE, reference=None)  # None: the hard-coded history
     mv.redraw()
     d = mv.snapshot()["peg"]
     assert (d["peg"], d["date"], d["source"], d["since"], d["points"]) == (0.7, "2026-01-15", "yardeni", "1995", 0)
@@ -257,7 +258,7 @@ def test_peg_chart_exists_before_the_first_sweep(tmp_path):
 def test_charts_draw_with_and_without_the_history(tmp_path):
     series = parse_multpl(multpl_page(months=1900))  # back to 1868, past the 1929 / 1987 / 1999 markers
     charts.plot_shiller_pe(series, str(tmp_path / "s.png"))
-    ref = load_reference()
+    ref = monthly()
     one = [{"date": "2026-10-09", "peg": 1.48, "coverage": 0.99, "n": 492, "total": 500}]
     many = [dict(one[0], date=(datetime.date(2026, 1, 1) + datetime.timedelta(days=i)).isoformat(), peg=1 + i / 400)
             for i in range(280)]
