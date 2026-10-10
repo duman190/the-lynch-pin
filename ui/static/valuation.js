@@ -1,6 +1,6 @@
 /* The Lynch Pin · Quant Portal — US stock market valuation, under the ticker search: the S&P 500 Shiller PE (rear
    view mirror) and forward PEG (forward looking), with a Peter Lynch quote under them. The server redraws the Shiller
-   PE each weekday and the PEG each Friday; this only renders /api/valuation. Depends on app.js helpers ($, el, getJSON, openLightbox,
+   PE each weekday and the PEG each Sunday morning; this only renders /api/valuation. Depends on app.js helpers ($, el, getJSON, openLightbox,
    currentView). Text only. */
 "use strict";
 
@@ -18,7 +18,7 @@
       key: "peg", caption: "Forward looking", file: "sp500_forward_peg.png",
       sub: (d) => `S&P 500 price ÷ 5Y expected EPS growth, since ${d.since || 1995}`,
       alt: (d) => `S&P 500 forward PEG since ${d.since || 1995}: ${num(d.peg, 2)} on ${d.date}, against Peter Lynch's fair value of 1.0.`,
-      wait: (run) => (run ? "Computing the S&P 500 forward PEG…" : "The S&P 500 forward PEG is computed after Friday's close."),
+      wait: (run) => (run ? "Computing the S&P 500 forward PEG…" : "The S&P 500 forward PEG is computed on Sunday mornings."),
     },
   ];
 

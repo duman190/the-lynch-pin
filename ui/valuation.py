@@ -18,8 +18,8 @@ Lynch Pin style (graphics/market_valuation.py), with a Peter Lynch quote under t
   week: a slow-moving ratio needs no more.
 
 A background thread fetches the Shiller PE at ``run_at`` (6 PM Pacific: after the close and the 1 PM scan) each
-weekday, and sweeps the S&P 500 at that time each Friday; on startup it runs whatever was missed (a missed sweep is
-dated the last weekday's close). Page views only read what is on disk. A failed run keeps the last good chart and is
+weekday, and sweeps the S&P 500 on Sunday mornings (8 AM Pacific: markets shut, the portal quiet), dated Friday's
+close; on startup it runs whatever was missed (a late sweep is dated the last weekday's close). Page views only read what is on disk. A failed run keeps the last good chart and is
 retried later (an hour for the Shiller PE, three for the sweep).
 """
 import datetime
@@ -38,7 +38,7 @@ from ui.socials import parse_hhmm
 SHILLER_URL = "https://www.multpl.com/shiller-pe/table/by-month"
 RUN_AT = "18:00"                 # weekdays, after the US close and after the 1 PM scan...
 RUN_TZ = "America/Los_Angeles"   # ...Pacific time, whatever the server's clock says
-PEG_WEEKDAY = 4                  # the S&P 500 sweep: weekly, after Friday's close
+PEG_DAY, PEG_AT = 6, "08:00"     # the S&P 500 sweep: weekly, Sunday 8 AM Pacific (it reads Friday's close)
 TICKERS_FILE = os.path.join(REPO_ROOT, "database", "sp500.txt")
 PEG_RANGE = (0.1, 50.0)          # a PEG outside it is a data glitch (a tiny one would swamp the harmonic mean)
 RETRY_S = {"shiller": 3600, "peg": 3 * 3600}
@@ -55,16 +55,28 @@ IMG_RE = re.compile(r"^(shiller_pe|forward_peg)\.(png|jpg)$")
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 
 
-def valuation_day(run_at=RUN_AT, now=None, tz=RUN_TZ, weekday=None):
-    """The weekday whose run is the latest due: today once ``run_at`` has passed in ``tz``, else the weekday before;
-    with ``weekday`` (0 = Monday), the latest such day that is that weekday."""
+def valuation_day(run_at=RUN_AT, now=None, tz=RUN_TZ):
+    """The weekday whose run is the latest due: today once ``run_at`` has passed in ``tz``, else the weekday before."""
     from zoneinfo import ZoneInfo
     h, m = parse_hhmm(run_at)
     now = now or datetime.datetime.now(ZoneInfo(tz))
     day = now.date() - datetime.timedelta(days=int((now.hour, now.minute) < (h, m)))
-    while day.weekday() >= 5 or (weekday is not None and day.weekday() != weekday):
+    while day.weekday() >= 5:
         day -= datetime.timedelta(days=1)
     return day.isoformat()
+
+
+def weekly_cutoff(now=None, tz=RUN_TZ, day=PEG_DAY, at=PEG_AT, close_at=RUN_AT):
+    """The close the weekly sweep is due for: the last weekday close before the latest weekly run time (``day``,
+    0 = Monday, at ``at``) that has passed: Friday's for a Sunday run. A sweep is due while the newest point is
+    older than that."""
+    from zoneinfo import ZoneInfo
+    h, m = parse_hhmm(at)
+    now = now or datetime.datetime.now(ZoneInfo(tz))
+    run = now.date() - datetime.timedelta(days=int((now.hour, now.minute) < (h, m)))
+    while run.weekday() != day:
+        run -= datetime.timedelta(days=1)
+    return valuation_day(close_at, now=datetime.datetime.combine(run, datetime.time(h, m), now.tzinfo), tz=tz)
 
 
 def load_tickers(path=TICKERS_FILE):
@@ -191,12 +203,12 @@ class MarketValuation:
     def stop(self):
         self._stop.set()
 
-    def tick(self):
+    def tick(self, now=None):
         """Starts each job whose run is due, in its own thread (a sweep takes ~15 min). Returns the jobs started.
-        The Shiller PE is due once per weekday; the sweep once its last point predates the latest Friday's run, and
-        its point is dated the latest weekday's close."""
-        day = valuation_day(self.run_at, tz=self.tz)
-        due = {"shiller": day, "peg": valuation_day(self.run_at, tz=self.tz, weekday=PEG_WEEKDAY)}
+        The Shiller PE is due once per weekday; the sweep once a week (weekly_cutoff), its point dated the latest
+        weekday's close."""
+        day = valuation_day(self.run_at, now=now, tz=self.tz)
+        due = {"shiller": day, "peg": weekly_cutoff(now=now, tz=self.tz, close_at=self.run_at)}
         started = []
         for job in CHARTS:
             with self._lock:

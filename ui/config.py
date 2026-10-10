@@ -138,8 +138,8 @@ class Settings:
     social_tz: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_SOCIAL_TZ", "America/Los_Angeles"))
     social_env_file: str = field(default_factory=lambda: os.environ.get(
         "LYNCH_UI_SOCIAL_ENV", os.path.join(REPO_ROOT, "venv", "bin", "activate")))
-    # US stock market valuation (ui/valuation.py): the Shiller PE each weekday and the S&P 500 forward PEG (a sweep of
-    # database/sp500.txt's Yahoo PEGs) each Friday, at 6 PM Pacific: after the close and the 1 PM scan
+    # US stock market valuation (ui/valuation.py): the Shiller PE each weekday at 6 PM Pacific (after the close and the
+    # 1 PM scan), and the S&P 500 forward PEG (a sweep of database/sp500.txt's Yahoo PEGs) on Sunday mornings
     valuation: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_VALUATION", True))
     valuation_at: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_VALUATION_AT", "18:00"))
     valuation_tz: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_VALUATION_TZ", "America/Los_Angeles"))

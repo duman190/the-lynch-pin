@@ -664,8 +664,8 @@ def parse_args(argv=None):
                         "before the 1 PM scan posts)")
     p.add_argument("--valuation-at", default=s.valuation_at, metavar="HH:MM",
                    help="time of the US stock market valuation refresh, Pacific time (LYNCH_UI_VALUATION_TZ): the "
-                        "Shiller PE each weekday, the S&P 500 forward PEG each Friday (default 18:00, after the close "
-                        "and the 1 PM scan)")
+                        "Shiller PE each weekday (default 18:00, after the close and the 1 PM scan); the S&P 500 "
+                        "forward PEG is swept on Sunday mornings")
     p.add_argument("--no-valuation", action="store_true",
                    help="no US stock market valuation section (no Shiller PE fetch, no nightly S&P 500 sweep)")
     p.add_argument("--stats-port", type=int, default=s.stats_port,
@@ -781,8 +781,8 @@ def main(argv=None):
               f"of the last 30 days{' with their AI overviews' if app.llm is not None else ''}, one at a time",
               flush=True)
     if app.valuation is not None:
-        print(f"📉 Market valuation: the Shiller PE each weekday and the S&P 500 forward PEG (one constituent at a "
-              f"time) each Friday, at {settings.valuation_at} {settings.valuation_tz}, and now if a run was missed",
+        print(f"📉 Market valuation: the Shiller PE each weekday at {settings.valuation_at}, the S&P 500 forward PEG "
+              f"(one constituent at a time) each Sunday at 08:00, {settings.valuation_tz}; now if a run was missed",
               flush=True)
     if app.llm is not None:
         print(f"🧠 AI: {settings.llm_base_url} model={settings.llm_model or '(auto)'} ctx={settings.llm_ctx} "

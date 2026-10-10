@@ -90,14 +90,15 @@ def test_valuation_day_is_the_latest_weekday_run(now, day):
     assert valuation_day("18:00", now=t) == day
 
 
-@pytest.mark.parametrize("now, friday", [
-    ("2026-10-09 17:59", "2026-10-02"),  # Friday before the run: last week's
-    ("2026-10-09 18:00", "2026-10-09"),
-    ("2026-10-14 12:00", "2026-10-09"),  # midweek: still last Friday's
+@pytest.mark.parametrize("now, close", [
+    ("2026-10-10 12:00", "2026-10-02"),  # Saturday: last Sunday's sweep, of Friday Oct 2
+    ("2026-10-11 07:59", "2026-10-02"),  # Sunday before the run
+    ("2026-10-11 08:00", "2026-10-09"),  # Sunday morning's sweep: Friday's close
+    ("2026-10-14 12:00", "2026-10-09"),  # midweek: still that one
 ])
-def test_the_sweep_is_weekly_after_fridays_close(now, friday):
+def test_the_sweep_is_weekly_on_sunday_morning(now, close):
     t = datetime.datetime.strptime(now, "%Y-%m-%d %H:%M").replace(tzinfo=PT)
-    assert valuation_day("18:00", now=t, weekday=val.PEG_WEEKDAY) == friday
+    assert val.weekly_cutoff(now=t) == close
 
 
 def test_sp500_list_is_one_yahoo_ticker_per_company():
@@ -193,33 +194,30 @@ def test_sweep_waits_while_the_portals_breaker_is_open(tmp_path, monkeypatch):
 
 def test_tick_runs_whats_due_once_and_retries_failures_later(tmp_path, monkeypatch):
     mv, yahoo = make(tmp_path, TABLE)
-    clock = {"now": "2026-10-14 09:00"}  # a Wednesday morning: Tuesday's Shiller PE, last Friday's sweep are due
-
-    def day(run_at, now=None, tz=None, weekday=None):
-        t = datetime.datetime.strptime(clock["now"], "%Y-%m-%d %H:%M").replace(tzinfo=PT)
-        return valuation_day(run_at, now=t, weekday=weekday)
-    monkeypatch.setattr(val, "valuation_day", day)
+    at = lambda s: datetime.datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=PT)  # noqa: E731
     started = []
     monkeypatch.setattr(mv, "_run", lambda job, d: started.append((job, d)))
-    assert mv.tick() == ["shiller", "peg"]
-    assert sorted(started) == [("peg", "2026-10-13"), ("shiller", "2026-10-13")]  # a missed sweep: Tuesday's close
-    mv._running.clear()
+
+    def tick(now):
+        jobs = mv.tick(now=at(now))
+        mv._running.clear()  # (the fake _run never finishes them)
+        return jobs
+    # a first start on a Wednesday morning: Tuesday's Shiller PE and the missing sweep, dated Tuesday's close
+    assert tick("2026-10-14 09:00") == ["shiller", "peg"]
+    assert sorted(started) == [("peg", "2026-10-13"), ("shiller", "2026-10-13")]
     mv.refresh_shiller("2026-10-13")
     mv.refresh_peg("2026-10-13")
-    assert mv.tick() == []  # both done
-    clock["now"] = "2026-10-15 18:30"  # Thursday evening: a new Shiller PE, no sweep until Friday
-    assert mv.tick() == ["shiller"]
-    mv._running.clear()
-    mv.refresh_shiller("2026-10-15")
-    clock["now"] = "2026-10-16 18:30"  # Friday after the close: both
-    assert mv.tick() == ["shiller", "peg"]
-    mv._running.clear()
+    assert tick("2026-10-14 09:05") == []
+    assert tick("2026-10-16 18:30") == ["shiller"]  # Friday evening: a new Shiller PE, the sweep waits for Sunday
+    mv.refresh_shiller("2026-10-16")
+    assert tick("2026-10-17 12:00") == []  # Saturday
+    started.clear()
+    assert tick("2026-10-18 08:30") == ["peg"] and started == [("peg", "2026-10-16")]  # Sunday: Friday's close
     mv.shiller["day"] = "2026-10-15"
     mv._failed_at["shiller"] = __import__("time").time()
-    assert mv.tick() == ["peg"]  # the Shiller PE failed a moment ago: retried an hour later
-    mv._running.clear()
+    assert tick("2026-10-18 08:31") == ["peg"]  # the Shiller PE failed a moment ago: retried an hour later
     mv._failed_at["shiller"] -= val.RETRY_S["shiller"] + 1
-    assert mv.tick() == ["shiller", "peg"]
+    assert tick("2026-10-18 08:32") == ["shiller", "peg"]
 
 
 def test_failed_run_keeps_the_last_chart(tmp_path):
