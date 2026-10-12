@@ -1,5 +1,5 @@
 GOOGL, 40
-MU, 10
+MU, 12.5
 META, 7
 MSFT, 12
 AVGO, 26
