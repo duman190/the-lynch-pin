@@ -400,7 +400,7 @@ class JobManager:
                 local_pending = len(self._ai_queue) + sum(j.backend == "local" for j in self._ai_running.values())
                 route, wait = self.inference.admit(sym, bool(st.get("available")), local_pending, warm=warm)
                 if route is None:
-                    return self._ai_paused(sym, st, wait)
+                    return self._ai_paused(sym, st, wait, warm)
                 job = AIJob(sym, entry, self._clock(), backend=route)
                 job.warm = warm
                 self._ai_inflight[sym] = job
@@ -408,14 +408,16 @@ class JobManager:
                 self._cv.notify_all()
             return self._ai_snapshot(job)
 
-    def _ai_paused(self, sym, st, wait):
-        """Lock held: no AI for this request now → the page shows the Quick overview with ↻ Retry AI."""
+    def _ai_paused(self, sym, st, wait, warm=False):
+        """Lock held: no AI for this request now → the page shows the Quick overview with ↻ Retry AI. On the stats
+        page only for a visitor: the nightly pre-cache (``warm``, local model only) shows nobody a Quick overview,
+        and a night with the local model down used to add ~100 "at capacity" overviews."""
         out = {"ticker": sym, "status": "unavailable", "fallback": "quick", "retry_after": wait}
-        if not st.get("available") and self.gemini is None:
+        if not st.get("available") and (self.gemini is None or warm):
             out.update(reason="offline", error=st.get("reason") or "local model unavailable")
         else:
             out.update(reason="busy", error="AI overviews are at capacity right now")
-        if self.stats is not None:
+        if self.stats is not None and not warm:
             self.stats.ai_route(sym, "quick", out["reason"])
         return out
 

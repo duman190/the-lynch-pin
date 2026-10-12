@@ -337,6 +337,25 @@ def test_precache_never_spends_gemini(settings, remote, tmp_path, more_tickers):
         jm.shutdown()
 
 
+def test_a_refused_precache_is_not_counted_as_a_quick_overview(settings, tmp_path, more_tickers):
+    """The nightly pre-cache with the local model down shows nobody a Quick overview: no row on the stats page.
+    A visitor turned away is still counted."""
+    class Down(Scripted):
+        def status(self, **kw):
+            return {"available": False, "reason": "LM Studio is not running"}
+    rec = StatsRecorder(str(tmp_path / "stats.sqlite3"), start=False)
+    jm = make(settings, rec=rec, llm=Down([]))
+    try:
+        assert jm.warm("MSFT", timeout=10) == ("cached", "offline")
+        assert jm.request_ai("AAPL")["reason"] == "offline"   # a visitor: the page shows the Quick overview
+        rec.flush(final=True)
+        assert rec.summary()["ai_routes"] == {"local": 0, "gemini": 0, "quick": 1, "total": 1,
+                                              "quick_reasons": {"offline": 1}}
+    finally:
+        jm.shutdown()
+        rec.close()
+
+
 def test_paused_ai_is_a_normal_answer_and_health_shows_the_queue(settings, remote, tmp_path, more_tickers):
     settings.llm_rpm, settings.gemini_rpm = 0, 1
     jm = make(settings, gemini_client(settings, remote, tmp_path, rpm=1))
