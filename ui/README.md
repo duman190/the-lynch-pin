@@ -159,6 +159,7 @@ Measured cost:
 | `--valuation-at` | `LYNCH_UI_VALUATION_AT` / `LYNCH_UI_VALUATION_TZ` | `18:00` / `America/Los_Angeles`: the weekday Shiller PE refresh (the S&P 500 forward PEG sweep runs on Sunday mornings) |
 | `--no-valuation` | `LYNCH_UI_VALUATION=0` | on: no market valuation section, no Shiller PE fetch, no S&P 500 sweep |
 | `--benchmark` | `LYNCH_UI_BENCHMARK` | `SPY` (6M edge) |
+| `--edge` | `LYNCH_UI_EDGE=1` | off: no 6M directional edge backtest (about half of a cold lookup's time, mostly CPU); the page hides its section. On: the Technicals card shows it again, and the chart, Quick overview, AI overview and Deep Dive prompt use it |
 | `--no-ai` | | AI enabled |
 | `-v` / `--verbose` | `LYNCH_UI_VERBOSE=1` | off: the header shows only *AI* with a green/red dot (no model name, no cache chip) and the AI card hides the model name, token counts and thinking setting |
 | `--public` | `LYNCH_UI_PUBLIC=1` | off (see *Public access* above) |

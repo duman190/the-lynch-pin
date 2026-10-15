@@ -180,6 +180,7 @@ async function refreshHealth() {
     document.body.classList.toggle("verbose", !!h.verbose);
     $("#search-section").hidden = !h.features.search;
     $("#ai-hint").hidden = !h.features.ai;
+    $("#edge-hint").hidden = !h.features.edge;
     if (h.features.ai && h.ai) {
       const ok = h.ai.available;
       const cls = h.ai.checking ? "busy" : ok ? (h.ai.warning ? "busy" : "on") : "off";

@@ -127,6 +127,7 @@ class PortalApp:
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark, "verbose": self.settings.verbose,
                "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
+                            "edge": bool(self.settings.edge),
                             "refresh": self.jobs is not None and self.jobs.allow_refresh,
                             "valuation": self.valuation is not None}}
         if self.llm is not None:
@@ -650,6 +651,8 @@ def parse_args(argv=None):
                         "last 30 days, one at a time with their AI overviews (default 100; 0 = off; needs the "
                         "stats page, i.e. --lan or --public)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
+    p.add_argument("--edge", action="store_true", default=s.edge,
+                   help="run the 6M directional edge backtest for each ticker (off by default: ~2.5 s of CPU a lookup)")
     p.add_argument("--no-ai", action="store_true", help="disable the AI overview")
     p.add_argument("-v", "--verbose", action="store_true", default=s.verbose,
                    help="show the model name, token counts, thinking setting and cache chip on the page "
@@ -684,6 +687,7 @@ def parse_args(argv=None):
     s.gemini = s.gemini and not a.no_gemini
     s.gemini_model, s.gemini_rpm, s.gemini_rpd = a.gemini_model, max(0, a.gemini_rpm), max(0, a.gemini_rpd)
     s.cache_capacity, s.benchmark = max(1, a.cache_size), a.benchmark.upper()
+    s.edge = a.edge
     s.enrich = a.enrich
     s.fmp_limit = max(0, a.fmp_limit)
     s.precache = max(0, a.precache)

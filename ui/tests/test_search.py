@@ -369,3 +369,16 @@ def test_enrich_requested_but_fmp_had_no_estimates(settings, monkeypatch):
     monkeypatch.setenv("FMP_API_KEY", "k")
     r = TickerAnalyzer(settings, backends=fakes.backends(engine=NoFMP)).run("MSFT")
     assert r["growth_enriched"] is False
+
+
+def test_edge_backtest_is_off_by_default(tmp_path, monkeypatch):
+    """Without --edge the 6M edge never runs: the stage is skipped and the page is told to hide it."""
+    from ui.analysis import TickerAnalyzer
+    from ui.config import Settings
+    monkeypatch.delenv("LYNCH_UI_EDGE")
+    s = Settings(cache_dir=str(tmp_path), enrich="off")
+    assert s.edge is False
+    ran = []
+    r = TickerAnalyzer(s, backends=fakes.backends(edge=lambda *a: ran.append(a) or fakes.EDGE)).run("MSFT")
+    assert ran == [] and r["stages"]["edge"] == "skipped" and r["edge_disabled"] is True
+    assert r["status"] == "done" and r["stages"]["plot"] == "done" and "edge" not in r

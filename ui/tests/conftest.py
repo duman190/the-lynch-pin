@@ -23,6 +23,8 @@ def _clean_env(monkeypatch):
     monkeypatch.setenv("LYNCH_UI_SOCIALS", "0")
     # nor fetch the Shiller PE or sweep the S&P 500 on Yahoo (test_valuation.py uses fakes)
     monkeypatch.setenv("LYNCH_UI_VALUATION", "0")
+    # the 6M edge is off by default; the tests exercise the full pipeline (test_analysis_edge_off covers the default)
+    monkeypatch.setenv("LYNCH_UI_EDGE", "1")
 
 
 @pytest.fixture(autouse=True)

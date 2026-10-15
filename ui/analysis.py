@@ -82,6 +82,8 @@ class TickerAnalyzer:
         stop = cancelled or (lambda: False)
         data = {"ticker": sym, "status": "running", "reason": None, "stages": {s: "pending" for s in STAGES},
                 "stage_ms": {}, "benchmark": self.settings.benchmark}
+        if not getattr(self.settings, "edge", True):  # the 6M edge is off by default (--edge): the page hides it
+            data["edge_disabled"] = True
         ctx = {}
         rate_limits = yahoo.rate_limit_events()
 
@@ -183,6 +185,8 @@ class TickerAnalyzer:
             return "done" if (ctx["t"] or data.get("levels")) else "skipped"
 
         def do_edge():
+            if data.get("edge_disabled"):
+                return "skipped"
             ctx["e"] = b["edge"](sym, self.settings.benchmark, 180)
             data["edge"] = dict(ctx["e"]) if ctx["e"] else None
             return "done" if ctx["e"] else "skipped"

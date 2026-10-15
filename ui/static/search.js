@@ -171,7 +171,7 @@
     if (!st) {
       put(card, el("h2", { text: "Valuation" }),
         el("p", { class: "muted", text: d.reason ? `No GARP valuation: ${d.reason.replace(/^no GARP data \(|\)$/g, "")}.` : "No GARP valuation available." }),
-        el("p", { class: "muted small", text: "Grades, technicals and the 6M edge below still apply." }));
+        el("p", { class: "muted small", text: d.edge_disabled ? "Grades and technicals below still apply." : "Grades, technicals and the 6M edge below still apply." }));
       return;
     }
     put(card, 
@@ -276,6 +276,7 @@
       parts.push(el("h3", { class: "sub-h", title: "Support / resistance from clustered pivots (6M), volume point of control (3M), expected range from realised volatility. % = chance of touching the level within a month." }, "Price levels · P(touch) 1M"),
         statTable(rows));
     }
+    if (d.edge_disabled) { put(card, ...parts); return; }  // backtest off (server without --edge)
     parts.push(el("h3", { class: "sub-h", text: `6M directional edge vs ${d.benchmark || "SPY"}` }));
     if (e) {
       parts.push(statTable([
@@ -686,6 +687,7 @@
       const li = document.querySelector(`#stepper li[data-stage="${name}"]`);
       if (li && li.className !== state) li.className = state;
     }
+    if (d.edge_disabled) { const li = document.querySelector('#stepper li[data-stage="edge"]'); if (li) li.hidden = true; }
     if (!S.rendered.has("head") && (d.name || d.status === "nodata" || d.price !== undefined)) { renderHead(d, snap); S.rendered.add("head"); }
     for (const [stage, fns] of Object.entries(CARD_FOR)) {
       const st = stages[stage];

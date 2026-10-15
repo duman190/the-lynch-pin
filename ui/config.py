@@ -107,6 +107,8 @@ class Settings:
 
     # Analysis
     benchmark: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_BENCHMARK", "SPY"))
+    # The 6M directional edge backtest (~2.5 s of a ~5 s cold lookup, mostly CPU): off by default, --edge turns it on
+    edge: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_EDGE"))
     # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
     # Nightly pre-cache (ui/precache.py, needs the stats page: --lan / --public): right after midnight, analyse the
