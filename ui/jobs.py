@@ -353,9 +353,9 @@ class JobManager:
             if not os.path.exists(path):
                 return None
         if preview:
-            from ui.imaging import jpeg_preview
-            # previews live next to the day's charts so the LFU day-rollover sweep removes both
-            return jpeg_preview(path, os.path.join(os.path.dirname(path), "previews"), 1100)
+            from ui.imaging import PLOT_PREVIEW_WIDTH, jpeg_preview, plot_preview_dir
+            # the native renderer (ui/fastchart.py) has usually drawn it already; else it is shrunk from the PNG
+            return jpeg_preview(path, plot_preview_dir(path), PLOT_PREVIEW_WIDTH)
         return path
 
     def request_ai(self, sym, refresh=False, warm=False):

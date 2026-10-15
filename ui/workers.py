@@ -1,6 +1,6 @@
 """Analysis worker processes: run ``TickerAnalyzer`` in a child process, one ticker at a time.
 
-Half of a cold lookup is CPU (the 6M edge backtest, the 300-dpi chart, pandas), so threads in one
+Half of a cold lookup is CPU (the 6M edge backtest, pandas; the chart too when matplotlib draws it), so threads in one
 process would queue on the GIL. A child process per worker uses the other cores, gives every worker
 its own pyplot state and engine globals, and can be killed when an analysis hangs (a thread cannot).
 
@@ -38,7 +38,7 @@ def _child_main(conn, settings, backends_spec):
     from ui.analysis import TickerAnalyzer
     analyzer = TickerAnalyzer(settings, backends=_resolve(backends_spec)() if backends_spec else None)
     try:
-        analyzer.backends  # import yfinance / pandas / pyplot now, not on the first lookup
+        analyzer.backends  # import yfinance / pandas (and pyplot without the native chart) now, not on the first lookup
     except Exception as e:  # reported per job by run() below
         print(f"⚠️  analysis worker could not load the engine: {type(e).__name__}: {e}", flush=True)
     while True:

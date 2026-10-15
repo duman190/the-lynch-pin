@@ -3,19 +3,21 @@
 UI can render each block as soon as it lands.
 
 Only engine/ and graphics/ modules are imported (never main.py, which pulls in the social
-publishers). matplotlib is forced onto the Agg backend before graphics.visualizer imports
-pyplot. Analyses run on a JobManager worker: a thread, or a child process per worker
-(ui/workers.py). pyplot state is process-global, so threads draw charts one at a time.
+publishers). The chart is drawn by the native renderer (ui/fastchart.py) when it is built: it is
+thread-safe and runs without the GIL, so concurrent analyses draw their charts in parallel. Without
+it, graphics.visualizer draws them with matplotlib (forced onto the Agg backend before it imports
+pyplot), and pyplot state is process-global, so threads draw those one at a time. Analyses run on a
+JobManager worker: a thread, or a child process per worker (ui/workers.py).
 """
+import contextlib
 import datetime as _dt
 import os
-import threading
 import time
 import traceback
 
 import matplotlib
 
-from ui import yahoo
+from ui import fastchart, yahoo
 from ui.formats import _extract_price, _num, format_credit, format_income, format_stats, format_technicals
 from ui.quick import profile_from_info, quick_overview
 
@@ -23,19 +25,19 @@ matplotlib.use("Agg")
 
 STAGES = ("stats", "grades", "technicals", "edge", "plot")
 
-_PLOT_LOCK = threading.Lock()  # pyplot and the visualizer's rcParams are process-global
+_PLOT_LOCK = fastchart.PYPLOT_LOCK  # pyplot and the visualizer's rcParams are process-global
 
 
 def _default_backends():
-    """Real engine functions, imported lazily (they pull yfinance / scipy / pyplot)."""
+    """Real engine functions, imported lazily (they pull yfinance / scipy, and pyplot without the native chart)."""
     from engine.balance_sheet_grader import grade_ticker as grade_bs
     from engine.income_statement_grader import grade_ticker as grade_income
     from engine.lynch_pin_core import LynchPinEngine
     from engine.technical_timing import analyze, backtest_edge
-    from graphics.visualizer import LynchPinVisualizer
     from ui.levels import price_levels
     return {"engine": LynchPinEngine, "grade_income": grade_income, "grade_bs": grade_bs,
-            "technicals": analyze, "levels": price_levels, "edge": backtest_edge, "visualizer": LynchPinVisualizer}
+            "technicals": analyze, "levels": price_levels, "edge": backtest_edge,
+            "visualizer": fastchart.visualizer_class()}
 
 
 class StageError(Exception):
@@ -49,7 +51,7 @@ class TickerAnalyzer:
         self.settings = settings
         self._backends = backends
         self._today = today or _dt.date.today
-        self._viz = {}  # day → LynchPinVisualizer (its __init__ rewrites global rcParams; do it once)
+        self._viz = {}  # day → visualizer (LynchPinVisualizer.__init__ rewrites global rcParams; do it once)
 
     @property
     def backends(self):
@@ -188,9 +190,10 @@ class TickerAnalyzer:
         def do_plot():
             if "row" not in ctx:
                 return "skipped"
-            with _PLOT_LOCK:
-                path = self._visualizer().plot_ticker_distribution(ctx["row"], ctx.get("g"), ctx.get("b"),
-                                                                    ctx.get("t"), ctx.get("e"))
+            viz = self._visualizer()
+            # the native renderer needs no lock (FastVisualizer takes it only to fall back on matplotlib)
+            with contextlib.nullcontext() if getattr(viz, "thread_safe", False) else _PLOT_LOCK:
+                path = viz.plot_ticker_distribution(ctx["row"], ctx.get("g"), ctx.get("b"), ctx.get("t"), ctx.get("e"))
             if not path or not os.path.exists(path):
                 raise RuntimeError("chart was not written")
             data["plot_file"] = path
