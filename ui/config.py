@@ -21,9 +21,10 @@ def _env_bool(name, default=False):
 
 
 # Analysis workers when the AI overview is off: each one is a process analysing one ticker at a time.
-# A cold lookup is about half CPU, half waiting on Yahoo / SEC, so 1.5 workers per core keep the cores
-# busy (M1, 8 cores: 12 workers ≈ 117 cold tickers/min, 16 ≈ 125, 8 ≈ 82)...
-CPU_WORKERS = min(16, max(2, (os.cpu_count() or 4) * 3 // 2))
+# A cold lookup is about half CPU, half waiting on Yahoo / SEC, so 2 workers per core keep the cores
+# busy (M1, 8 cores, native chart: 16 workers ≈ 140 cold tickers/min, 12 ≈ 131; each lookup takes ~1 s
+# longer at full load, as the edge backtests share the cores)...
+CPU_WORKERS = min(16, max(2, (os.cpu_count() or 4) * 2))
 # ...as long as they fit in RAM: a worker is ~155 MB idle, ~200 MB mid-analysis. Once they swap, every
 # stage slows down several times (a model loaded in LM Studio can hold most of an 8 GB Mac).
 WORKER_MB = 200
