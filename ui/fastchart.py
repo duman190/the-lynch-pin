@@ -261,4 +261,11 @@ def build(release=True):
 if __name__ == "__main__":
     if "--build" in sys.argv[1:]:
         sys.exit(build())
+    if "--spec" in sys.argv[1:]:  # a sample request for ui/native's tools (lynch-chart, gpu_probe)
+        from ui.tests.fakes import CREDIT, EDGE, INCOME, MSFT_ROW, TECH
+        out = sys.argv[sys.argv.index("--spec") + 1]
+        with open(out, "w") as f:
+            json.dump({"png": None, "fonts": font_paths(),
+                       "chart": chart_text(dict(MSFT_ROW), INCOME, CREDIT, TECH, EDGE)}, f, indent=1)
+        sys.exit(print(f"wrote {out}"))
     print(library_path(), "loaded" if library() else f"unavailable: {unavailable_reason()}")
