@@ -100,9 +100,9 @@ def _cagr(start, end):
 
 
 def _fmp_outyear_growth(eps_estimates, today=None):
-    """Analysts' EPS CAGR from next fiscal year, the year forward EPS covers and the ROI projection starts
-    from, to their last estimate year (META, Oct 2026: 2027 -> 2030), or None. The first estimate dated after
-    today is this fiscal year."""
+    """Analysts' EPS CAGR from next fiscal year, the year forward (NTM) EPS mostly covers and the ROI projection
+    starts from, to their last estimate year (META, Oct 2026: 2027 -> 2030), or None. The first estimate dated
+    after today is this fiscal year."""
     today = today or time.strftime('%Y-%m-%d')
     future = [e for e in eps_estimates if e[0][:10] > today]
     if len(future) < 2:
@@ -230,7 +230,7 @@ def _cap_at_next_year(growth, ticker_obj, fmp_outyears=None):
 
     The 5Y rate is reverse-engineered from Yahoo's PEG (forward PE / PEG) or FMP's 5Y estimate CAGR, both
     measured from today's earnings: after a trough they include this year's rebound (MCHP: +122% this year,
-    +26% next, 70% "5Y"). The projection starts from forward EPS, i.e. next fiscal year, which already holds
+    +26% next, 70% "5Y"). The projection starts from forward EPS (NTM, mostly next fiscal year), which already holds
     the rebound, so compounding the 5Y rate on top counted it twice.
 
     The cap is next year's EPS growth unless that year is a dip rather than the trend: with FMP estimates,

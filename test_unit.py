@@ -1694,6 +1694,59 @@ class TestLynchPinCore(unittest.TestCase):
         self.assertAlmostEqual(std, 0.3)  # 1.5 * 0.2
         self.assertEqual(dev, 0.0)
 
+    def test_ntm_eps_blends_this_and_next_fiscal_year(self):
+        """NTM EPS weights this / next fiscal year by the share of the next 12 months each covers (NVDA, Oct 2026)."""
+        from engine.lynch_pin_core import _ntm_eps
+        t = MagicMock()
+        t.earnings_estimate = pd.DataFrame({'avg': [9.31, 15.91]}, index=['0y', '+1y'])
+        fy_end = 1800835200  # 2027-01-25, end of this fiscal year
+        info = {'forwardEps': 15.91, 'epsCurrentYear': 9.31, 'nextFiscalYearEnd': fy_end}
+        quarter = 0.25 * 365.25 * 86400
+        self.assertAlmostEqual(_ntm_eps(info, t, now=fy_end - quarter), 0.25 * 9.31 + 0.75 * 15.91)
+        self.assertAlmostEqual(_ntm_eps(info, t, now=fy_end + quarter), 15.91)  # year ended, not reported yet
+        self.assertAlmostEqual(_ntm_eps(info, t, now=fy_end - 2 * 365.25 * 86400), 9.31)  # clamped to 1
+
+    def test_ntm_eps_is_anchored_on_forward_eps(self):
+        """Estimates in the filer's currency (ASML: EUR) only give the this/next year ratio; a 0y estimate with
+        one-time gains (GOOGL) is passed over for epsCurrentYear."""
+        from engine.lynch_pin_core import _ntm_eps
+        fy_end = 1798588800  # 2026-12-30
+        half = 0.5 * 365.25 * 86400
+        t = MagicMock()
+        t.earnings_estimate = pd.DataFrame({'avg': [40.82, 55.54]}, index=['0y', '+1y'])  # EUR
+        asml = {'forwardEps': 62.61, 'epsCurrentYear': 40.82, 'nextFiscalYearEnd': fy_end}  # forwardEps in USD
+        self.assertAlmostEqual(_ntm_eps(asml, t, now=fy_end - half), 62.61 * (0.5 * 40.82 / 55.54 + 0.5))
+        t.earnings_estimate = pd.DataFrame({'avg': [20.59, 15.06]}, index=['0y', '+1y'])
+        googl = {'forwardEps': 15.06, 'epsCurrentYear': 13.14, 'nextFiscalYearEnd': fy_end}
+        self.assertAlmostEqual(_ntm_eps(googl, t, now=fy_end - half), 0.5 * 13.14 + 0.5 * 15.06)
+        del googl['epsCurrentYear']  # no epsCurrentYear: the 0y estimate
+        self.assertAlmostEqual(_ntm_eps(googl, t, now=fy_end - half), 0.5 * 20.59 + 0.5 * 15.06)
+
+    def test_ntm_eps_falls_back_to_forward_eps(self):
+        from engine.lynch_pin_core import _ntm_eps
+        info = {'forwardEps': 5.0, 'nextFiscalYearEnd': 1800835200}
+        t = MagicMock()
+        t.earnings_estimate = None
+        self.assertEqual(_ntm_eps(info, t), 5.0)  # no estimates
+        self.assertEqual(_ntm_eps(info, None), 5.0)  # no ticker
+        t.earnings_estimate = pd.DataFrame({'avg': [-30.0, 4.0]}, index=['0y', '+1y'])
+        self.assertEqual(_ntm_eps(info, t, now=1800835200 - 86400 * 360), 5.0)  # NTM not positive
+        t.earnings_estimate = pd.DataFrame({'avg': [2.0, 3.0]}, index=['0y', '+1y'])
+        self.assertEqual(_ntm_eps({'forwardEps': 5.0}, t), 5.0)  # no fiscal year end
+
+    def test_pe_volatility_fallback_uses_forward_eps(self):
+        """The PE volatility series is on forward EPS (today's PEG basis), trailing only without it."""
+        from engine.lynch_pin_core import LynchPinEngine
+        engine = LynchPinEngine.__new__(LynchPinEngine)
+        engine.symbol = 'TEST'
+        engine.ticker = MagicMock()
+        engine.ticker.history.return_value = pd.DataFrame(
+            {'Close': [100.0] * 100}, index=pd.date_range('2026-01-01', periods=100))
+        engine.info = {'trailingEps': 4.0, 'forwardEps': 5.0}
+        self.assertAlmostEqual(engine._pe_volatility_fallback(1.0, 10.0)[0], 2.0)  # 100/5/10
+        engine.info = {'trailingEps': 4.0, 'forwardEps': -1.0}
+        self.assertAlmostEqual(engine._pe_volatility_fallback(1.0, 10.0)[0], 2.5)  # 100/4/10
+
 
 # ─── engine/lynch_pin_core.py — historical forward PEG reconstruction (B2) ───
 
@@ -1823,12 +1876,13 @@ class TestHistoricalPegReconstruction(unittest.TestCase):
         self.assertAlmostEqual(dev, (1.0 - 5.0) / 0.01, places=3)
 
     def test_peg_statistics_falls_back_to_trailing_pe_series(self):
-        """Without SEC revenue, the legacy trailing-PE-based series is used."""
+        """Without SEC revenue, the legacy trailing-PE series is used, moved to
+        the forward basis of today's PEG by today's trailing/forward EPS."""
         engine = self._make_engine(fwd_eps=5.0, revenue=None)
         mean, std, dev = engine.calculate_peg_statistics(
             curr_peg=1.0, growth_pct=4.0)
-        # legacy: PE=100/4=25, PEG = 25/4 = 6.25 for every month
-        self.assertAlmostEqual(mean, 6.25, places=6)
+        # legacy: PE=100/4=25 -> forward PE 25*4/5=20, PEG = 20/4 = 5.0 for every month
+        self.assertAlmostEqual(mean, 5.0, places=6)
         self.assertAlmostEqual(std, 0.01)
 
     def test_peg_statistics_b2_skipped_without_forward_eps(self):

@@ -97,6 +97,40 @@ def _eps_multiple(growth_pct):
     return m
 
 
+def _ntm_eps(info, ticker_obj, now=None):
+    """Next-twelve-months consensus EPS: this fiscal year's and next fiscal year's estimates weighted by the
+    share of the coming 12 months each covers. Yahoo's ``forwardEps`` is next fiscal year's, 12 to 24 months
+    out depending on the fiscal calendar (NVDA, Oct 2026: the year ending Jan 2028, 13.5x vs ~15x NTM; MSFT:
+    June 2028, 22x vs 25x; Yahoo's site shows Morningstar's ~25x for NVDA). NTM puts every name the same
+    distance ahead, so FwdPE, PEG and the absolute terminal caps compare alike.
+
+    Anchored on ``forwardEps``: the estimates only give this year / next year (``epsCurrentYear`` / the
+    ``+1y`` estimate). They are in the filer's currency while ``forwardEps`` is in the quote's (ASML: EUR vs
+    USD, PDD: CNY), and the ``0y`` estimate can carry one-time GAAP gains (GOOGL, Oct 2026: 20.6 vs 13.1 in
+    ``epsCurrentYear``), so ``0y`` is the fallback only. ``forwardEps`` when an input is missing or the
+    blend is not positive."""
+    fwd_eps = info.get('forwardEps')
+    if not fwd_eps or fwd_eps <= 0:
+        return fwd_eps
+    try:
+        ee = ticker_obj.earnings_estimate
+        fy_end = info.get('nextFiscalYearEnd')  # end of the current fiscal year (``0y``)
+        if not isinstance(ee, pd.DataFrame) or 'avg' not in ee.columns or '+1y' not in ee.index or not fy_end:
+            return fwd_eps
+        e1 = float(ee.loc['+1y', 'avg'])
+        e0 = info.get('epsCurrentYear')
+        if e0 is None and '0y' in ee.index:
+            e0 = ee.loc['0y', 'avg']
+        e0 = float(e0)
+        if not (np.isfinite(e0) and np.isfinite(e1)) or e1 <= 0:
+            return fwd_eps
+        w = min(max((fy_end - (now or time.time())) / (365.25 * 86400), 0.0), 1.0)
+        ntm = fwd_eps * (w * e0 / e1 + 1 - w)
+        return ntm if ntm > 0 else fwd_eps
+    except Exception:
+        return fwd_eps
+
+
 def _avg_eps_growth(growth_pct):
     """The constant yearly rate (%) that compounds to the same 5-year EPS as the faded path: what the
     "Base ROI math" lines quote. Equal to the estimate below 20% growth."""
@@ -196,6 +230,13 @@ class LynchPinEngine:
             self.info = self.ticker.info
         except Exception:
             self.info = {}
+
+    def _fwd_eps(self):
+        """Forward EPS the engine works on: NTM consensus (``_ntm_eps``), computed once per engine."""
+        cache = getattr(self, '_fwd_eps_cache', None)
+        if cache is None or cache[0] is not self.info:
+            cache = self._fwd_eps_cache = (self.info, _ntm_eps(self.info, getattr(self, 'ticker', None)))
+        return cache[1]
 
     def _get_growth(self, fwd_pe, fwd_eps, eps, enrich=False):
         """Multi-source 5Y EPS growth estimate via growth_estimator module."""
@@ -355,12 +396,14 @@ class LynchPinEngine:
         return ttm
 
     def _pe_volatility_fallback(self, curr_peg, growth_pct):
-        """Fallback: uses trailing 12M PE volatility as proxy for PEG std."""
+        """Fallback: uses 12M PE volatility as proxy for PEG std. The PE is on forward EPS, the basis of
+        today's PEG and of the ROI projection (trailing only when forward is missing, as for ``base_eps``)."""
         try:
             hist = self.ticker.history(period="1y", interval="1d")
             if hist.empty or len(hist) < 60:
                 return (curr_peg, curr_peg * 0.2, 0.0)
-            eps = self.info.get('trailingEps')
+            fwd_eps = self._fwd_eps()
+            eps = fwd_eps if fwd_eps and fwd_eps > 0 else self.info.get('trailingEps')
             if not eps or eps <= 0:
                 return (curr_peg, curr_peg * 0.2, 0.0)
             close = hist['Close'].dropna()
@@ -387,7 +430,7 @@ class LynchPinEngine:
         Avoids the two failure modes of trailing-PE-based history:
         one-time gains in trailing EPS and low-base EPS explosions.
         Returns None when SEC revenue is unavailable (caller falls back)."""
-        fwd_eps = self.info.get('forwardEps')
+        fwd_eps = self._fwd_eps()
         if not fwd_eps or fwd_eps <= 0:
             return None
 
@@ -427,6 +470,19 @@ class LynchPinEngine:
         if len(pegs) < 12:
             return None
         return pd.Series(pegs)
+
+    def _legacy_peg_series(self, pe_raw, ttm_m, growth_pct):
+        """Trailing-PE PEG history moved to the forward basis by today's trailing/forward EPS ratio (B2
+        without the revenue term), or None under 12 months. A trailing mean against today's forward PEG made
+        growers look cheap (ASML: 1.03 vs 1.76), and as the terminal multiple on forward EPS 5 years out it
+        counted a year of growth twice. The ratio also cancels the currency of foreign filers' statement
+        EPS (PDD: CNY under a USD price), so the PE band runs after it. Trailing basis only when forward EPS
+        is missing (the projection then starts from trailing EPS too)."""
+        fwd_eps = self._fwd_eps()
+        eps_now = ttm_m.dropna().iloc[-1]
+        pe = pe_raw * (eps_now / fwd_eps) if fwd_eps and fwd_eps > 0 and eps_now > 0 else pe_raw
+        pe = pe[(pe > 3) & (pe < 300)].dropna()
+        return pe / growth_pct if len(pe) >= 12 else None
 
     def calculate_peg_statistics(self, curr_peg, growth_pct):
         """Calculates Mean PEG and SD based on 5Y history.
@@ -478,16 +534,15 @@ class LynchPinEngine:
 
             if len(common) < 12: return self._pe_volatility_fallback(curr_peg, growth_pct)
 
-            pe = close[common] / ttm_m[common]
-            pe = pe[(pe > 3) & (pe < 300)].dropna()
-
-            if len(pe) < 12: return self._pe_volatility_fallback(curr_peg, growth_pct)
+            pe_raw = close[common] / ttm_m[common]
+            pe = pe_raw[(pe_raw > 3) & (pe_raw < 300)].dropna()
 
             # Primary: reconstructed forward PEG (B2); fallback: legacy
             # trailing-PE scaling when SEC revenue is unavailable
-            peg_series = self._reconstruct_peg_series(close, ttm_m, pe, growth_pct)
+            peg_series = self._reconstruct_peg_series(close, ttm_m, pe, growth_pct) if len(pe) >= 12 else None
             if peg_series is None:
-                peg_series = pe / growth_pct
+                peg_series = self._legacy_peg_series(pe_raw, ttm_m, growth_pct)
+            if peg_series is None: return self._pe_volatility_fallback(curr_peg, growth_pct)
 
             mean_peg = float(peg_series.mean())
             std_peg = max(float(peg_series.std()), 0.01)
@@ -506,16 +561,20 @@ class LynchPinEngine:
             if not self.info: return None 
             
             curr_price = self.info.get('currentPrice')
-            fwd_pe = self.info.get('forwardPE')
-            fwd_eps = self.info.get('forwardEps')
+            yahoo_fwd_pe = self.info.get('forwardPE')
             eps = self.info.get('trailingEps')
             curr_pe = self.info.get('trailingPE')
 
-            if not curr_price or not fwd_pe or fwd_pe <= 0:
+            if not curr_price or not yahoo_fwd_pe or yahoo_fwd_pe <= 0:
                 return None
 
-            growth_pct = self._get_growth(fwd_pe, fwd_eps, eps, enrich=enrich)
+            # Yahoo's PEG is paired with its own forward PE (next fiscal year): growth = forwardPE / PEG
+            growth_pct = self._get_growth(yahoo_fwd_pe, self.info.get('forwardEps'), eps, enrich=enrich)
             if growth_pct <= 0: return None
+
+            # NTM forward EPS (_ntm_eps) for the PE, the PEG history and the projection base
+            fwd_eps = self._fwd_eps()
+            fwd_pe = curr_price / fwd_eps if fwd_eps and fwd_eps > 0 else yahoo_fwd_pe
 
             curr_peg = fwd_pe / growth_pct
             mean_peg, std_peg, dev_sd = self.calculate_peg_statistics(curr_peg, growth_pct)
