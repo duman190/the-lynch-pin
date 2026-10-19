@@ -57,15 +57,25 @@ def _title(ax, text):
     ax.set_title(text, loc='left', fontsize=15, fontweight='bold', color=SKY, pad=12)
 
 
-def _glow_line(ax, x, y, ymax):
-    """The bell curve's look (visualizer.plot_ticker_distribution) on a time series."""
-    ax.fill_between(x, 0, y, color=SKY, alpha=0.30, lw=0, zorder=1)
+def _glow_line(ax, x, y, ymax, dashed=False):
+    """The bell curve's look (visualizer.plot_ticker_distribution) on a time series; ``dashed``: the core line
+    is dashed and the area under it a lighter blue (a stretch no source covers, interpolated)."""
+    ax.fill_between(x, 0, y, color='#C4DBF8' if dashed else SKY, alpha=0.42 if dashed else 0.30, lw=0, zorder=1)
+    if dashed:  # fine diagonal lines, each with a faint blue halo, mark the area as interpolated
+        for colour, width, alpha in ((SKY, 2.4, 0.35), (WHITE, 0.6, 0.55)):
+            try:  # hatch_linewidth needs matplotlib 3.10; older ones draw plain lines, without the halo
+                ax.fill_between(x, 0, y, facecolor='none', edgecolor=colour, hatch='////', lw=0, alpha=alpha,
+                                hatch_linewidth=width, zorder=1.5)
+            except AttributeError:
+                if colour == WHITE:
+                    ax.fill_between(x, 0, y, facecolor='none', edgecolor=colour, hatch='////', lw=0,
+                                    alpha=alpha, zorder=1.5)
     for level in np.linspace(0, ymax, 80):  # white glow toward the peaks
         ax.fill_between(x, level, y, where=y > level, color=WHITE, alpha=(level / ymax) ** 4.0 * 0.05,
                         lw=0, zorder=2)
     ax.plot(x, y, color=SKY, lw=6.5, alpha=0.12, zorder=4, solid_capstyle='round')
     ax.plot(x, y, color=WHITE, lw=3.5, alpha=0.15, zorder=5, solid_capstyle='round')
-    ax.plot(x, y, color=WHITE, lw=1.4, zorder=6, solid_capstyle='round')
+    ax.plot(x, y, color=WHITE, lw=1.4, zorder=6, solid_capstyle='round', ls=(0, (3, 2)) if dashed else '-')
 
 
 def _now_marker(ax, x, y, label, dy):
@@ -158,7 +168,10 @@ def plot_forward_peg(history, path, reference=(), reference_source="Yardeni Rese
     for start, end in BEAR_MARKETS:
         if np.datetime64(end) > xs[0]:
             ax.axvspan(np.datetime64(start), np.datetime64(end), color=SKY, alpha=0.10, lw=0, zorder=0)
-    for seg in (ref, own):  # two runs, never joined: the gap between them is time no source covers
+    if ref and own:  # the months no source covers: filled and glowing like the data, its line dashed
+        (d0, v0), (d1, v1) = ref[-1], own[0]
+        _glow_line(ax, np.array([d0, d1]), np.array([v0, v1]), float(vals.max()), dashed=True)
+    for seg in (ref, own):  # two runs, drawn separately so the bridge between them stays distinct
         if len(seg) > 1:
             _glow_line(ax, np.array([d for d, _ in seg]), np.array([v for _, v in seg]), float(vals.max()))
         elif seg:
