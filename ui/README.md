@@ -3,7 +3,7 @@
 Dark-mode web UI for the Lynch Pin engine, for PC and phone. Everything lives in `ui/`; outside it, the portal only reads the scan archive that `main.py` writes to `scans/<kind>/` (see *Latest scans*). It uses only the standard library plus the project's existing dependencies.
 
 ```bash
-(cd ui/native && cargo build --release)  # once: the native chart renderer (Rust from rustup.rs; optional, see *Native chart renderer*)
+(cd ui/native && cargo build --release)  # once: the native chart renderer + trading view bars (Rust from rustup.rs; optional, see *Native chart renderer*)
 python -m ui.server                  # http://127.0.0.1:8765, this machine only
 python -m ui.server --lan            # phones/PCs on the same private network (prints the URL to open)
                                      #   + the stats page on port 190 (see *Stats page*)
@@ -14,6 +14,8 @@ python ui/tests/cold_bench.py --base http://127.0.0.1:8765 --clients 24 --count 
 python ui/tests/cold_bench.py --base http://127.0.0.1:8790 --clients 24 --count 48 --visitors --home   # same, as --public visitors
 python ui/tests/inference_bench.py --llm-url http://HOST:8000 --llm-parallel 4 --minutes 1   # AI overviews: local + Gemini at 50/min
 python ui/tests/chart_bench.py --matplotlib   # per-ticker chart: native vs matplotlib, one at a time and from 8 threads
+python ui/tests/tv_bench.py record && python ui/tests/tv_bench.py offline [--python]   # trading view: server capacity (no Yahoo)
+python ui/tests/tv_bench.py live --viewers 0,100,200,300,0   # trading view: cold lookups/min with N chart viewers (real Yahoo)
 python -m ui.assets.make_hero        # re-render the artwork from tmp/x_logo.jpeg + tmp/x_banner.png
 ```
 
@@ -58,6 +60,7 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 - **AI inference queue:** above the local model's share of AI overviews a minute, Gemini writes them; above Gemini's 15 a minute, the page shows the Quick overview with ↻ Retry AI (see *AI inference queue*).
 - **Quick Overview** with `--no-ai`: the AI overview's three sections built by fixed rules from the same data, no model involved (`ui/quick.py`). *Overview*: name, sector, HQ, employees, market cap, Yahoo's business summary, margins, dividend, analyst consensus and a valuation snapshot. *Reverse 5Y DCF*: "X% base ROI requires EPS to compound at Y%/yr for 5 years and a re-rating from Zx forward PE to a terminal ZZx" (the daily scan's Base ROI math), split into the EPS and multiple contributions, with how demanding those assumptions are. *Stomach test*: red flags from thresholds such as trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, PEG > 1 SD above its mean, base ROI < 9%, a losing bear case, shrinking revenue, an income grade below A (subpar; C/D are serious), a credit rating below A (balance-sheet risk; junk is serious), negative free cash flow, an uncovered dividend, a falling trend, high beta or short interest.
 - With `--no-ai` there is no **↻ Refresh**: a cached ticker stays cached until midnight (or eviction), so repeat lookups never spend Yahoo calls again. Uncacheable results (errors, a Yahoo 429, a missing PEG history) still re-run when searched again.
+- **Trading view**: a *Trading view* button at the top of the Technicals card opens the ticker's candlestick chart (full screen on a phone) at 18 intervals — 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m, 1H, 2H, 3H, 4H, 1D, 1W, 1M, 3M, 6M, 12M — with date ranges (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, All), SMA 50/100/200, EMA 8/21, volume, RSI 14 and MACD 12/26/9, and the price levels below drawn on it (R/S lines with their touch probabilities, POC, 52-week high / low, the 1-month ±1σ range). See *Trading view*.
 - **Price levels** in the Technicals card, computed with the experimental trade assistant's toolkit (`experimental/quant_engine.py`): support and resistance from clustered pivots (6 months), the volume point of control (3 months), a 1-month expected range from realised volatility, and the 52-week range. Each level shows its chance of being touched within a month.
 - **Deep Dive Prompt** (above *How to read*): a research brief to paste into Claude, ChatGPT or Gemini. It casts the model as a hedge-fund portfolio manager and walks it through the last two earnings reports, call transcripts, the 10-Q, news, management's answers and red flags. It then makes the model loop, stress-testing its bull and bear case until another pass changes nothing, and asks for a verdict against the S&P 500 with price levels and signals to watch. The quant data, the price levels and the local AI overview are attached at the end. **Copy** works on plain-http LAN and Tailscale URLs too; **Show / Hide** toggles the full text.
 - The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
@@ -93,6 +96,72 @@ The per-ticker chart is the one `graphics/visualizer.py` draws for `main.py` (PE
   ```
 - **Still drawn with the analysis:** at ~11 ms and ~0.07 s of CPU across threads on the M1, charts take ~1% of its 8 cores at 100 cold lookups a minute, where matplotlib took ~0.8 of a core; drawing it only when the chart is opened would save little and cost a round-trip on every view. Charts stay cached for the day with the analysis: a cache hit serves files, and `?v=` URLs let browsers keep them.
 - **Fidelity:** `ui/tests/test_fastchart.py` checks the text against what the visualizer draws and the pixels against matplotlib's (mean difference about 1/255: anti-aliasing at the edges of glyphs and lines; the layout is identical). The curve is stroked with miter joins where matplotlib uses round ones (under 0.02 px apart at its few-degree bends), and glyphs are placed on a ¼-pixel grid.
+
+## Trading view (`ui/tradingview.py`, `ui/tvdata.py`, `ui/native/src/bars.rs`)
+
+The per-ticker chart the Technicals card opens (`ui/static/tradingview.js`, `?t=MU&tv=240` links to MU's 4H chart; Back closes it). Yahoo Finance bars, regular session only.
+
+- **The page:** two canvases, the chart and the crosshair over it, so moving the crosshair never redraws the candles; candles are drawn as four batched paths (up / down wicks and bodies) however many bars are on screen. Drag to pan (with inertia), pinch or wheel to zoom, double-click / `End` to go back to the last bar, arrows to step; hover (mouse) or tap / long-press (touch) for the crosshair. The legend shows the bar under it (OHLC, change, volume, RSI, MACD and each average, which can be hidden). The price levels are the ones the analysis computed (*Price levels* above), passed to the chart when it opens and drawn once the analysis lands when the chart is opened from a link. The interval sheet is TradingView's: date ranges, then minutes, hours and days. The last interval and the hidden averages are remembered (`localStorage`).
+- **Intervals Yahoo doesn't serve** are built from one it does: 3m from 1m, 10m from 5m, 30m and 45m from 15m (yfinance skips Yahoo's 30m too: its bars are misaligned), 2H-4H from 1H, 3M / 6M / 12M from 1M. Intraday bars are counted from each session's open, with each day's own UTC offset from Yahoo's `tradingPeriods` (so DST changes nothing), as TradingView does: a 4H chart of a US stock has a 9:30-13:30 and a 13:30-16:00 bar, and one 9:30-13:00 bar on an early-close day. Yahoo's quirks are handled: the "live" row it appends at the close (16:00, or 16:00:01 on weekly / monthly series) is folded into its bar, and today's daily bar, which can come without a close, takes it (and the day's high / low / volume) from the quote.
+- **History:** 1m bars for 7 sessions (Yahoo keeps 8), 2m for a month, 5m / 15m for 60 sessions, 1H for 730 sessions, daily for 10 years, weekly and monthly since the listing; the page gets the last 3000 bars, with the averages computed over the whole series first.
+- **Indicators** as Pine Script computes them: SMA, EMA seeded with the SMA of its first *n* values, RSI with Wilder's average, MACD's signal the 9-EMA of the MACD line.
+- **The build** — Yahoo's raw chart JSON → candles → indicators → the page's JSON and its gzip — runs in the native library (`ui/native/src/bars.rs`, the chart renderer's crate; `ui/tvdata.py` calls it with ctypes, which drops the GIL). Python never touches a bar. Without the library, numpy builds the same JSON (`test_tradingview.py` checks they agree on every interval, Yahoo's recorded series included). The JSON is columns: times as deltas (a column of `3600` compresses to nothing), prices and averages at the instrument's decimals, the MACD at one more, RSI at 0.1, volume at 3 significant digits; the page computes the MACD histogram. A 1m chart is ~80 KB gzipped, a 4H one ~50 KB.
+
+  | Build (M1, 2026-10-20, MU) | native | numpy |
+  |---|---|---|
+  | 1m, 2730 bars (234 KB JSON → 81 KB gzip) | 3.1 ms | 28.8 ms |
+  | 4H from 1H, 1447 bars | 2.7 ms | 20.0 ms |
+  | 1D, 2511 bars | 3.0 ms | 26.7 ms |
+  | 3M from 1M, 168 bars | 0.27 ms | 2.2 ms |
+
+  Most of the native time is gzip (deflate level 2: 8% bigger than level 6 and 3-4× faster); parsing, bucketing and the indicators take ~1-2 ms.
+- **Serving** (`ui/tradingview.py`), cheapest first:
+  - A chart someone already asked for is bytes in memory: each (ticker, interval)'s gzipped JSON is kept until its Yahoo series is refreshed, with an ETag, so the page's polls get a 304.
+  - Another interval of a series in memory is one build (above).
+  - Otherwise one Yahoo request, made by a pool of `LYNCH_UI_TV_FETCHES` (4) fetcher threads on a curl_cffi session that impersonates Chrome, as yfinance does. Each thread keeps its connection to Yahoo open: ~30 ms a request instead of ~250 ms with a new TLS handshake (HTTP threads live for one connection each, so they would never reuse one). Viewers of the same series share it: requests that arrive while it is being fetched wait for that one request.
+  - Series stay fresh while the market is open for 30 s (1m, 2m), 60 s (5m, 15m), 2 min (1H, daily) or 10 min (weekly, monthly); when it is closed, 15 min, or until the next open. The page polls at that pace (15-45 s, which also keeps its place, below) and while it is hidden doesn't poll at all.
+  - Memory: up to 128 MB of Yahoo series and 64 MB of built charts (LRU).
+- **Yahoo comes first for the lookups.**
+  - A Yahoo budget: at most `--tv-yahoo-rpm` (120) chart fetches a minute for everyone, ~6% of the ~2100 Yahoo requests a minute the lookups make at full speed (~175 cold lookups/min × ~12 requests), and at most 20 a minute set off by one viewer (`LYNCH_UI_TV_VIEWER_RPM`; 429 *Trading view: new charts a minute*). So no viewer, nor a script cycling through tickers, can take Yahoo's quota from the lookups. Past it, viewers get the last series in memory (marked stale) or a countdown; cached charts and joining a fetch under way cost nothing.
+  - A chart fetch that gets a 429 opens the analyses' circuit breaker (*Concurrent lookups*), and while it is open charts are not fetched: viewers get the last series in memory, marked stale, or wait.
+  - An unknown symbol (Yahoo's 404) is remembered for an hour, a failed fetch for 15 s.
+- **Viewers are limited** (`--tv-viewers`, default 50, from the benchmark below): a viewer is a page with the chart open, alive while it polls; one that stops polling for 75 s (`LYNCH_UI_TV_IDLE`) gives its place up, and closing the chart gives it up at once (`/api/tv/release`). Past the limit the page says "Trading view is full" with a countdown to when a place frees up and retries (429, *Trading view full* on the stats page). With `--public` a visitor (IP) may have 2 charts open. `/api/health` has the count under `tv`.
+
+### Benchmark: how many viewers, and what they cost the lookups (2026-10-20)
+
+`ui/tests/tv_bench.py`, M1 MacBook Air (8 cores, 8 GB), evening (market closed, so market-hours refresh rates were forced on: `LYNCH_UI_TV_FORCE_OPEN=1`).
+
+**Offline** (`offline`): the server against Yahoo's series for MU recorded once, every ticker getting its own copy: what the server itself can serve.
+
+| | native bars | numpy bars |
+|---|---|---|
+| builds/s (32 connections, each request a ticker + interval never seen) | **1533** (5.4 cores busy) | 51 (1.2 cores: the GIL) |
+| cached charts and 304s, req/s (32 connections) | 7305 | 2608 (builds still holding the GIL) |
+| 1000 viewers: interval switch p50 / p99 | **5 / 11 ms** | 1804 / 13111 ms |
+| server CPU for 1000 viewers | 0.19 cores (12 ms per viewer-minute) | 0.55 cores |
+
+The native build is what lets the HTTP threads scale: it runs without the GIL, so 32 concurrent builds use 5 cores, where numpy's serialise on one and every other request waits behind them. The server isn't what limits viewers: thousands fit in its CPU. Yahoo is.
+
+**Live** (`live`): real Yahoo. 48 cold Nasdaq-100 lookups from 24 clients (cold_bench.py's loop, 8 analysis workers: what the free RAM held, FMP off), while N people use the trading view, each on their own S&P 500 ticker outside the Nasdaq-100 (nothing shared: the worst case for Yahoo). A viewer opens the chart (people arriving over 10 s), switches interval every ~12 s (weighted towards 1D, 4H, 1H, 15m, 5m) and polls in between as the page does.
+
+| Viewers | Limit / Yahoo budget | Cold lookups/min | vs baseline* | Chart open p50 | Switch p50 / p90 | Yahoo requests by charts | Yahoo 429s |
+|---|---|---|---|---|---|---|---|
+| 0 | | 172.4 → 178.7 | | | | | 0 |
+| 25 | none | 172.3 | −0.9% | 183 ms | 121 / 228 ms | 2.2 per viewer-minute | 0 |
+| 50 | none | 171.7 | −2.2% | 189 ms | 103 / 245 ms | 2.0 | 0 |
+| 100 | none | 167.9 | −5.2% | 408 ms | 135 / 253 ms | 2.1 | 0 |
+| 0 | | 168.2 → 157.3 | | | | | 0 |
+| 50 | 50 viewers, 120 a min | 163.1 | −0.9% | 203 ms | 17 / 7950 ms | 1.3 | 0 |
+| 100 (50 let in) | 50 viewers, 120 a min | 155.1 | −3.6% | 256 ms | 18 / 7818 ms | 0.65 | 0 |
+
+\* Against the baseline interpolated between the runs with no viewers before and after, which move 4-7% within a sweep: Yahoo's latency sets a cold lookup's pace (~7 s, mostly Yahoo / SEC).
+
+**Reading:**
+- **The cost is Yahoo's, not the CPU's.** An active viewer makes ~2 Yahoo requests a minute in the worst case (market hours, everyone on a different ticker), 1/6 of a cold lookup's ~12. Unlimited, 100 viewers made ~200 a minute, ~10% of the ~2100 the lookups make at full speed, and the lookups lost ~5%: their Yahoo requests answer a little slower (p50 7.1 → 7.3 s). When the market is closed, a viewer costs a request per series per 15 min.
+- **Yahoo throttles the machine, not a caller.** In a longer sweep (96 lookups a run, after ~6000 Yahoo requests in 20 minutes), the 100-viewer run came with nine 429s on the *lookups*, whose circuit breaker paused them (46 lookups/min). Every chart request is one the lookups don't get.
+- **Hence the defaults: 50 viewers and 120 Yahoo requests a minute** (≤ ~6% of the lookups' Yahoo traffic). Cold lookups lose 1-4%, within the run-to-run noise; 100 people asking cost no more than 50 (the other 50 see "Trading view is full" and retry); no 429s.
+- **The price is the chart's when a crowd arrives at once.** 50 people on 50 different tickers within 10 s exceed the budget's burst (30), so ~1 switch in 10 waits its turn (p90 ~8 s) and ~5% are asked to retry a few seconds later. Switching between intervals already loaded takes ~17 ms. People looking at the same tickers share their series and cost nothing more.
+- To measure again: `python ui/tests/tv_bench.py live --viewers 0,50,100,0` (the shipped limits) or `--unlimited` (the raw cost). Mind Yahoo: a sweep makes ~3000 requests, and back-to-back sweeps got the lookups throttled.
 
 ## Stats page (`--lan` or `--public`)
 
@@ -172,6 +241,11 @@ Measured cost:
 | `--fmp-limit` | `LYNCH_UI_FMP_LIMIT` | `225`: FMP requests the portal may make in any rolling 24 h (the free plan's 250 a day minus 25 for the daily scans). Every request FMP answers counts, errors included (a 402 for a symbol outside the free plan counts on FMP's dashboard); only a request FMP didn't answer (network error, timeout, a 5xx server failure) is handed back, and lookups that never call FMP cost nothing. Past the cap lookups are simply not enriched; the count is shared by the analysis processes and kept across restarts (`<cache_dir>/fmp_budget.sqlite3`), and `/api/health` shows it under `enrich` (not with `--public`) |
 | `--precache` | `LYNCH_UI_PRECACHE` | `100`: right after the cache resets at midnight, analyse the N most looked-up tickers of the last 30 days (from the stats page, so `--lan` / `--public`; fewer if fewer were looked up), one at a time: with the AI overview on, the next ticker starts only once the previous one's overview is finished (~1 h for 100). These lookups don't count on the stats page or in the cache's hit rate, but spend the usual Yahoo calls and FMP requests (within `--fmp-limit`). `0` = off; `/api/health` shows the last run under `precache` |
 | | `LYNCH_UI_NATIVE_CHART=0` / `LYNCH_UI_CHART_LIB` | on when built / `ui/native/target/release/liblynch_chart.dylib` (`.so` on Linux): draw per-ticker charts with matplotlib instead / where the native renderer is loaded from (see *Native chart renderer*) |
+| `--tv-viewers` | `LYNCH_UI_TV_VIEWERS` | `50`: people who may have the trading view open at once (0 = no limit; see *Trading view*) |
+| `--tv-yahoo-rpm` | `LYNCH_UI_TV_YAHOO_RPM` / `LYNCH_UI_TV_VIEWER_RPM` | `120` / `20`: Yahoo requests the trading view may make a minute, for everyone (0 = no budget) / set off by one viewer |
+| `--no-tv` | `LYNCH_UI_TV=0` | on: no trading view and no button for it |
+| | `LYNCH_UI_TV_FETCHES` / `LYNCH_UI_TV_IDLE` | `4` / `75`: Yahoo requests the trading view makes at once / seconds a viewer that stopped polling keeps its place |
+| | `LYNCH_UI_NATIVE_BARS=0` / `LYNCH_UI_TV_FORCE_OPEN=1` | on when built / off: build the trading view's bars with numpy instead / refresh series at market-hours pace at any hour (benchmarks) |
 | `--allow-net` / `--allow-host` | `LYNCH_UI_ALLOWED_NETS` / `LYNCH_UI_ALLOWED_HOSTS` | none: extra client networks / Host names beyond LAN + Tailscale |
 
 The LLM context window is the smaller of `--llm-ctx` and the loaded model's real context (from LM Studio's `/api/v0/models`). To try the AI card without a model, run `python -m ui.tests.fake_lmstudio --port 18080` (streams a canned reply; `--delay` sets the typing speed) and start the server with `--llm-url http://127.0.0.1:18080`.
