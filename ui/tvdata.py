@@ -71,17 +71,25 @@ class BuildError(RuntimeError):
     pass
 
 
-def request_for(code, max_bars=MAX_BARS, gzip_level=GZIP_LEVEL):
+def request_for(code, max_bars=MAX_BARS, gzip_level=GZIP_LEVEL, ext=False):
     label, _, unit, count = INTERVALS[code]
-    return {"interval": code, "label": label, "unit": unit, "count": count, "max_bars": max_bars, "gzip": gzip_level}
+    return {"interval": code, "label": label, "unit": unit, "count": count, "max_bars": max_bars, "gzip": gzip_level,
+            "ext": bool(ext) and unit == "minute"}
+
+
+def series_key(code, ext=False):
+    """The Yahoo series a chart is built from: its base interval, with ":ext" for extended hours (intraday only)."""
+    _, base, unit, _ = INTERVALS[code]
+    return f"{base}:ext" if ext and unit == "minute" else base
 
 
 def query_params(base, now=None):
-    """Yahoo's query string for one series (regular session only)."""
+    """Yahoo's query string for one series: the regular session, or with ":ext" pre- and post-market too."""
+    base, _, ext = base.partition(":")
     q = dict(BASES[base])
     if "period1" in q:
         q["period2"] = int(now if now is not None else time.time())
-    q.update(includePrePost="false", events="div,splits")
+    q.update(includePrePost="true" if ext else "false", events="div,splits")
     return q
 
 
@@ -156,9 +164,9 @@ def build_native(raw, req):
     return Built(body, gz, json.loads(meta), True)
 
 
-def build(raw, code, max_bars=MAX_BARS, gzip_level=GZIP_LEVEL, use_native=None):
+def build(raw, code, max_bars=MAX_BARS, gzip_level=GZIP_LEVEL, use_native=None, ext=False):
     """Yahoo's chart JSON (bytes) → Built(body, gz, meta, native). Raises NoData / BuildError."""
-    req = request_for(code, max_bars, gzip_level)
+    req = request_for(code, max_bars, gzip_level, ext)
     if use_native is None:
         use_native = native() is not None
     return build_native(raw, req) if use_native else build_python(raw, req)
@@ -169,7 +177,8 @@ DAY = 86400
 DATE_NUDGE = 6 * 3600  # see bars.rs: keeps a daily / monthly stamp an hour off on its own date
 
 
-def _sessions(tp):
+def _sessions(tp, ext=False):
+    """As bars.rs ``sessions``: the regular sessions, or each day's pre / regular / post periods joined."""
     out = []
 
     def collect(v):
@@ -179,13 +188,16 @@ def _sessions(tp):
         elif isinstance(v, dict):
             if isinstance(v.get("start"), int) and isinstance(v.get("end"), int):
                 out.append((v["start"], v["end"]))
-            elif "regular" in v:
-                collect(v["regular"])
+            else:
+                for k in (("pre", "regular", "post") if ext else ("regular",)):
+                    if k in v:
+                        collect(v[k])
     collect(tp)
-    seen, res = set(), []
+    res = []
     for s, e in sorted(p for p in out if p[1] > p[0]):
-        if s not in seen:
-            seen.add(s)
+        if res and s <= res[-1][1]:
+            res[-1] = (res[-1][0], max(res[-1][1], e))
+        else:
             res.append((s, e))
     return res
 
@@ -296,6 +308,75 @@ def _significant(x, digits):
     return out
 
 
+def _bollinger(x, n=20, k=2.0):
+    import numpy as np
+    mid = _sma(x, n)
+    up, lo = np.full(len(x), np.nan), np.full(len(x), np.nan)
+    for i in range(n - 1, len(x)):
+        if np.isfinite(mid[i]):
+            w = x[i + 1 - n:i + 1]
+            sd = math.sqrt(((w - mid[i]) ** 2).sum() / n)  # population, as bars.rs and Pine's ta.stdev
+            up[i], lo[i] = mid[i] + k * sd, mid[i] - k * sd
+    return up, mid, lo
+
+
+def _stoch_k(h, l, c, n=14, smooth=3):
+    import numpy as np
+    raw = np.full(len(c), np.nan)
+    for i in range(n - 1, len(c)):
+        hh, ll = h[i + 1 - n:i + 1].max(), l[i + 1 - n:i + 1].min()
+        raw[i] = 100.0 * (c[i] - ll) / (hh - ll) if hh > ll else 50.0
+    out = np.full(len(c), np.nan)
+    fin = np.flatnonzero(np.isfinite(raw))
+    if len(fin):
+        out[fin[0]:] = _sma(raw[fin[0]:], smooth)
+    return out
+
+
+def _paint(o, h, l, c):
+    """The BLUE / PINK paint, as bars.rs ``paint`` computes it (codes g d L r x B P)."""
+    import numpy as np
+    n = len(c)
+    k = _stoch_k(h, l, c)
+    r = _rsi(c, 14)
+    r_ma = np.full(n, np.nan)
+    fin = np.flatnonzero(np.isfinite(r))
+    if len(fin):
+        r_ma[fin[0]:] = _sma(r[fin[0]:], 14)
+    line = _ema(c, 8) - _ema(c, 17)
+    hist = line - _ema(line, 9)
+    e9 = _ema(c, 9)
+
+    def within(xs, i, w, pred):
+        return any(np.isfinite(xs[j]) and pred(xs[j]) for j in range(max(0, i - w + 1), i + 1))
+
+    out, state, armed, was_ob = [], 0, False, False
+    with np.errstate(invalid="ignore"):
+        for i in range(n):
+            ob = within(k, i, 3, lambda v: v > 80)
+            if ob and not was_ob:
+                armed = True
+            was_ob = ob
+            ph, pl = (h[i - 1], l[i - 1]) if i else (np.nan, np.nan)
+            bull = (within(k, i, 5, lambda v: v < 20) and r[i] - r_ma[i] > 0) or (c[i] > ph and hist[i] > 0)
+            bear = c[i] < pl and hist[i] < 0
+            if state <= 0 and bull:
+                state, code = 1, "B"
+            elif state >= 0 and bear:
+                state, code = -1, "P"
+            elif state > 0:
+                if c[i] < o[i] and ob and armed:
+                    armed, code = False, "L"
+                else:
+                    code = "d" if c[i] < e9[i] else "g"
+            elif state < 0:
+                code = "x" if c[i] >= ph and c[i] > e9[i] else "r"
+            else:
+                code = "g" if c[i] >= o[i] else "r"
+            out.append(code)
+    return "".join(out)
+
+
 def _round_half_away(s):
     t = math.trunc(s)
     f = s - t
@@ -370,7 +451,8 @@ def build_python(raw, req):
 
     off = int(meta.get("gmtoffset") or 0)
     unit, count = req["unit"], req.get("count", 1)
-    periods = _sessions(meta.get("tradingPeriods")) if unit == "minute" else []
+    ext = bool(req.get("ext")) and unit == "minute"
+    periods = _sessions(meta.get("tradingPeriods"), ext) if unit == "minute" else []
     keys = _keys(t, unit, count, off, periods)
     if len(t):
         starts = np.flatnonzero(np.concatenate(([True], keys[1:] != keys[:-1])))
@@ -385,6 +467,8 @@ def build_python(raw, req):
     rsi14 = _rsi(c, 14)
     line = _ema(c, 12) - _ema(c, 26)
     sig = _ema(line, 9)
+    bbu, bbm, bbl = _bollinger(c)
+    codes = _paint(o, h, l, c)
 
     n = len(t)
     skip = max(0, n - max(1, int(req.get("max_bars", MAX_BARS))))
@@ -411,8 +495,18 @@ def build_python(raw, req):
     for name, arr, dd in (("o", o, d), ("h", h, d), ("l", l, d), ("c", c, d), ("vol", _significant(vol, 3), 0),
                           ("sma50", sma50, d), ("sma100", sma100, d), ("sma200", sma200, d),
                           ("ema8", ema8, d), ("ema21", ema21, d), ("rsi", rsi14, 1),
-                          ("macd", line, d + 1), ("signal", sig, d + 1)):
+                          ("macd", line, d + 1), ("signal", sig, d + 1),
+                          ("bbu", bbu, d), ("bbm", bbm, d), ("bbl", bbl, d)):
         parts.append(f'"{name}":' + _fmt(arr[skip:].tolist(), dd))
+    parts.append(f'"paint":"{codes[skip:]}"')
+    if ext:
+        regular = _sessions(meta.get("tradingPeriods"))
+        starts = np.array([p[0] for p in regular], dtype=np.int64)
+        flags = []
+        for x in t[skip:]:
+            i = int(np.searchsorted(starts, x, side="right")) - 1
+            flags.append("r" if i >= 0 and x < regular[i][1] else "e")
+        parts.append(f'"sess":"{"".join(flags)}"')
     body = (",".join(parts) + "}").encode("utf-8")
     level = int(req.get("gzip", GZIP_LEVEL))
     gz = b""

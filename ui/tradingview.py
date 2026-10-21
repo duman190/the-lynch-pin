@@ -189,13 +189,18 @@ class TradingView:
         except AttributeError:
             return 0
 
-    def _ttl(self, base, meta):
-        """(seconds the series stays fresh, market open) from the session in Yahoo's meta."""
+    def _ttl(self, key, meta):
+        """(seconds the series stays fresh, market open) from the session in Yahoo's meta. With extended hours
+        (key "15m:ext") the market is open from the pre-market's start to the post-market's end."""
+        base, _, ext = key.partition(":")
         if self.force_open:
             return OPEN_TTL[base], True
         now = self._wall()
         reg = meta.get("regular") or {}
         start, end = reg.get("start"), reg.get("end")
+        if ext:
+            start = (meta.get("pre") or {}).get("start", start)
+            end = (meta.get("post") or {}).get("end", end)
         if not (isinstance(start, int) and isinstance(end, int)):
             return OPEN_TTL[base], True
         if start <= now < end + 60:
@@ -332,34 +337,36 @@ class TradingView:
             self._series_bytes -= len(gone.raw)
 
     # ── charts ───────────────────────────────────────────────────────────────────────────────────────────────────
-    def chart(self, sym, code, ip=None, sid=None, if_none_match=None):
-        """The trading view's reply for one (ticker, interval)."""
+    def chart(self, sym, code, ip=None, sid=None, if_none_match=None, ext=False):
+        """The trading view's reply for one (ticker, interval), with pre- and post-market bars when ``ext``."""
         self._count("requests")
         if code not in tvdata.INTERVALS:
             return Reply(400, error="unknown interval")
         refused = self.admit(ip, sid)
         if refused is not None:
             return refused
-        base = tvdata.INTERVALS[code][1]
+        base = tvdata.series_key(code, ext)  # "15m", or "15m:ext" with extended hours (intraday only)
+        ext = base.endswith(":ext")
         s, stale, err = self.series(sym, base, viewer=(ip, sid or ""))
         if err is not None:
             return err
         if s.nodata:
             return Reply(404, error=s.nodata)
-        key = (sym, code)
+        key = (sym, code, ext)
         with self._lock:
             ch = self._charts.get(key)
             if ch is not None and ch.version == s.version:
                 self._charts.move_to_end(key)
         if ch is None or ch.version != s.version:
             try:
-                built = self._build(s.raw, code)  # native: GIL released
+                built = self._build(s.raw, code, ext=ext)  # native: GIL released
             except tvdata.NoData as e:
                 return Reply(404, error=f"no chart data for this symbol ({e})")
             except tvdata.BuildError as e:
                 return Reply(502, error=f"could not read Yahoo's chart ({e})")
             self._count("builds")
-            ch = Chart(s.version, built.gz or gzip.compress(built.body, 2), built.meta, f'W/"{sym}-{code}-{s.version}"')
+            tag = f"{sym}-{code}{'-x' if ext else ''}-{s.version}"
+            ch = Chart(s.version, built.gz or gzip.compress(built.body, 2), built.meta, f'W/"{tag}"')
             with self._lock:
                 if s.ttl is None:
                     s.ttl, s.live = self._ttl(base, built.meta)
@@ -372,7 +379,7 @@ class TradingView:
                     _, gone = self._charts.popitem(last=False)
                     self._chart_bytes -= len(gone.gz)
         now = self._clock()
-        ttl = s.ttl or OPEN_TTL[base]
+        ttl = s.ttl or OPEN_TTL[base.partition(":")[0]]
         age = max(0, int(now - s.fetched))
         headers = {"X-TV-Age": str(age), "X-TV-Refresh": str(max(5, int(ttl - (now - s.fetched)) + 1)),
                    "X-TV-Live": "1" if s.live else "0"}

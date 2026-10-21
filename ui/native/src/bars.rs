@@ -117,6 +117,10 @@ pub struct Request {
     /// 0 = no gzip, else the deflate level (1-9).
     #[serde(default = "default_gzip")]
     pub gzip: u8,
+    /// Extended hours (Yahoo's includePrePost): intraday sessions run from the pre-market's open to the post-market's
+    /// close, and the page gets each bar's session ("sess": r regular, e extended).
+    #[serde(default)]
+    pub ext: bool,
 }
 
 fn one() -> u32 {
@@ -199,30 +203,48 @@ fn civil(days: i64) -> (i64, i64) {
     (y, m)
 }
 
-/// The regular sessions of `tradingPeriods`, sorted by start.
-fn sessions(v: &Option<serde_json::Value>) -> Vec<Period> {
+/// The sessions of `tradingPeriods`, sorted by start: the regular ones, or with `ext` each day's pre-market, regular
+/// and post-market periods joined into one (04:00-20:00 New York for a US stock).
+fn sessions(v: &Option<serde_json::Value>, ext: bool) -> Vec<Period> {
     let mut out = Vec::new();
-    fn collect(v: &serde_json::Value, out: &mut Vec<Period>) {
+    fn collect(v: &serde_json::Value, ext: bool, out: &mut Vec<Period>) {
         match v {
-            serde_json::Value::Array(items) => items.iter().for_each(|x| collect(x, out)),
+            serde_json::Value::Array(items) => items.iter().for_each(|x| collect(x, ext, out)),
             serde_json::Value::Object(m) => {
                 if let (Some(s), Some(e)) = (m.get("start").and_then(|x| x.as_i64()), m.get("end").and_then(|x| x.as_i64()))
                 {
                     out.push(Period { start: s, end: e });
-                } else if let Some(r) = m.get("regular") {
-                    collect(r, out);
+                } else {
+                    let parts: &[&str] = if ext { &["pre", "regular", "post"] } else { &["regular"] };
+                    for k in parts {
+                        if let Some(r) = m.get(*k) {
+                            collect(r, ext, out);
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
     if let Some(v) = v {
-        collect(v, &mut out);
+        collect(v, ext, &mut out);
     }
     out.retain(|p| p.end > p.start);
     out.sort_by_key(|p| p.start);
-    out.dedup_by_key(|p| p.start);
-    out
+    let mut merged: Vec<Period> = Vec::with_capacity(out.len());
+    for p in out {
+        match merged.last_mut() {
+            Some(last) if p.start <= last.end => last.end = last.end.max(p.end), // pre → regular → post: one day
+            _ => merged.push(p),
+        }
+    }
+    merged
+}
+
+/// Whether `t` falls in one of the (sorted) `periods`.
+fn inside(periods: &[Period], t: i64) -> bool {
+    let i = periods.partition_point(|p| p.start <= t);
+    i > 0 && t < periods[i - 1].end
 }
 
 /// Bucket key of every bar: bars with equal consecutive keys become one candle. For intraday buckets the key is
@@ -363,6 +385,103 @@ pub fn macd(c: &[f64], fast: usize, slow: usize, signal: usize) -> (Vec<f64>, Ve
     (line, sig, hist)
 }
 
+/// Bollinger Bands: the `n`-SMA ± `k` population standard deviations (Pine's `ta.bb`). (upper, basis, lower)
+pub fn bollinger(x: &[f64], n: usize, k: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let mid = sma(x, n);
+    let (mut up, mut lo) = (vec![f64::NAN; x.len()], vec![f64::NAN; x.len()]);
+    for i in (n.max(1) - 1)..x.len() {
+        if !mid[i].is_finite() {
+            continue;
+        }
+        let m = mid[i];
+        let var = x[i + 1 - n..=i].iter().map(|v| (v - m) * (v - m)).sum::<f64>() / n as f64;
+        let sd = var.sqrt();
+        up[i] = m + k * sd;
+        lo[i] = m - k * sd;
+    }
+    (up, mid, lo)
+}
+
+/// Stochastic %K: the close's place in the `n`-bar range, smoothed by an `smooth`-SMA (Pine's `ta.stoch` + `ta.sma`).
+pub fn stoch_k(h: &[f64], l: &[f64], c: &[f64], n: usize, smooth: usize) -> Vec<f64> {
+    let mut raw = vec![f64::NAN; c.len()];
+    for i in (n.max(1) - 1)..c.len() {
+        let hh = h[i + 1 - n..=i].iter().cloned().fold(f64::MIN, f64::max);
+        let ll = l[i + 1 - n..=i].iter().cloned().fold(f64::MAX, f64::min);
+        raw[i] = if hh > ll { 100.0 * (c[i] - ll) / (hh - ll) } else { 50.0 };
+    }
+    let mut out = vec![f64::NAN; c.len()];
+    let first = raw.iter().position(|v| v.is_finite()).unwrap_or(c.len());
+    let k = sma(&raw[first..], smooth);
+    out[first..].copy_from_slice(&k);
+    out
+}
+
+/// The BLUE / PINK paint (codes: g green, d dark green, L lime "trim", r red, x dark red, B blue, P pink), reverse
+/// engineered from TradexWhisperer's MU charts (1D, 15m, 5m, 3m; see ui/README.md). A state machine:
+/// * BLUE (to bull): %K(14,3) was under 20 in the last 5 bars and RSI(14) is above its 14-SMA, or the close clears
+///   the prior high while the fast MACD (8,17,9) histogram is positive.
+/// * PINK (to bear): the close breaks the prior low while the fast MACD histogram is negative.
+/// * Bull bars: lime on the first down bar of each %K > 80 episode (take profits), dark green under the 9-EMA
+///   (a pullback), green otherwise. Bear bars: dark red for a bounce (close at the prior high or above, over the
+///   9-EMA), red otherwise. Before the first flip, bars are green or red by their own direction.
+pub fn paint(b: &Bars) -> Vec<u8> {
+    let (o, h, l, c) = (&b.o, &b.h, &b.l, &b.c);
+    let n = c.len();
+    let k = stoch_k(h, l, c, 14, 3);
+    let r = rsi(c, 14);
+    let first = r.iter().position(|v| v.is_finite()).unwrap_or(n);
+    let mut r_ma = vec![f64::NAN; n];
+    if first < n {
+        r_ma[first..].copy_from_slice(&sma(&r[first..], 14));
+    }
+    let (_, _, hist) = macd(c, 8, 17, 9);
+    let e9 = ema(c, 9);
+    let within = |xs: &[f64], i: usize, w: usize, pred: &dyn Fn(f64) -> bool| {
+        (i.saturating_sub(w - 1)..=i).any(|j| xs[j].is_finite() && pred(xs[j]))
+    };
+    let mut out = Vec::with_capacity(n);
+    let (mut state, mut armed, mut was_ob) = (0i8, false, false);
+    for i in 0..n {
+        let ob = within(&k, i, 3, &|v| v > 80.0);
+        if ob && !was_ob {
+            armed = true; // a new overbought episode: one TRIM to give
+        }
+        was_ob = ob;
+        let (ph, pl) = if i > 0 { (h[i - 1], l[i - 1]) } else { (f64::NAN, f64::NAN) };
+        let bull = (within(&k, i, 5, &|v| v < 20.0) && r[i] - r_ma[i] > 0.0) || (c[i] > ph && hist[i] > 0.0);
+        let bear = c[i] < pl && hist[i] < 0.0;
+        let code = if state <= 0 && bull {
+            state = 1;
+            b'B'
+        } else if state >= 0 && bear {
+            state = -1;
+            b'P'
+        } else if state > 0 {
+            if c[i] < o[i] && ob && armed {
+                armed = false;
+                b'L'
+            } else if c[i] < e9[i] {
+                b'd'
+            } else {
+                b'g'
+            }
+        } else if state < 0 {
+            if c[i] >= ph && c[i] > e9[i] {
+                b'x'
+            } else {
+                b'r'
+            }
+        } else if c[i] >= o[i] {
+            b'g'
+        } else {
+            b'r'
+        };
+        out.push(code);
+    }
+    out
+}
+
 /// Yahoo's response → its candles (rows with a missing price dropped, highs / lows widened to cover open and
 /// close) and its meta.
 fn parse(raw: &[u8]) -> Result<(Meta, Bars), BarsError> {
@@ -416,11 +535,13 @@ fn parse(raw: &[u8]) -> Result<(Meta, Bars), BarsError> {
 pub fn candles(raw: &[u8], req: &Request) -> Result<(Bars, MetaOut), BarsError> {
     let (meta, bars) = parse(raw)?;
     let off = meta.gmtoffset.unwrap_or(0);
-    let periods = if req.unit == "minute" { sessions(&meta.trading_periods) } else { Vec::new() };
+    let periods = if req.unit == "minute" { sessions(&meta.trading_periods, req.ext) } else { Vec::new() };
     let keys = bucket_keys(&bars.t, &req.unit, req.count, off, &periods)?;
     let out = resample(&bars, &keys, req.unit == "minute");
     let cur = meta.current_trading_period.unwrap_or_default();
+    let regular = if req.ext && req.unit == "minute" { sessions(&meta.trading_periods, false) } else { Vec::new() };
     let m = MetaOut {
+        regular_sessions: regular,
         symbol: meta.symbol,
         name: meta.long_name.or(meta.short_name),
         currency: meta.currency,
@@ -458,6 +579,8 @@ pub struct MetaOut {
     pre: Option<Period>,
     post: Option<Period>,
     bars_in: usize,
+    /// With extended hours: the regular sessions, to tell each bar's session.
+    regular_sessions: Vec<Period>,
 }
 
 // ── JSON writer: numbers rounded to a fixed number of decimals, written by hand (no float formatting) ─────────
@@ -607,6 +730,8 @@ pub fn build(raw: &[u8], req: &Request) -> Result<Built, BarsError> {
     let (ema8, ema21) = (ema(close, 8), ema(close, 21));
     let rsi14 = rsi(close, 14);
     let (line, sig, _) = macd(close, 12, 26, 9);
+    let (bbu, bbm, bbl) = bollinger(close, 20, 2.0);
+    let codes = paint(&bars);
     let n = bars.len();
     let skip = n.saturating_sub(req.max_bars.max(1));
     let d = m.decimals;
@@ -682,6 +807,21 @@ pub fn build(raw: &[u8], req: &Request) -> Result<Built, BarsError> {
     j.array_f("rsi", &rsi14[skip..], 1);
     j.array_f("macd", &line[skip..], d + 1);
     j.array_f("signal", &sig[skip..], d + 1);
+    j.array_f("bbu", &bbu[skip..], d);
+    j.array_f("bbm", &bbm[skip..], d);
+    j.array_f("bbl", &bbl[skip..], d);
+    j.key("paint");
+    j.buf.push(b'"');
+    j.buf.extend_from_slice(&codes[skip..]);
+    j.raw("\",");
+    if req.ext && req.unit == "minute" {
+        j.key("sess"); // r regular, e pre- / post-market
+        j.buf.push(b'"');
+        for &t in &bars.t[skip..] {
+            j.buf.push(if inside(&m.regular_sessions, t) { b'r' } else { b'e' });
+        }
+        j.raw("\",");
+    }
     j.buf.pop(); // the last array's comma
     j.raw("}");
     let body = j.buf;
@@ -753,6 +893,34 @@ mod tests {
         let (line, sig, hist) = macd(&y, 12, 26, 9);
         assert!(line[24].is_nan() && line[25].is_finite() && sig[32].is_nan() && sig[33].is_finite());
         assert!(close(hist[39], line[39] - sig[39]) && hist[32].is_nan());
+    }
+
+    #[test]
+    fn bands_stoch_and_paint() {
+        let x: Vec<f64> = (0..30).map(|i| 100.0 + (i % 5) as f64).collect();
+        let (u, m, lo) = bollinger(&x, 20, 2.0);
+        assert!(u[18].is_nan() && close(m[19], x[0..20].iter().sum::<f64>() / 20.0));
+        assert!(close(u[19] - m[19], m[19] - lo[19]) && u[19] > m[19]);
+        let h: Vec<f64> = x.iter().map(|v| v + 1.0).collect();
+        let l: Vec<f64> = x.iter().map(|v| v - 1.0).collect();
+        let k = stoch_k(&h, &l, &x, 14, 3);
+        assert!(k[14].is_nan() && k[15].is_finite() && k.iter().filter(|v| v.is_finite()).all(|v| (0.0..=100.0).contains(v)));
+        // a fall then a rally: only codes from the palette, a BLUE once it turns, bull colours for the rest of it
+        // (a straight-line fall never paints PINK: the MACD histogram converges to 0, not below)
+        let mut c: Vec<f64> = (0..60).map(|i| 300.0 - 2.0 * i as f64).collect();  // each close under the prior low
+        c.extend((0..60).map(|i| 140.0 + 1.5 * i as f64));
+        let b = Bars {
+            t: (0..c.len() as i64).collect(),
+            o: c.iter().enumerate().map(|(i, v)| if i < 60 { v + 0.6 } else { v - 0.6 }).collect(),
+            h: c.iter().map(|v| v + 1.0).collect(),
+            l: c.iter().map(|v| v - 1.0).collect(),
+            c: c.clone(),
+            v: vec![1.0; c.len()],
+        };
+        let p = String::from_utf8(paint(&b)).unwrap();
+        assert!(p.chars().all(|ch| "gdLrxBP".contains(ch)), "{p}");
+        let bi = p.rfind('B').expect("a BLUE");
+        assert!(bi >= 60 && p[bi..].chars().all(|ch| "gdLB".contains(ch)), "{p}");
     }
 
     #[test]

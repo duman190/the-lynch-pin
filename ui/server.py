@@ -472,7 +472,7 @@ def make_handler(app):
             if not TICKER_RE.match(sym):
                 return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
             r = app.tv.chart(sym, query.get("i", [tvdata.DEFAULT_INTERVAL])[0], ip=self.client_ip(), sid=sid,
-                             if_none_match=self.headers.get("If-None-Match"))
+                             if_none_match=self.headers.get("If-None-Match"), ext=query.get("x", ["0"])[0] == "1")
             extra = dict(r.headers)
             if r.status in (200, 304):
                 extra.update(ETag=r.etag, Vary="Accept-Encoding")

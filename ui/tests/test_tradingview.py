@@ -87,6 +87,23 @@ def test_3m_from_1m_counts_from_the_open(native):
 
 
 @pytest.mark.parametrize("native", BUILDERS)
+def test_extended_hours_sessions_and_flags(native):
+    pre, reg, post = (MON + 8 * H, MON + 13 * H + 30 * M), (MON + 13 * H + 30 * M, MON + 20 * H), (MON + 20 * H, MON + 24 * H)
+    ts = list(range(pre[0], post[1], H // 2))  # 30-min bars, 04:00-20:00 New York
+    meta = {"tradingPeriods": {"pre": [[{"start": pre[0], "end": pre[1], "gmtoffset": EDT}]],
+                               "regular": [[{"start": reg[0], "end": reg[1], "gmtoffset": EDT}]],
+                               "post": [[{"start": post[0], "end": post[1], "gmtoffset": EDT}]]}}
+    raw = yahoo(ts, meta=meta)
+    j = bars(raw, "240", native, ext=True)                      # 4H from the pre-market's open: 04:00, 08:00, 12:00, 16:00
+    assert j["t"] == [pre[0] + k * 4 * H for k in range(4)]
+    assert j["sess"] == "eere"  # a bar's session is its start's: 04:00 and 08:00 pre-market, 16:00 after the close
+    j30 = bars(raw, "30", native, ext=True)
+    assert j30["n"] == 32 and j30["sess"].count("r") == 13 and j30["sess"][0] == "e"
+    plain = bars(raw, "240", native)                            # without ext: no session flags
+    assert "sess" not in plain
+
+
+@pytest.mark.parametrize("native", BUILDERS)
 def test_weekly_live_row_joins_its_week(native):
     mondays = [MON - 14 * 86400 + 4 * H, MON - 7 * 86400 + 4 * H, MON + 4 * H]  # Yahoo: Monday 00:00 New York
     live = MON + 86400 + 20 * H + 1                                               # Tuesday 16:00:01
@@ -212,7 +229,8 @@ def test_native_and_numpy_build_the_same_json():
         d = a["decimals"]
         # indicators are sums in a different order (a running sum vs numpy's cumsum): a value on a rounding boundary
         # may land one unit of its last decimal apart; prices, times and volumes are the same numbers
-        unit = {"sma50": d, "sma100": d, "sma200": d, "ema8": d, "ema21": d, "rsi": 1, "macd": d + 1, "signal": d + 1}
+        unit = {"sma50": d, "sma100": d, "sma200": d, "ema8": d, "ema21": d, "rsi": 1, "macd": d + 1, "signal": d + 1,
+                "bbu": d, "bbm": d, "bbl": d}
         for k in a:
             if isinstance(a[k], list):
                 assert len(a[k]) == len(b[k]), (code, k)
