@@ -5,6 +5,7 @@
 //! The chart is laid out like matplotlib does it (layout.rs), rasterised with tiny-skia (NEON / SSE SIMD) in
 //! horizontal bands on several threads, and written as a 300-dpi PNG (bands deflated in parallel) plus a JPEG
 //! preview drawn at its own size on another thread.
+pub mod bars;
 pub mod encode;
 pub mod font;
 pub mod layout;
@@ -222,6 +223,90 @@ pub unsafe extern "C" fn lynch_chart_render(spec: *const u8, len: usize, out: *m
             1
         }
     }
+}
+
+/// Buffers of one trading-view build, owned by Rust until ``lynch_bars_free``.
+#[repr(C)]
+pub struct BarsOut {
+    pub body: *mut u8,
+    pub body_len: usize,
+    pub gz: *mut u8,
+    pub gz_len: usize,
+    pub meta: *mut u8,
+    pub meta_len: usize,
+}
+
+fn leak(v: Vec<u8>) -> (*mut u8, usize) {
+    let b = v.into_boxed_slice();
+    let n = b.len();
+    (Box::into_raw(b) as *mut u8, n)
+}
+
+/// C entry point of the trading view (bars.rs): Yahoo's chart JSON (``raw``) and a request JSON (bars::Request) →
+/// the page's JSON, its gzip and a meta JSON in ``out``. Returns 0 on success; 2 when Yahoo had no data for the
+/// symbol and 1 on any other failure, with the message in ``out.meta``. Every buffer handed out, on success or
+/// failure, must be given back to ``lynch_bars_free``.
+///
+/// # Safety
+/// ``raw`` and ``req`` must point to ``raw_len`` / ``req_len`` readable bytes, ``out`` to a writable BarsOut.
+#[no_mangle]
+pub unsafe extern "C" fn lynch_bars_build(
+    raw: *const u8,
+    raw_len: usize,
+    req: *const u8,
+    req_len: usize,
+    out: *mut BarsOut,
+) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    let result = std::panic::catch_unwind(|| {
+        // SAFETY: guaranteed by the caller (see above).
+        let (raw, req) = unsafe { (std::slice::from_raw_parts(raw, raw_len), std::slice::from_raw_parts(req, req_len)) };
+        let req: bars::Request =
+            serde_json::from_slice(req).map_err(|e| bars::BarsError::Failed(format!("bad request: {e}")))?;
+        bars::build(raw, &req)
+    });
+    let (code, built) = match result {
+        Ok(Ok(b)) => (0, b),
+        Ok(Err(bars::BarsError::NoData(m))) => (2, bars::Built { body: Vec::new(), gz: Vec::new(), meta: m.into_bytes() }),
+        Ok(Err(bars::BarsError::Failed(m))) => (1, bars::Built { body: Vec::new(), gz: Vec::new(), meta: m.into_bytes() }),
+        Err(_) => (1, bars::Built { body: Vec::new(), gz: Vec::new(), meta: b"bars builder panicked".to_vec() }),
+    };
+    let (body, body_len) = leak(built.body);
+    let (gz, gz_len) = leak(built.gz);
+    let (meta, meta_len) = leak(built.meta);
+    // SAFETY: ``out`` is writable (see above).
+    unsafe { *out = BarsOut { body, body_len, gz, gz_len, meta, meta_len } };
+    code
+}
+
+/// Frees the buffers of a ``lynch_bars_build`` call (and nulls them, so a second call is harmless).
+///
+/// # Safety
+/// ``out`` must be a BarsOut filled by ``lynch_bars_build`` and not freed since, or zeroed.
+#[no_mangle]
+pub unsafe extern "C" fn lynch_bars_free(out: *mut BarsOut) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: each pointer / length pair came from ``leak`` (a boxed slice), or is null.
+    unsafe {
+        let o = &mut *out;
+        for (p, n) in [(&mut o.body, &mut o.body_len), (&mut o.gz, &mut o.gz_len), (&mut o.meta, &mut o.meta_len)] {
+            if !p.is_null() {
+                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(*p, *n)));
+            }
+            *p = std::ptr::null_mut();
+            *n = 0;
+        }
+    }
+}
+
+/// Version of the trading-view interface (``lynch_bars_*``); ui/tvdata.py checks it.
+#[no_mangle]
+pub extern "C" fn lynch_bars_abi() -> u32 {
+    1
 }
 
 /// Bumped whenever the C interface or the spec changes incompatibly.
