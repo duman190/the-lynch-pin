@@ -147,6 +147,18 @@ class Settings:
     valuation_at: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_VALUATION_AT", "18:00"))
     valuation_tz: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_VALUATION_TZ", "America/Los_Angeles"))
 
+    # Trading view (ui/tradingview.py): people who may have the per-ticker chart open at once (0 = no limit; the
+    # default is the benchmark in ui/README.md), Yahoo requests its fetcher threads make at once, and how long a
+    # viewer that stopped polling keeps its place. tv_force_open: market-hours refresh rates at any hour (benchmarks).
+    tv: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_TV", True))
+    tv_viewers: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_VIEWERS", 50))
+    tv_fetches: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_FETCHES", 4))
+    # Yahoo requests the trading view may make a minute, for everyone (0 = no budget) and on behalf of one viewer
+    tv_yahoo_rpm: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_YAHOO_RPM", 120))
+    tv_viewer_rpm: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_VIEWER_RPM", 20))
+    tv_idle: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_IDLE", 75))
+    tv_force_open: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_TV_FORCE_OPEN"))
+
     @property
     def enrich_enabled(self):
         return self.enrich == "on" or (self.enrich == "auto" and bool(os.environ.get("FMP_API_KEY")))

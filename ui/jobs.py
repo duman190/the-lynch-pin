@@ -744,6 +744,24 @@ class JobManager:
         if job.probe:
             self._probing = job.probe = False
 
+    def yahoo_cooldown(self):
+        """Seconds until Yahoo may be asked again (0 = now): the trading view's chart fetches (ui/tradingview.py)
+        wait out the same pause as lookups, but don't wait for the probe lookup that closes the breaker."""
+        with self._cv:
+            return self._retry_after() if self._limited else 0
+
+    def yahoo_throttled(self, what):
+        """Yahoo answered 429 to a request outside an analysis (a trading view chart): pause lookups as a throttled
+        lookup would. Yahoo throttles this machine, not one caller."""
+        with self._cv:
+            self.rate_limit_hits += 1
+            if self.stats is not None:
+                self.stats.upstream("yahoo_429")
+            if not self._limited:
+                self._limited, self._backoff = True, RATE_LIMIT_BACKOFF[0]
+                print(f"⏳ Yahoo Finance rate limit ({what}): pausing new lookups for {int(self._backoff)} s", flush=True)
+            self._cooldown_until = max(self._cooldown_until, self._clock() + self._backoff)
+
     @staticmethod
     def _cached_snapshot(data):
         return {"ticker": data.get("ticker"), "status": data.get("status", "done"), "stage": None,

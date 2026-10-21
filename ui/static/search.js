@@ -252,11 +252,26 @@
       el("p", { class: "muted small", text: "Synthetic rating (Damodaran interest-coverage method, notched for leverage & liquidity)." }));
   }
 
+  /* the trading view (tradingview.js): candles at 18 intervals with this card's price levels drawn on them */
+  function tvButton(d) {
+    const f = S.app.health && S.app.health.features;
+    if (!f || !f.tv || !window.LynchTV) return null;
+    const icon = document.createElementNS(SVG_NS, "svg");
+    icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("width", "26"); icon.setAttribute("height", "26"); icon.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", "M6 3v3M6 15v6M4 6h4v9H4zM12 2v4M12 13v4M10 6h4v7h-4zM18 5v5M18 17v4M16 10h4v7h-4z");
+    icon.append(p);
+    return el("button", { type: "button", class: "btn-tv", "aria-label": `Open the trading view of ${d.ticker}`,
+      onclick: () => window.LynchTV.open(d.ticker, { levels: d.levels || null, info: { name: d.name } }) },
+      icon, el("span", {}, "Trading view", el("small", { text: "Candles 1m–12M · S/R levels · SMA 50/100/200 · EMA 8/21 · RSI · MACD" })),
+      el("span", { class: "chev", "aria-hidden": "true" }, "›"));
+  }
+
   function renderTech(d) {
     const card = $("#card-tech");
     const t = d.technicals, e = d.edge;
     const parts = [el("div", { class: "card-title-row" }, el("h2", { text: "Technicals" }),
-      t ? el("span", { class: `grade sig-${String(t.signal).toLowerCase()}`, text: t.signal }) : null)];
+      t ? el("span", { class: `grade sig-${String(t.signal).toLowerCase()}`, text: t.signal }) : null), tvButton(d)];
     if (t) {
       const z = t.accumulation_zone;
       parts.push(statTable([["RSI (14)", fx(t.rsi, 0)], ["vs SMA200", signed(t.price_vs_sma200, 1)], ["ATR compr.", fx(t.atr_compression, 2)],
@@ -699,6 +714,7 @@
       fns.forEach((f) => f(d));
       S.rendered.add(stage);
     }
+    if (d.levels !== undefined && window.LynchTV && window.LynchTV.isOpen()) window.LynchTV.setLevels(d.ticker || snap.ticker, d.levels, { name: d.name });
     // technicals card combines two stages; render once both are settled
     const line = $("#status-line");
     let msg;
@@ -843,6 +859,8 @@
 
   function fromURL() {
     const t = new URLSearchParams(location.search).get("t");
+    // the trading view adds / drops &tv= on the same ticker: its result stays as it is
+    if (t && t.toUpperCase() === S.sym && !$("#result").hidden) return;
     if (t && TICKER_RE.test(t.toUpperCase())) go(t, false, false);
     else {
       S.token += 1;

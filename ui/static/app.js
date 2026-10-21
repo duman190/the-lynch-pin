@@ -209,6 +209,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initViews();
   await refreshHealth();
   if (window.LynchSearch) window.LynchSearch.init(state);
+  if (window.LynchTV && state.health && state.health.features.tv) window.LynchTV.init();
   if (window.LynchScans) window.LynchScans.init(state);
   if (window.LynchSocials) window.LynchSocials.init();
   if (window.LynchValuation) window.LynchValuation.init();

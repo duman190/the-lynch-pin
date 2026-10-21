@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     pd = None
 
 from ui.config import CPU_WORKERS, WORKER_MB, REPO_ROOT, Settings, available_mb  # noqa: E402
-from ui import netguard  # noqa: E402
+from ui import netguard, tradingview, tvdata  # noqa: E402
 from ui.netguard import _ip, is_allowed_host, is_local_client  # noqa: E402
 from ui.stats import DEFAULT_REASON  # noqa: E402
 
@@ -94,8 +94,10 @@ def to_json(payload):
 class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
-    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None, valuation=None):
+    def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None, valuation=None,
+                 tv=None):
         self.settings = settings or Settings()
+        self.tv = tv  # ui.tradingview.TradingView: the per-ticker chart (None = off)
         self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
@@ -129,13 +131,15 @@ class PortalApp:
                "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
                             "edge": bool(self.settings.edge),
                             "refresh": self.jobs is not None and self.jobs.allow_refresh,
-                            "valuation": self.valuation is not None}}
+                            "valuation": self.valuation is not None, "tv": self.tv is not None}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
             if self.jobs is not None and self.jobs.gemini is not None:
                 out["ai"]["offload"] = self.jobs.gemini.model_id
                 if not out["ai"].get("available"):  # the local model is down: Gemini writes the overviews
                     out["ai"].update(available=True, local_available=False, checking=False)
+        if self.tv is not None:
+            out["tv"] = self.tv.status()
         if self.jobs is not None:
             out["cache"] = self.jobs.cache_stats()
             if self.settings.enrich_enabled:
@@ -157,6 +161,8 @@ class PortalApp:
         out.pop("lan", None)
         out.pop("enrich", None)  # this machine's FMP quota
         out.pop("precache", None)
+        if out.get("tv"):
+            out["tv"] = {k: out["tv"][k] for k in ("viewers", "limit")}
         cache = out.get("cache")
         if cache:
             for k in ("top", "running", "ai_running", "inference"):  # inference: this machine's Gemini quota
@@ -367,6 +373,8 @@ def make_handler(app):
                 return self.send_json(app.health())
             if path.startswith("/api/ticker/"):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
+            if path.startswith("/api/tv/"):
+                return self.route_tv(path[len("/api/tv/"):], query)
             if path.startswith("/plots/"):
                 return self.route_plot(path[len("/plots/"):])
             if path == "/api/scans":
@@ -448,6 +456,47 @@ def make_handler(app):
                 # answered at once (cache, or a just-finished job); queued lookups are timed by the job
                 app.stats.query(sym, "cache" if snap.get("cached") else "recent", snap["status"],
                                 time.monotonic() - self._t0_mono, ts=self._t0)
+
+        def route_tv(self, rest, query):
+            """The trading view: /api/tv/SYM?i=CODE&s=SID (candles + indicators, gzip JSON) and /api/tv/release?s=SID
+            (the page closed its chart: its place goes to the next viewer)."""
+            if app.tv is None:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "trading view disabled")
+            sid = query.get("s", [""])[0]
+            if sid and not tradingview.SID_RE.match(sid):
+                return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid viewer id")
+            if rest == "release":
+                app.tv.release(self.client_ip(), sid)
+                return self.send_json({"ok": True})
+            sym = rest.strip().upper()
+            if not TICKER_RE.match(sym):
+                return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
+            r = app.tv.chart(sym, query.get("i", [tvdata.DEFAULT_INTERVAL])[0], ip=self.client_ip(), sid=sid,
+                             if_none_match=self.headers.get("If-None-Match"))
+            extra = dict(r.headers)
+            if r.status in (200, 304):
+                extra.update(ETag=r.etag, Vary="Accept-Encoding")
+            if r.status == 304:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-cache")
+                for k, v in list(SECURITY_HEADERS.items()) + list(extra.items()):
+                    self.send_header(k, v)
+                self.end_headers()
+                return
+            if r.status != 200:
+                self._reason = r.reason if r.status == 429 else None  # a refusal (stats page); Yahoo's trouble isn't
+                if r.retry_after:
+                    extra["Retry-After"] = str(r.retry_after)
+                payload = {"error": r.error, "status": r.status}
+                if r.retry_after:
+                    payload["retry_after"] = r.retry_after
+                return self._send(r.status, to_json(payload), "application/json; charset=utf-8", extra=extra)
+            gz = "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
+            if gz:
+                extra["Content-Encoding"] = "gzip"
+            # no-cache: the browser keeps the chart and revalidates it (304 while the series is unchanged)
+            self._send(HTTPStatus.OK, r.body(gz), "application/json; charset=utf-8", cache="no-cache", extra=extra)
 
         def route_ai_stream(self, sym):
             """Server-Sent Events: the AI overview token by token, with TTFT / tok/s metrics."""
@@ -604,7 +653,10 @@ def build_app(settings, with_search=True, with_ai=True):
             jobs = None
     if jobs is None:
         llm = None  # AI overview hangs off a ticker job
-    return PortalApp(settings, jobs=jobs, llm=llm, stats=stats)
+    tv = None
+    if with_search and settings.tv:
+        tv = tradingview.TradingView(settings, jobs=jobs, stats=stats)
+    return PortalApp(settings, jobs=jobs, llm=llm, stats=stats, tv=tv)
 
 
 def parse_args(argv=None):
@@ -675,6 +727,13 @@ def parse_args(argv=None):
                    help="port of the stats page, with --lan or --public, for LAN / Tailscale clients only "
                         "(default 190)")
     p.add_argument("--no-stats", action="store_true", help="no stats page and nothing recorded for it")
+    p.add_argument("--tv-viewers", type=int, default=s.tv_viewers, metavar="N",
+                   help=f"people who may have the trading view (per-ticker chart) open at once (default {s.tv_viewers}, "
+                        "from the benchmark in ui/README.md; 0 = no limit)")
+    p.add_argument("--no-tv", action="store_true", help="no trading view (per-ticker chart)")
+    p.add_argument("--tv-yahoo-rpm", type=int, default=s.tv_yahoo_rpm, metavar="N",
+                   help=f"Yahoo requests the trading view may make a minute (default {s.tv_yahoo_rpm}; 0 = no budget): "
+                        "the lookups' share of Yahoo stays theirs")
     p.add_argument("--workers", type=int, default=s.workers,
                    help="tickers analysed at the same time, one process each (default 0 = auto: "
                         f"1 with the AI overview, {CPU_WORKERS} without, fewer if free RAM is short)")
@@ -692,6 +751,7 @@ def parse_args(argv=None):
     s.fmp_limit = max(0, a.fmp_limit)
     s.precache = max(0, a.precache)
     s.workers = max(0, a.workers)
+    s.tv, s.tv_viewers, s.tv_yahoo_rpm = s.tv and not a.no_tv, max(0, a.tv_viewers), max(0, a.tv_yahoo_rpm)
     s.public = a.public
     s.verbose = a.verbose
     s.stats, s.stats_port = s.stats and not a.no_stats, a.stats_port
@@ -777,6 +837,11 @@ def main(argv=None):
             print(f"⚠️  only {free} MB of RAM free: {app.jobs.workers} workers instead of {CPU_WORKERS} "
                   f"(~{WORKER_MB} MB each). Free memory (e.g. unload the LM Studio model) or set --workers.",
                   flush=True)
+    if app.tv is not None:
+        why = tvdata.native_unavailable_reason()
+        print(f"📈 Trading view: up to {settings.tv_viewers or 'any number of'} viewers at once, "
+              f"{settings.tv_yahoo_rpm or 'unlimited'} Yahoo requests a minute, {app.tv.fetch_workers} at a time; bars built "
+              f"{'natively (ui/native)' if why is None else 'in Python (' + why + ')'}", flush=True)
     precacher = None
     if app.jobs is not None and app.stats is not None and settings.precache:
         from ui.precache import Precacher
@@ -816,6 +881,8 @@ def main(argv=None):
             app.valuation.stop()
         if app.jobs is not None:
             app.jobs.shutdown()
+        if app.tv is not None:
+            app.tv.shutdown()
         if app.stats is not None:
             app.stats.close()  # writes the last minutes
 
