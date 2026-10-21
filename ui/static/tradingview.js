@@ -29,7 +29,13 @@
     rsi: "#B388FF", rsiBand: "rgba(179,136,255,.07)", macd: "#5D9CEC", signal: "#F39C12",
     histUp: "#26A69A", histUpWeak: "rgba(38,166,154,.45)", histDown: "#FF5252", histDownWeak: "rgba(255,82,82,.45)",
     res: "#FF4B2B", sup: "#2ECC71", poc: "#F5B041", range: "rgba(93,156,236,.08)", rangeEdge: "rgba(93,156,236,.55)", year: "#8E8E8E",
+    bbU: "rgba(224,64,90,.9)", bbM: "rgba(220,220,220,.55)", bbL: "rgba(38,166,154,.95)", bbFill: "rgba(93,156,236,.07)",
+    zone: "rgba(46,204,113,.10)", zoneEdge: "rgba(46,204,113,.55)", ext: "rgba(255,255,255,.035)",
+    shelf: "rgba(160,170,190,.22)", shelfVA: "rgba(160,170,190,.36)", vpoc: "#FF9800",
   };
+  // The BLUE / PINK paint (bars.rs ``paint``): code → candle colour, as on TradexWhisperer's charts
+  const PAINT = { g: "#2AC83E", d: "#1A6420", L: "#C0F000", r: "#FC2323", x: "#A80000", B: "#0151FC", P: "#F000D8" };
+  const CALLOUT = { B: ["BLUE", "#0E8EA6", "#FFFFFF", 1], P: ["PINK", "#C0708A", "#FFFFFF", -1], L: ["TRIM", "#9DBF00", "#10140A", -1] };
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const PREFS = "lynchpin.tv";
@@ -41,7 +47,9 @@
     cache: new Map(),  // "SYM|code" → {data, etag}
     prevClose: new Map(),  // SYM → yesterday's close, for the header's change
     view: { right: 0, barW: 7 }, hover: null, pinned: false, range: null, pushed: false,
-    show: { sma50: true, sma100: true, sma200: true, ema8: true, ema21: true, levels: true },
+    show: { sma50: true, sma100: true, sma200: true, ema8: true, ema21: true, levels: true, bb: true, shelf: true, zone: true, paint: true },
+    ext: true,  // intraday bars with pre- and post-market (the BLUE / PINK paint was fitted on such charts)
+    draw: { tool: null, items: [], sel: null, pending: null },  // drawings of the open ticker (time / price anchors)
     dpr: 1, L: null, anim: 0, dirty: false, overlayDirty: false,
     sid: (() => {
       const a = new Uint8Array(12);
@@ -55,11 +63,14 @@
       const p = JSON.parse(localStorage.getItem(PREFS) || "{}");
       if (p && LABEL[p.code]) S.code = p.code;
       if (p && p.show && typeof p.show === "object") for (const k of Object.keys(S.show)) if (typeof p.show[k] === "boolean") S.show[k] = p.show[k];
+      if (p && typeof p.ext === "boolean") S.ext = p.ext;
     } catch (_) { /* private mode */ }
   }
   function savePrefs() {
-    try { localStorage.setItem(PREFS, JSON.stringify({ code: S.code, show: S.show })); } catch (_) { /* private mode */ }
+    try { localStorage.setItem(PREFS, JSON.stringify({ code: S.code, show: S.show, ext: S.ext })); } catch (_) { /* private mode */ }
   }
+  const isIntraday = (code) => /^\d+$/.test(code);  // minute codes: "1" … "240"
+  const extOn = (code = S.code) => S.ext && isIntraday(code);
 
   /* ── formatting ─────────────────────────────────────────────────────────── */
   const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -109,6 +120,9 @@
       o: F(j.o), h: F(j.h), l: F(j.l), c: F(j.c), vol: F(j.vol),
       sma50: F(j.sma50), sma100: F(j.sma100), sma200: F(j.sma200), ema8: F(j.ema8), ema21: F(j.ema21),
       rsi: F(j.rsi), macd: F(j.macd), signal: F(j.signal), hist: new Float64Array(n),
+      bbu: F(j.bbu || []), bbm: F(j.bbm || []), bbl: F(j.bbl || []),
+      paint: typeof j.paint === "string" && j.paint.length === n ? j.paint : null,
+      sess: typeof j.sess === "string" && j.sess.length === n ? j.sess : null, ext: !!j.sess,
       Y: new Int16Array(n), M: new Int8Array(n), D: new Int8Array(n), W: new Int8Array(n), mins: new Int16Array(n),
     };
     for (let i = 0; i < n; i++) d.hist[i] = d.macd[i] - d.signal[i];
@@ -123,7 +137,7 @@
   }
 
   /* ── DOM ────────────────────────────────────────────────────────────────── */
-  let dlg, canvas, overlay, ctx, octx, wrap, msgBox, legendBar, legendSeries, sheet, intBtn, quickBox, rangeBox;
+  let dlg, canvas, overlay, ctx, octx, wrap, msgBox, legendBar, legendSeries, sheet, intBtn, quickBox, rangeBox, drawBtn, extBtn, drawSheet;
 
   function svgIcon(path, size = 18) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -149,6 +163,14 @@
     msgBox = el("div", { class: "tv-msg", role: "status", "aria-live": "polite", hidden: true });
     wrap = el("div", { class: "tv-chart", tabindex: "0", "aria-label": "Chart: drag to pan, wheel or pinch to zoom, arrows to move, double-click to reset" }, canvas, overlay, msgBox);
     sheet = el("div", { class: "tv-sheet", id: "tv-sheet", hidden: true, role: "dialog", "aria-label": "Interval and date range" });
+    drawSheet = el("div", { class: "tv-sheet", hidden: true, role: "dialog", "aria-label": "Drawings" });
+    aiPanel = el("div", { class: "tv-sheet tv-ai", hidden: true, role: "dialog", "aria-label": "Assess this setup with AI" });
+    drawBtn = el("button", { type: "button", class: "tv-tool", "aria-haspopup": "dialog", title: "Drawings: trend line, Fibonacci, rectangle…",
+      onclick: () => { if (S.draw.tool) setTool(null); else { buildDrawSheet(); drawSheet.hidden = !drawSheet.hidden; sheet.hidden = aiPanel.hidden = true; } } });
+    extBtn = el("button", { type: "button", class: "tv-tool tv-ext", title: "Extended hours: pre- and post-market bars (the BLUE / PINK paint was fitted on them)",
+      onclick: () => { S.ext = !S.ext; savePrefs(); markActive(); setInterval_(S.code, { force: true }); } }, "ETH");
+    const aiBtn = el("button", { type: "button", class: "tv-tool tv-ai-open", title: "Assess this setup with Claude or ChatGPT: a snapshot of the chart and a prompt for this timeframe",
+      onclick: () => { if (aiPanel.hidden) openAssess(); else aiPanel.hidden = true; } }, "🔬 Assess");
     dlg = el("dialog", { class: "tv", id: "tv", "aria-labelledby": "tv-title" },
       el("header", { class: "tv-head" },
         el("div", { class: "tv-id" },
@@ -156,13 +178,21 @@
           el("span", { class: "tv-name muted", id: "tv-name" })),
         el("div", { class: "tv-quote", id: "tv-quote" }),
         el("button", { type: "button", class: "tv-close", "aria-label": "Close the trading view", onclick: () => close(true) }, "×")),
-      el("div", { class: "tv-toolbar" }, intBtn, quickBox, rangeBox, el("span", { class: "tv-status muted", id: "tv-status" })),
+      el("div", { class: "tv-toolbar" }, intBtn, drawBtn, aiBtn, extBtn, quickBox, rangeBox, el("span", { class: "tv-status muted", id: "tv-status" })),
       el("div", { class: "tv-legend" }, legendBar, legendSeries),
-      wrap, sheet);
+      wrap, sheet, drawSheet, aiPanel);
     document.body.append(dlg);
     ctx = canvas.getContext("2d");
     octx = overlay.getContext("2d");
-    dlg.addEventListener("cancel", (e) => { e.preventDefault(); if (!sheet.hidden) toggleSheet(false); else close(true); });
+    dlg.addEventListener("cancel", (e) => {  // Esc: the innermost thing first
+      e.preventDefault();
+      if (!sheet.hidden) toggleSheet(false);
+      else if (!aiPanel.hidden) aiPanel.hidden = true;
+      else if (!drawSheet.hidden) drawSheet.hidden = true;
+      else if (S.draw.tool || S.draw.pending) setTool(null);
+      else if (S.draw.sel) { S.draw.sel = null; requestDraw(); }
+      else close(true);
+    });
     buildSheet();
     renderSeriesToggles();
     bindPointer();
@@ -193,6 +223,9 @@
 
   function markActive() {
     intBtn.replaceChildren(svgIcon(CANDLE_ICON, 16), el("span", { text: LABEL[S.code] }), el("span", { class: "tv-caret", "aria-hidden": "true" }, "▾"));
+    extBtn.hidden = !isIntraday(S.code);
+    extBtn.setAttribute("aria-pressed", String(S.ext));
+    renderDrawButton();
     for (const b of dlg.querySelectorAll("[data-code]")) b.setAttribute("aria-pressed", String(b.dataset.code === S.code));
     for (const b of dlg.querySelectorAll("[data-range]")) b.setAttribute("aria-pressed", String(b.dataset.range === S.range));
   }
@@ -205,8 +238,41 @@
         el("span", { class: "tv-chip-s", text: `${label[0]}${label.split(" ")[1]}` }), el("b", { "data-val": k }))),
       el("button", { type: "button", class: "tv-chip tv-chip-lv", "aria-pressed": String(S.show.levels), title: "Show / hide the support / resistance levels from the analysis",
         onclick: () => { S.show.levels = !S.show.levels; savePrefs(); renderSeriesToggles(); requestDraw(); } },
-        el("i", { class: "tv-lv-i" }), el("span", { class: "tv-chip-l", text: "S/R levels" }), el("span", { class: "tv-chip-s", text: "S/R" })));
+        el("i", { class: "tv-lv-i" }), el("span", { class: "tv-chip-l", text: "S/R levels" }), el("span", { class: "tv-chip-s", text: "S/R" })),
+      [["bb", "Bollinger 20,2", "BB", "tv-bb-i", "Bollinger Bands (20, 2)"], ["shelf", "Volume shelf", "VP", "tv-vp-i", "Volume by price over the bars on screen, with its point of control"],
+        ["zone", "Accumulation zone", "Acc", "tv-zone-i", "The analysis' accumulation zone (daily SMA 200 ± 1 ATR)"],
+        ["paint", "BLUE/PINK", "B/P", "tv-paint-i", "Candles painted by the BLUE / PINK signal (reverse engineered from TradexWhisperer's charts)"]]
+        .map(([k, label, short, icon, title]) => el("button", { type: "button", class: "tv-chip", "aria-pressed": String(S.show[k]), title,
+          onclick: () => { S.show[k] = !S.show[k]; savePrefs(); renderSeriesToggles(); requestDraw(); } },
+          el("i", { class: icon }), el("span", { class: "tv-chip-l", text: label }), el("span", { class: "tv-chip-s", text: short }))));
     updateLegend();
+  }
+
+  function buildDrawSheet() {  // TradingView's Drawings menu, the tools that read prices
+    const tool = (k) => el("button", { type: "button", class: "tv-draw-tool", "aria-pressed": String(S.draw.tool === k),
+      onclick: () => { drawSheet.hidden = true; setTool(k); } }, svgIcon(TOOLS[k][1], 26), el("span", { text: TOOLS[k][0] }));
+    put(drawSheet,
+      el("div", { class: "tv-sheet-head" }, el("h3", { text: "Drawings" }),
+        el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { drawSheet.hidden = true; } }, "×")),
+      el("p", { class: "tv-group", text: "Trend lines" }), el("div", { class: "tv-draw-grid" }, tool("trend"), tool("ray"), tool("hline")),
+      el("p", { class: "tv-group", text: "Fibonacci" }), el("div", { class: "tv-draw-grid" }, tool("fib")),
+      el("p", { class: "tv-group", text: "Shapes" }), el("div", { class: "tv-draw-grid" }, tool("rect")),
+      el("div", { class: "tv-draw-actions" },
+        el("button", { type: "button", class: "tv-ai-btn", disabled: !S.draw.sel, onclick: () => { deleteSelected(); buildDrawSheet(); } }, "Delete selected"),
+        el("button", { type: "button", class: "tv-ai-btn", disabled: !S.draw.items.length,
+          onclick: (e) => {
+            if (e.currentTarget.dataset.armed) { S.draw.items = []; S.draw.sel = null; saveDrawings(); requestDraw(); drawSheet.hidden = true; return; }
+            e.currentTarget.dataset.armed = "1"; e.currentTarget.textContent = `Tap again to delete all ${S.draw.items.length}`;
+          } }, "Clear all")),
+      el("p", { class: "muted small tv-note", text: "Drag to draw (or tap two points). Tap a drawing to select it, drag its handles to move them, Delete to remove it. Drawings are kept for this ticker on this device." }));
+  }
+
+  function renderDrawButton() {
+    if (!drawBtn) return;
+    const t = S.draw.tool;
+    drawBtn.replaceChildren(svgIcon("M3 21l3.5-1 11-11-2.5-2.5-11 11zM14.5 5.5l2.5 2.5M17 3l4 4", 16),
+      el("span", { class: "tv-tool-l", text: t ? TOOLS[t][0] : S.draw.items.length ? `Draw · ${S.draw.items.length}` : "Draw" }));
+    drawBtn.setAttribute("aria-pressed", String(!!t));
   }
 
   /* ── open / close / URL ────────────────────────────────────────────────── */
@@ -220,6 +286,8 @@
     else if (!same) S.levels = null;
     if (opts.info) S.info = opts.info;
     else if (!same) S.info = {};
+    S.zone = zoneOf(S.info);
+    if (!same) loadDrawings(sym);
     S.sym = sym;
     $("#tv-sym").textContent = sym;
     $("#tv-name").textContent = S.info.name || "";
@@ -292,8 +360,8 @@
       if (location.search !== url) history.replaceState({ t: S.sym, tv: code }, "", url);
     }
     document.title = `$${S.sym} ${LABEL[code]} · Trading view · The Lynch Pin`;
-    if (!changed && S.data && S.data.code === code && S.data.sym === S.sym && !after) return;
-    const hit = S.cache.get(`${S.sym}|${code}`);
+    if (!changed && S.data && S.data.code === code && S.data.sym === S.sym && S.data.ext === extOn(code) && !after) return;
+    const hit = S.cache.get(cacheKey(S.sym, code));
     if (hit) { show(hit.data, hit.etag, { reset: true, after }); load(true, { after: null }); }
     else { S.data = null; S.etag = null; requestDraw(); message(`Loading ${LABEL[code]}…`, "loading"); load(false, { after }); }
   }
@@ -301,11 +369,11 @@
   async function load(revalidate, { after = null } = {}) {
     const token = ++S.token;
     clearTimeout(S.timer);
-    const sym = S.sym, code = S.code;
+    const sym = S.sym, code = S.code, ext = extOn(code);
     let res;
     try {
       // no-cache: the browser revalidates its copy with the ETag, and the server answers 304 while unchanged
-      res = await fetch(`/api/tv/${encodeURIComponent(sym)}?i=${encodeURIComponent(code)}&s=${S.sid}`, { cache: "no-cache", headers: { Accept: "application/json" } });
+      res = await fetch(`/api/tv/${encodeURIComponent(sym)}?i=${encodeURIComponent(code)}${ext ? "&x=1" : ""}&s=${S.sid}`, { cache: "no-cache", headers: { Accept: "application/json" } });
     } catch (e) {
       if (token !== S.token) return;
       if (!revalidate || !S.data) message("Connection problem — retrying…", "error");
@@ -326,19 +394,21 @@
     }
     const etag = res.headers.get("ETag");
     status(res.headers.get("X-TV-Stale") === "1" ? "stale: Yahoo isn't answering" : res.headers.get("X-TV-Live") === "1" ? "live · delayed" : "market closed");
-    if (etag && etag === S.etag && S.data && S.data.sym === sym && S.data.code === code) {
+    if (etag && etag === S.etag && S.data && S.data.sym === sym && S.data.code === code && S.data.ext === ext) {
       res.body && res.body.cancel && res.body.cancel().catch(() => {});  // unchanged (a 304 the browser answered from its copy)
     } else {
       let j;
       try { j = await res.json(); } catch (_) { if (token === S.token) message("Unreadable chart data — retrying…", "error"); return schedule(token, 10); }
       if (token !== S.token) return;
       const d = prepare(j);
-      S.cache.set(`${sym}|${code}`, { data: d, etag });
+      S.cache.set(cacheKey(sym, code), { data: d, etag });
       if (S.cache.size > 24) S.cache.delete(S.cache.keys().next().value);
-      show(d, etag, { reset: !revalidate || !S.data || S.data.code !== code || S.data.sym !== sym, after });
+      show(d, etag, { reset: !revalidate || !S.data || S.data.code !== code || S.data.sym !== sym || S.data.ext !== ext, after });
     }
     schedule(token, isNum(refreshIn) ? refreshIn : MAX_POLL);
   }
+
+  const cacheKey = (sym, code) => `${sym}|${code}|${extOn(code) ? "x" : ""}`;
 
   function schedule(token, secs) {
     clearTimeout(S.timer);
@@ -514,8 +584,8 @@
     const d = S.data;
     let lo = Infinity, hi = -Infinity;
     for (let i = i0; i <= i1; i++) { if (d.l[i] < lo) lo = d.l[i]; if (d.h[i] > hi) hi = d.h[i]; }
-    for (const [k] of SERIES) {
-      if (!S.show[k]) continue;
+    for (const k of SERIES.map(([k]) => k).concat(["bbu", "bbl"])) {
+      if (!(k.startsWith("bb") ? S.show.bb : S.show[k])) continue;
       const a = d[k];
       for (let i = i0; i <= i1; i++) { const v = a[i]; if (v === v) { if (v < lo) lo = v; if (v > hi) hi = v; } }
     }
@@ -539,6 +609,7 @@
     const lw = Math.max(1, Math.round(S.dpr));
     c.font = `${L.font}px ui-monospace, "DejaVu Sans Mono", Menlo, monospace`;
     c.textBaseline = "middle";
+    if (d.sess) drawExtHours(c, i0, i1);
 
     // time grid + axis labels (computed once, drawn across every pane)
     const ticks = timeTicks(i0, i1);
@@ -551,6 +622,11 @@
 
     c.save();
     c.beginPath(); c.rect(0, P.price.y, L.plotW, P.price.h); c.clip();
+    if (S.show.zone) drawZone(c, yP, lw);
+    if (S.show.bb) drawBands(c, i0, i1, yP);
+    const shelf = S.show.shelf ? shelfData(i0, i1, px) : null;
+    S.shelf = shelf;
+    if (shelf) drawShelf(c, shelf, yP, lw);
     // volume, bottom fifth of the price pane
     let vmax = 0;
     for (let i = i0; i <= i1; i++) if (d.vol[i] > vmax) vmax = d.vol[i];
@@ -571,23 +647,28 @@
     c.lineWidth = Math.max(1, 1.3 * S.dpr);
     c.lineJoin = "round";
     for (const [k, , col] of SERIES) if (S.show[k]) line(c, d[k], i0, i1, yP, col);
-    // candles: wicks and bodies batched by colour (four fills, however many bars)
-    const upW = new Path2D(), dnW = new Path2D(), upB = new Path2D(), dnB = new Path2D();
+    // candles: wicks and bodies batched by colour (two fills per colour, however many bars); with the paint on,
+    // each bar takes its BLUE / PINK paint colour instead of up / down
+    const paint = S.show.paint && d.paint;
+    const paths = new Map();
+    const pathFor = (col) => { let p = paths.get(col); if (!p) paths.set(col, p = new Path2D()); return p; };
     const bw = S.view.barW * 0.72;
     const thin = bw < 1.6 * S.dpr;  // too narrow for a body: wicks only
     for (let i = i0; i <= i1; i++) {
-      const x = xOf(i), isUp = d.c[i] >= d.o[i];
+      const x = xOf(i);
+      const col = paint ? PAINT[d.paint[i]] || C.up : d.c[i] >= d.o[i] ? C.up : C.down;
+      const path = pathFor(col);
       const yh = yP(d.h[i]), yl = yP(d.l[i]);
-      const wx = Math.round(x - lw / 2);
-      (isUp ? upW : dnW).rect(wx, yh, lw, Math.max(lw, yl - yh));
+      path.rect(Math.round(x - lw / 2), yh, lw, Math.max(lw, yl - yh));
       if (!thin) {
         const yo = yP(d.o[i]), yc = yP(d.c[i]);
         const top = Math.min(yo, yc), h = Math.max(lw, Math.abs(yc - yo));
-        (isUp ? upB : dnB).rect(Math.round(x - bw / 2), top, Math.round(bw), h);
+        path.rect(Math.round(x - bw / 2), top, Math.round(bw), h);
       }
     }
-    c.fillStyle = C.up; c.fill(upW); c.fill(upB);
-    c.fillStyle = C.down; c.fill(dnW); c.fill(dnB);
+    for (const [col, path] of paths) { c.fillStyle = col; c.fill(path); }
+    drawDrawings(c, yP, lw);
+    if (paint) drawCallouts(c, i0, i1, yP);
     c.restore();
 
     // RSI pane
@@ -666,7 +747,7 @@
     // the price axis' tags: the last price where it is, the levels stacked away from it so none overlap
     const last = d.n - 1, lc = d.c[last];
     const ly = yP(lc);
-    const tags = S.show.levels ? levelTags(yP) : [];
+    const tags = (S.show.levels ? levelTags(yP) : []).concat(extraTags(yP));
     let fixed = null;
     if (ly > P.price.y && ly < P.price.y + P.price.h) {
       const col = lc >= d.o[last] ? C.up : C.down;
@@ -769,6 +850,477 @@
     return above.concat(below).filter((t) => t.y > P.y + h / 2 && t.y < P.y + P.h - h / 2);
   }
 
+  /* ── extended hours, accumulation zone, Bollinger Bands, volume shelf, BLUE / PINK callouts ─────────────── */
+  function drawExtHours(c, i0, i1) {  // pre- and post-market bars on a lighter background, as TradingView shades them
+    const d = S.data, L = S.L, w = S.view.barW;
+    c.fillStyle = C.ext;
+    for (let i = i0; i <= i1; i++) {
+      if (d.sess[i] !== "e") continue;
+      let j = i;
+      while (j < i1 && d.sess[j + 1] === "e") j++;
+      c.fillRect(xOf(i) - w / 2, 0, (j - i + 1) * w, L.avail);
+      i = j;
+    }
+  }
+
+  function drawZone(c, yP, lw) {  // the analysis' accumulation zone (SMA200 ± 1 ATR, daily): where it would buy
+    const z = S.zone, L = S.L, P = L.panes.price;
+    if (!z || !isNum(z[0]) || !isNum(z[1])) return;
+    const a = yP(Math.max(z[0], z[1])), b = yP(Math.min(z[0], z[1]));
+    if (b < P.y || a > P.y + P.h) {  // off screen: a pill in the corner says where it is and how far
+      const below = a > P.y + P.h, last = S.data.c[S.data.n - 1];
+      const dist = ((below ? Math.max(...z) : Math.min(...z)) / last - 1) * 100;
+      const text = `${below ? "▼" : "▲"} Accumulation zone ${fmtPrice(Math.min(...z), 0)}–${fmtPrice(Math.max(...z), 0)} · ${dist > 0 ? "+" : ""}${dist.toFixed(0)}%`;
+      const w = c.measureText(text).width + 14 * S.dpr, h = L.font + 10 * S.dpr, x = 6 * S.dpr;
+      const y = below ? P.y + P.h - h - 6 * S.dpr : P.y + 6 * S.dpr;
+      c.fillStyle = "rgba(30,122,71,.85)"; c.fillRect(x, y, w, h);
+      c.fillStyle = C.white; c.textAlign = "left"; c.fillText(text, x + 7 * S.dpr, y + h / 2);
+      return;
+    }
+    c.fillStyle = C.zone;
+    c.fillRect(0, a, L.plotW, b - a);
+    c.strokeStyle = C.zoneEdge; c.lineWidth = lw; c.setLineDash([6 * S.dpr, 4 * S.dpr]);
+    for (const y of [a, b]) { c.beginPath(); c.moveTo(0, Math.round(y) + 0.5); c.lineTo(L.plotW, Math.round(y) + 0.5); c.stroke(); }
+    c.setLineDash([]);
+    c.fillStyle = C.zoneEdge; c.textAlign = "left";
+    c.fillText(`Accumulation zone ${fmtPrice(Math.min(...z), 0)}–${fmtPrice(Math.max(...z), 0)}`, 6 * S.dpr, Math.max(a, P.y) + L.font);
+  }
+
+  function drawBands(c, i0, i1, yP) {
+    const d = S.data;
+    if (!d.bbu.length) return;
+    const fill = new Path2D();
+    let started = false, last = -1;
+    for (let i = i0; i <= i1; i++) {
+      if (!(d.bbu[i] === d.bbu[i])) continue;
+      if (!started) { fill.moveTo(xOf(i), yP(d.bbu[i])); started = true; } else fill.lineTo(xOf(i), yP(d.bbu[i]));
+      last = i;
+    }
+    if (started) {
+      for (let i = last; i >= i0; i--) if (d.bbl[i] === d.bbl[i]) fill.lineTo(xOf(i), yP(d.bbl[i]));
+      fill.closePath();
+      c.fillStyle = C.bbFill; c.fill(fill);
+    }
+    c.lineWidth = Math.max(1, 1.1 * S.dpr);
+    line(c, d.bbu, i0, i1, yP, C.bbU);
+    line(c, d.bbm, i0, i1, yP, C.bbM);
+    line(c, d.bbl, i0, i1, yP, C.bbL);
+  }
+
+  /* Volume by price over the bars on screen (TradingView's "visible range" profile): each bar's volume spread evenly
+     over the rows its high-low covers; the point of control (POC) is the busiest row, the value area the rows around it
+     that hold 70% of the volume. */
+  function shelfData(i0, i1, px) {
+    const d = S.data, rows = 48;
+    const lo = px.lo, step = (px.hi - px.lo) / rows;
+    const vol = new Float64Array(rows);
+    for (let i = i0; i <= i1; i++) {
+      const v = d.vol[i];
+      if (!(v > 0)) continue;
+      const r0 = Math.max(0, Math.floor((d.l[i] - lo) / step)), r1 = Math.min(rows - 1, Math.floor((d.h[i] - lo) / step));
+      if (r1 < r0) continue;
+      const share = v / (r1 - r0 + 1);
+      for (let r = r0; r <= r1; r++) vol[r] += share;
+    }
+    let poc = 0, total = 0;
+    for (let r = 0; r < rows; r++) { total += vol[r]; if (vol[r] > vol[poc]) poc = r; }
+    if (!(total > 0)) return null;
+    let a = poc, b = poc, acc = vol[poc];
+    while (acc < 0.7 * total && (a > 0 || b < rows - 1)) {
+      const below = a > 0 ? vol[a - 1] : -1, above = b < rows - 1 ? vol[b + 1] : -1;
+      if (above >= below) acc += vol[++b]; else acc += vol[--a];
+    }
+    return { rows, lo, step, vol, max: vol[poc], poc, vaLo: a, vaHi: b, pocPrice: lo + (poc + 0.5) * step,
+      vah: lo + (b + 1) * step, val: lo + a * step };
+  }
+
+  function drawShelf(c, sh, yP, lw) {
+    const L = S.L, width = L.plotW * 0.24;
+    for (let r = 0; r < sh.rows; r++) {
+      if (!(sh.vol[r] > 0)) continue;
+      const w = sh.vol[r] / sh.max * width;
+      const y0 = yP(sh.lo + (r + 1) * sh.step), y1 = yP(sh.lo + r * sh.step);
+      c.fillStyle = r === sh.poc ? "rgba(255,152,0,.42)" : r >= sh.vaLo && r <= sh.vaHi ? C.shelfVA : C.shelf;
+      c.fillRect(L.plotW - w, y0 + lw * 0.5, w, Math.max(lw, y1 - y0 - lw));
+    }
+    const y = Math.round(yP(sh.pocPrice)) + 0.5;  // the POC across the pane, as on TradexWhisperer's charts
+    c.strokeStyle = C.vpoc; c.globalAlpha = 0.8; c.lineWidth = lw;
+    c.beginPath(); c.moveTo(0, y); c.lineTo(L.plotW, y); c.stroke();
+    c.globalAlpha = 1;
+  }
+
+  function drawCallouts(c, i0, i1, yP) {  // the newest signals win when they would overlap
+    const d = S.data, L = S.L, P = L.panes.price;
+    const h = L.font + 8 * S.dpr, gap = 7 * S.dpr, arrow = 5 * S.dpr;
+    let lastX = Infinity;
+    c.font = `700 ${L.font}px ui-monospace, "DejaVu Sans Mono", Menlo, monospace`;
+    c.textAlign = "center";
+    for (let i = i1; i >= i0; i--) {
+      const k = CALLOUT[d.paint[i]];
+      if (!k) continue;
+      const [text, bg, fg, side] = k;
+      const x = xOf(i), w = c.measureText(text).width + 12 * S.dpr;
+      if (lastX - x < w + 4 * S.dpr) continue;
+      lastX = x;
+      const tip = side > 0 ? yP(d.l[i]) + gap : yP(d.h[i]) - gap;
+      const top = side > 0 ? tip + arrow : tip - arrow - h;
+      if (top < P.y || top + h > P.y + P.h) continue;
+      c.fillStyle = bg;
+      c.beginPath();
+      c.moveTo(x, tip); c.lineTo(x - arrow, side > 0 ? tip + arrow : tip - arrow); c.lineTo(x + arrow, side > 0 ? tip + arrow : tip - arrow);
+      c.closePath(); c.fill();
+      c.globalAlpha = 0.92;
+      c.fillRect(x - w / 2, top, w, h);
+      c.globalAlpha = 1;
+      c.fillStyle = fg;
+      c.fillText(text, x, top + h / 2 + S.dpr * 0.5);
+    }
+    c.font = `${L.font}px ui-monospace, "DejaVu Sans Mono", Menlo, monospace`;
+  }
+
+  function extraTags(yP) {  // the shelf's POC and horizontal-line drawings on the price axis
+    const out = [], d = S.data;
+    if (S.shelf) out.push({ y: yP(S.shelf.pocPrice), text: fmtPrice(S.shelf.pocPrice, d.dec), bg: C.vpoc, fg: "#10140A" });
+    for (const it of S.draw.items) if (it.type === "hline") out.push({ y: yP(it.a.p), text: fmtPrice(it.a.p, d.dec), bg: "#F5B041", fg: "#10140A" });
+    return out;
+  }
+
+  /* ── drawings: trend line, ray, horizontal line, Fibonacci retracement, rectangle. Anchors are (time, price), so a
+     drawing stays put across zoom, pan and intervals; they are kept per ticker in this browser. ───────────────────── */
+  const TOOLS = {
+    trend: ["Trend line", "M4 20 20 4M4 20a1.5 1.5 0 1 0 0 .01M20 4a1.5 1.5 0 1 0 0 .01"],
+    ray: ["Ray", "M4 20 22 2M4 20a1.5 1.5 0 1 0 0 .01"],
+    hline: ["Horizontal line", "M2 12h20M12 12a1.5 1.5 0 1 0 0 .01"],
+    fib: ["Fib retracement", "M3 5h18M3 9.5h18M3 14h18M3 19h18M4 19 20 5"],
+    rect: ["Rectangle", "M5 5h14v14H5z"],
+  };
+  const FIB = [[0, "#9E9E9E"], [0.236, "#F44336"], [0.382, "#FF9800"], [0.5, "#4CAF50"], [0.618, "#26A69A"], [0.786, "#2196F3"], [1, "#9E9E9E"]];
+  const DRAW_COL = "#FFD54F";
+  const drawKey = (sym) => `lynchpin.tv.draw.${sym}`;
+
+  function loadDrawings(sym) {
+    S.draw.items = []; S.draw.sel = null; S.draw.pending = null;
+    try {
+      const arr = JSON.parse(localStorage.getItem(drawKey(sym)) || "[]");
+      if (Array.isArray(arr)) S.draw.items = arr.filter((it) => it && TOOLS[it.type] && it.a && isNum(it.a.t) && isNum(it.a.p)
+        && (it.type === "hline" || (it.b && isNum(it.b.t) && isNum(it.b.p)))).slice(0, 100);
+    } catch (_) { /* private mode */ }
+  }
+  function saveDrawings() {
+    try { localStorage.setItem(drawKey(S.sym), JSON.stringify(S.draw.items.map(({ type, a, b }) => ({ type, a, b })))); } catch (_) { /* full */ }
+    renderDrawButton();
+  }
+
+  function barStep() {  // the recent spacing between bars, for times past either end of the loaded bars
+    const d = S.data, n = d.n;
+    return n > 1 ? (d.t[n - 1] - d.t[Math.max(0, n - 21)]) / Math.min(20, n - 1) : 60;
+  }
+  function idxOfTime(t) {
+    const d = S.data, n = d.n;
+    if (t >= d.t[n - 1]) return n - 1 + (t - d.t[n - 1]) / barStep();
+    if (t <= d.t[0]) return (t - d.t[0]) / barStep();
+    const i = lowerBound(d.t, t);
+    return d.t[i] === t ? i : i - 1 + (t - d.t[i - 1]) / (d.t[i] - d.t[i - 1]);
+  }
+  function timeOfIdx(fi) {
+    const d = S.data, n = d.n;
+    if (fi >= n - 1) return d.t[n - 1] + (fi - (n - 1)) * barStep();
+    if (fi <= 0) return d.t[0] + fi * barStep();
+    const i = Math.floor(fi);
+    return d.t[i] + (fi - i) * (d.t[i + 1] - d.t[i]);
+  }
+  const idxOfX = (x) => S.view.right + 0.5 + (x - S.L.plotW) / S.view.barW;
+  function priceOfY(y) { const P = S.L.panes.price, px = S.scale.px; return px.hi - (y - P.y) / P.h * (px.hi - px.lo); }
+  const anchorAt = (pt) => ({ t: timeOfIdx(idxOfX(pt.x)), p: priceOfY(pt.y) });
+  function geom(it) {
+    const yP = S.scale.yP, xa = xOf(idxOfTime(it.a.t)), ya = yP(it.a.p);
+    const xb = it.b ? xOf(idxOfTime(it.b.t)) : xa, yb = it.b ? yP(it.b.p) : ya;
+    return { xa, ya, xb, yb };
+  }
+  function fibLevels(it) { return FIB.map(([lv, col]) => [lv, col, it.b.p + (it.a.p - it.b.p) * lv]); }
+  function rayEnd(g) {
+    const L = S.L, dx = g.xb - g.xa, dy = g.yb - g.ya;
+    if (Math.abs(dx) < 1e-9) return { x: g.xb, y: dy > 0 ? L.H : 0 };
+    const k = ((dx > 0 ? L.plotW : 0) - g.xa) / dx;
+    return { x: g.xa + dx * k, y: g.ya + dy * k };
+  }
+
+  function drawDrawings(c, yP, lw) {
+    if (!S.scale) return;
+    const L = S.L, items = S.draw.pending ? S.draw.items.concat([S.draw.pending]) : S.draw.items;
+    for (const it of items) {
+      const g = geom(it), sel = it === S.draw.sel || it === S.draw.pending;
+      c.lineWidth = Math.max(1, (sel ? 2 : 1.5) * S.dpr);
+      c.strokeStyle = DRAW_COL;
+      if (it.type === "trend" || it.type === "ray") {
+        const e = it.type === "ray" ? rayEnd(g) : { x: g.xb, y: g.yb };
+        c.beginPath(); c.moveTo(g.xa, g.ya); c.lineTo(e.x, e.y); c.stroke();
+      } else if (it.type === "hline") {
+        c.beginPath(); c.moveTo(0, Math.round(g.ya) + 0.5); c.lineTo(L.plotW, Math.round(g.ya) + 0.5); c.stroke();
+      } else if (it.type === "rect") {
+        const x = Math.min(g.xa, g.xb), y = Math.min(g.ya, g.yb), w = Math.abs(g.xb - g.xa), h = Math.abs(g.yb - g.ya);
+        c.fillStyle = "rgba(93,156,236,.12)"; c.fillRect(x, y, w, h);
+        c.strokeStyle = "rgba(93,156,236,.85)"; c.strokeRect(x, y, w, h);
+      } else if (it.type === "fib") {
+        const x0 = Math.min(g.xa, g.xb), x1 = Math.max(g.xa, g.xb) + (Math.abs(g.xb - g.xa) < 4 ? L.plotW : 0);
+        const lv = fibLevels(it);
+        for (let k = 0; k < lv.length - 1; k++) {  // translucent bands between levels
+          const ya = yP(lv[k][2]), yb = yP(lv[k + 1][2]);
+          c.globalAlpha = 0.07; c.fillStyle = lv[k + 1][1];
+          c.fillRect(x0, Math.min(ya, yb), x1 - x0, Math.abs(yb - ya));
+        }
+        c.globalAlpha = 1;
+        c.textAlign = "left";
+        for (const [lvl, col, price] of lv) {
+          const y = Math.round(yP(price)) + 0.5;
+          c.strokeStyle = col; c.lineWidth = Math.max(1, S.dpr);
+          c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
+          c.fillStyle = col;
+          c.fillText(`${lvl} (${fmtPrice(price, S.data.dec)})`, x0 + 4 * S.dpr, y - L.font * 0.6);
+        }
+        c.strokeStyle = "rgba(255,213,79,.5)"; c.setLineDash([4 * S.dpr, 4 * S.dpr]);
+        c.beginPath(); c.moveTo(g.xa, g.ya); c.lineTo(g.xb, g.yb); c.stroke(); c.setLineDash([]);
+      }
+      if (sel) {  // handles
+        c.fillStyle = "#121212"; c.strokeStyle = DRAW_COL; c.lineWidth = Math.max(1, 1.5 * S.dpr);
+        for (const [x, y] of it.type === "hline" ? [[g.xa, g.ya]] : [[g.xa, g.ya], [g.xb, g.yb]]) {
+          c.beginPath(); c.arc(x, y, 4.5 * S.dpr, 0, Math.PI * 2); c.fill(); c.stroke();
+        }
+      }
+    }
+  }
+
+  function distSeg(px_, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((px_ - ax) * dx + (py - ay) * dy) / l2)) : 0;
+    return Math.hypot(px_ - (ax + t * dx), py - (ay + t * dy));
+  }
+  function hitDrawing(pt) {  // → {item, handle: "a" | "b" | null} or null; the newest drawing first
+    if (!S.scale) return null;
+    const tol = 8 * S.dpr;
+    for (let k = S.draw.items.length - 1; k >= 0; k--) {
+      const it = S.draw.items[k], g = geom(it);
+      if (Math.hypot(pt.x - g.xa, pt.y - g.ya) < tol * 1.4) return { item: it, handle: "a" };
+      if (it.type !== "hline" && Math.hypot(pt.x - g.xb, pt.y - g.yb) < tol * 1.4) return { item: it, handle: "b" };
+      let hit = false;
+      if (it.type === "trend") hit = distSeg(pt.x, pt.y, g.xa, g.ya, g.xb, g.yb) < tol;
+      else if (it.type === "ray") { const e = rayEnd(g); hit = distSeg(pt.x, pt.y, g.xa, g.ya, e.x, e.y) < tol; }
+      else if (it.type === "hline") hit = Math.abs(pt.y - g.ya) < tol;
+      else if (it.type === "rect") hit = pt.x >= Math.min(g.xa, g.xb) - tol && pt.x <= Math.max(g.xa, g.xb) + tol
+        && pt.y >= Math.min(g.ya, g.yb) - tol && pt.y <= Math.max(g.ya, g.yb) + tol;
+      else if (it.type === "fib") {
+        const x0 = Math.min(g.xa, g.xb) - tol, x1 = Math.max(g.xa, g.xb) + tol;
+        hit = pt.x >= x0 && pt.x <= x1 && fibLevels(it).some(([, , p]) => Math.abs(S.scale.yP(p) - pt.y) < tol);
+      }
+      if (hit) return { item: it, handle: null };
+    }
+    return null;
+  }
+
+  function setTool(tool) {
+    S.draw.tool = tool && TOOLS[tool] ? tool : null;
+    S.draw.pending = null;
+    if (S.draw.tool) { S.draw.sel = null; status(`${TOOLS[S.draw.tool][0]}: ${S.draw.tool === "hline" ? "tap a price" : "drag, or tap two points"} · Esc cancels`); }
+    renderDrawButton();
+    requestDraw();
+  }
+  function finishDrawing() {
+    const it = S.draw.pending;
+    S.draw.pending = null;
+    S.draw.tool = null;
+    if (it) { S.draw.items.push(it); S.draw.sel = it; saveDrawings(); }
+    status("");
+    renderDrawButton();
+    requestDraw();
+  }
+  function deleteSelected() {
+    if (!S.draw.sel) return false;
+    S.draw.items = S.draw.items.filter((x) => x !== S.draw.sel);
+    S.draw.sel = null;
+    saveDrawings();
+    requestDraw();
+    return true;
+  }
+
+  /* ── assess the setup with Claude / ChatGPT: a snapshot of the chart and a prompt written for the candles' horizon,
+     like the Deep Dive Prompt is for the long-term case. ────────────────────────────────────────────────────────── */
+  const HORIZONS = [
+    [["1", "2", "3", "5"], "scalp", "a scalp / intraday trade held minutes to about an hour",
+      "Stops are tight (beyond the last swing on this chart or about one bar-ATR); session timing matters: the open's first 30 minutes and the last hour are the most volatile, lunch the thinnest, pre- and post-market the least liquid."],
+    [["10", "15", "30", "45", "60"], "intraday swing", "an intraday-to-short swing trade held hours to about three days",
+      "Weigh the session's trend against the daily chart's; overnight gaps are a risk for anything held past the close."],
+    [["120", "180", "240", "1D"], "swing", "a swing trade held days to several weeks",
+      "Earnings dates, gaps and the weekly trend matter more than intraday noise; size the stop for the daily range."],
+    [["1W", "1M", "3M", "6M", "12M"], "position", "a position held months to years",
+      "Valuation and the business decide over this horizon; the chart is for timing entries and sizing."],
+  ];
+  const horizonOf = (code) => HORIZONS.find((h) => h[0].includes(code)) || HORIZONS[2];
+
+  function lastSignal(d, i) {  // the newest BLUE / PINK at or before bar i, and a TRIM after it
+    if (!d.paint) return null;
+    for (let k = i; k >= 0; k--) {
+      const ch = d.paint[k];
+      if (ch === "B" || ch === "P") {
+        const trim = ch === "B" ? d.paint.lastIndexOf("L", i) : -1;
+        return { kind: ch === "B" ? "BLUE" : "PINK", ago: i - k, price: d.c[k], trimAgo: trim > k ? i - trim : null };
+      }
+    }
+    return null;
+  }
+
+  function buildPrompt() {
+    const d = S.data, i = d.n - 1, dec = d.dec, f = (v) => fmtPrice(v, dec);
+    const [, hname, htext, hnote] = horizonOf(d.code);
+    const label = LABEL[d.code];
+    const vAvg = (() => { let s = 0, n = 0; for (let k = Math.max(0, i - 20); k < i; k++) if (d.vol[k] > 0) { s += d.vol[k]; n++; } return n ? s / n : NaN; })();
+    const above = (v) => (isNum(v) ? `${f(v)} (price ${d.c[i] >= v ? "above" : "below"})` : "n/a");
+    const pctB = isNum(d.bbu[i]) ? (d.c[i] - d.bbl[i]) / (d.bbu[i] - d.bbl[i]) : NaN;
+    const bw = isNum(d.bbu[i]) ? (d.bbu[i] - d.bbl[i]) / d.bbm[i] * 100 : NaN;
+    let bwMin = Infinity;
+    for (let k = Math.max(0, i - 120); k <= i; k++) if (isNum(d.bbu[k])) bwMin = Math.min(bwMin, (d.bbu[k] - d.bbl[k]) / d.bbm[k] * 100);
+    const sig = lastSignal(d, i);
+    const L = [];
+    L.push(`You are a disciplined professional trader. Assess the trading setup in the attached chart of ${d.sym}` +
+      `${S.info.name || d.name ? ` (${S.info.name || d.name})` : ""}: ${label} candles${d.exchange ? `, ${d.exchange}` : ""}, ` +
+      `last bar ${timeLabel(i)} (${d.tz || "exchange time"})${d.sess ? ", pre- and post-market included (lighter background)" : ", regular session"}. ` +
+      `Treat it as ${htext}. The numbers below are exact; use the image for structure (trend, patterns, volume), not to read prices.`);
+    L.push("", "Chart data (last bar):");
+    const chg = i > 0 ? (d.c[i] / d.c[i - 1] - 1) * 100 : NaN;
+    const extBar = d.sess && d.sess[i] === "e";
+    const volText = d.vol[i] > 0 ? `volume ${fmtVol(d.vol[i])}${isNum(vAvg) && vAvg > 0 ? ` (${(d.vol[i] / vAvg).toFixed(2)}x the 20-bar average)` : ""}`
+      : `volume not reported${extBar ? " (extended hours)" : ""}`;
+    L.push(`- Price ${f(d.c[i])} (${isNum(chg) ? (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%" : "n/a"} on the bar${extBar ? ", a pre- / post-market bar" : ""}); O ${f(d.o[i])} H ${f(d.h[i])} L ${f(d.l[i])}; ${volText}`);
+    if (extBar && isNum(d.price)) L.push(`- Last regular-session price: ${f(d.price)}`);
+    L.push(`- Trend: SMA 50 ${above(d.sma50[i])}, SMA 100 ${above(d.sma100[i])}, SMA 200 ${above(d.sma200[i])}; EMA 8 ${above(d.ema8[i])}, EMA 21 ${above(d.ema21[i])}`);
+    const hr = d.hist[i] - d.hist[i - 1];
+    L.push(`- Momentum: RSI 14 ${isNum(d.rsi[i]) ? d.rsi[i].toFixed(1) : "n/a"}; MACD 12/26/9 ${isNum(d.macd[i]) ? d.macd[i].toFixed(dec + 1) : "n/a"} vs signal ${isNum(d.signal[i]) ? d.signal[i].toFixed(dec + 1) : "n/a"} (histogram ${isNum(d.hist[i]) ? d.hist[i].toFixed(dec + 1) : "n/a"}, ${hr > 0 ? "rising" : hr < 0 ? "falling" : "flat"})`);
+    if (isNum(pctB)) L.push(`- Volatility: Bollinger (20, 2) ${f(d.bbu[i])} / ${f(d.bbm[i])} / ${f(d.bbl[i])}; %B ${pctB.toFixed(2)}; bandwidth ${bw.toFixed(1)}%` +
+      (isNum(bwMin) && bw <= bwMin * 1.1 ? " (near its narrowest of the last 120 bars: a squeeze)" : ""));
+    if (S.shelf) L.push(`- Volume shelf (bars on screen): point of control ${f(S.shelf.pocPrice)}, value area (70%) ${f(S.shelf.val)}–${f(S.shelf.vah)}`);
+    if (sig) L.push(`- BLUE / PINK paint: ${sig.kind === "BLUE" ? "bullish" : "bearish"} since a ${sig.kind} ${sig.ago} bar${sig.ago === 1 ? "" : "s"} ago at ${f(sig.price)}` +
+      (sig.trimAgo !== null ? `; TRIM (first pullback after overbought) ${sig.trimAgo} bar${sig.trimAgo === 1 ? "" : "s"} ago` : "") +
+      ". (BLUE: momentum turns up after an oversold stochastic, or a close above the prior high with the fast MACD rising; PINK: a close below the prior low with the fast MACD falling.)");
+    const lv = S.levels;
+    if (lv) {
+      const lvl = (x, k) => `${k} ${f(x.price)}${isNum(x.p_touch_1m) ? ` (${x.p_touch_1m.toFixed(0)}% chance of a touch within a month)` : ""}`;
+      const parts = (lv.resistance || []).map((x, k) => lvl(x, `R${k + 1}`)).concat((lv.support || []).map((x, k) => lvl(x, `S${k + 1}`)));
+      if (parts.length) L.push(`- Support / resistance (daily, clustered pivots): ${parts.join("; ")}`);
+      const ex = [];
+      if (isNum(lv.poc)) ex.push(`3-month volume POC ${f(lv.poc)}`);
+      if (isNum(lv.low_52w)) ex.push(`52-week range ${f(lv.low_52w)}–${f(lv.high_52w)}`);
+      const m = lv.ranges && lv.ranges["1m"];
+      if (m) ex.push(`1-month expected range (±1σ) ${f(m["1sigma_lower"])}–${f(m["1sigma_upper"])}`);
+      if (ex.length) L.push(`- ${ex.join("; ")}`);
+    }
+    if (S.zone && isNum(S.zone[0])) L.push(`- Accumulation zone (daily SMA 200 ± 1 ATR): ${f(Math.min(...S.zone))}–${f(Math.max(...S.zone))}`);
+    const dr = S.draw.items.map((it) => {
+      if (it.type === "fib") return `Fibonacci retracement from ${f(it.a.p)} to ${f(it.b.p)}: ${fibLevels(it).map(([lv_, , p]) => `${lv_} ${f(p)}`).join(", ")}`;
+      if (it.type === "hline") return `horizontal line at ${f(it.a.p)}`;
+      if (it.type === "rect") return `box ${f(Math.min(it.a.p, it.b.p))}–${f(Math.max(it.a.p, it.b.p))}`;
+      return `${it.type === "ray" ? "ray" : "trend line"} from ${f(it.a.p)} to ${f(it.b.p)}`;
+    });
+    if (dr.length) L.push(`- My drawings: ${dr.join("; ")}`);
+    const st = S.info.stats;
+    if (st && (hname === "swing" || hname === "position") && isNum(st.PEG)) {
+      L.push(`- Long-term context (the Lynch Pin): PEG ${st.PEG.toFixed(2)}${isNum(st.Dev_SD) ? `, ${st.Dev_SD > 0 ? "+" : ""}${st.Dev_SD.toFixed(2)} SD vs its 5-year mean` : ""}` +
+        `${isNum(st.Base) ? `; 5-year base-case ROI ${st.Base.toFixed(1)}%/yr (bull ${isNum(st.Bull) ? st.Bull.toFixed(1) : "?"}%, bear ${isNum(st.Bear) ? st.Bear.toFixed(1) : "?"}%)` : ""}`);
+    }
+    L.push("", `Horizon: ${hname}. ${hnote}`, "",
+      "Answer in this order, concisely and with exact prices:",
+      "1. Read: trend, momentum, volatility and volume on this timeframe, and what the next higher timeframe likely says.",
+      "2. Bias: long, short or stand aside, with a conviction score out of 10.",
+      `3. Plan for ${htext}: entry (zone or trigger), stop (where the setup is wrong), two targets, and the reward:risk of each.`,
+      "4. Confirmation: what has to happen in the next few bars. Invalidation: what kills the setup.",
+      "5. Risks: scheduled events (earnings, macro data), liquidity and timing, and how this setup typically fails.",
+      "6. One-line verdict.",
+      "If it is not a tradable setup on this timeframe, say so and why. Not financial advice: a second opinion for my own decision.");
+    return L.join("\n");
+  }
+
+  function snapshot() {  // the chart as a PNG: a header with the ticker and the last bar's numbers above the canvas
+    const d = S.data, i = d.n - 1, dpr = S.dpr, W = canvas.width, head = Math.round(58 * dpr), foot = Math.round(22 * dpr);
+    const out = document.createElement("canvas");
+    out.width = W; out.height = canvas.height + head + foot;
+    const c = out.getContext("2d");
+    c.fillStyle = C.bg; c.fillRect(0, 0, out.width, out.height);
+    c.textBaseline = "middle"; c.textAlign = "left";
+    const title = `$${d.sym} · ${LABEL[d.code]}${d.sess ? " · ext. hours" : ""} · ${timeLabel(i)}`;
+    c.fillStyle = C.white; c.font = `800 ${Math.round(17 * dpr)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    const tw = c.measureText(title).width;
+    if (tw > W - 24 * dpr) c.font = `800 ${Math.floor(17 * dpr * (W - 24 * dpr) / tw)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    c.fillText(title, 12 * dpr, 18 * dpr);
+    const f = (v) => fmtPrice(v, d.dec);
+    const stats = `O ${f(d.o[i])}  H ${f(d.h[i])}  L ${f(d.l[i])}  C ${f(d.c[i])}  Vol ${fmtVol(d.vol[i])}  RSI ${isNum(d.rsi[i]) ? d.rsi[i].toFixed(1) : "—"}  MACD ${isNum(d.macd[i]) ? d.macd[i].toFixed(d.dec) : "—"}`;
+    let size = 12 * dpr;
+    c.font = `${Math.round(size)}px ui-monospace, Menlo, monospace`;
+    const room = W - 24 * dpr, need = c.measureText(stats).width;
+    if (need > room) { size *= room / need; c.font = `${Math.max(6, Math.floor(size))}px ui-monospace, Menlo, monospace`; }  // a phone: fit it
+    c.fillStyle = C.text;
+    c.fillText(stats, 12 * dpr, 42 * dpr);
+    c.drawImage(canvas, 0, head);
+    c.fillStyle = C.dim; c.font = `${Math.round(11 * dpr)}px system-ui, sans-serif`;
+    c.fillText("The Lynch Pin · Quant Portal — SMA 50/100/200, EMA 8/21, Bollinger 20/2, volume shelf, BLUE/PINK paint, S/R levels", 12 * dpr, out.height - foot / 2);
+    return out;
+  }
+
+  async function copyText(text) {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall back */ }
+    }
+    const ta = el("textarea", { readonly: true, class: "dd-clip", "aria-hidden": "true", tabindex: "-1" });
+    ta.value = text;
+    document.body.append(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  let aiPanel = null, aiUrl = null;
+  function openAssess() {
+    if (!S.data || !S.L) return;
+    const shot = snapshot(), prompt = buildPrompt();
+    const [, hname, htext] = horizonOf(S.data.code);
+    const name = `${S.data.sym}_${LABEL[S.data.code]}_setup.png`;
+    if (aiUrl) URL.revokeObjectURL(aiUrl);
+    const img = el("img", { class: "tv-ai-img", alt: `Snapshot of the ${S.data.sym} ${LABEL[S.data.code]} chart` });
+    const say = el("p", { class: "tv-ai-say", role: "status", "aria-live": "polite" });
+    const canCopyImage = window.isSecureContext && navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem === "function";
+    const dl = el("a", { class: "tv-ai-btn", download: name, href: "#" }, "Download chart");
+    const copyImg = el("button", { type: "button", class: "tv-ai-btn primary" }, canCopyImage ? "1 · Copy chart" : "1 · Save chart");
+    img.src = shot.toDataURL("image/png");
+    shot.toBlob((blob) => {
+      if (!blob) return;
+      aiUrl = URL.createObjectURL(blob);
+      dl.href = aiUrl;  // a download isn't an image load: blob: is fine; the preview needs data: (CSP img-src 'self' data:)
+      copyImg.onclick = async () => {
+        if (canCopyImage) {
+          try { await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); say.textContent = "Chart copied: paste it into the chat (⌘V / Ctrl+V, or long-press → Paste)."; return; }
+          catch (_) { /* save it instead */ }
+        }
+        if (typeof downloadLink === "function") { const a = downloadLink(aiUrl, name, "Chart", null, "Save chart"); a.click(); }
+        else dl.click();
+        say.textContent = "Chart saved: attach it to the chat.";
+      };
+    }, "image/png");
+    const q = encodeURIComponent(prompt);
+    put(aiPanel,
+      el("div", { class: "tv-sheet-head" }, el("h3", { text: "🔬 Assess this setup with AI" }),
+        el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { aiPanel.hidden = true; } }, "×")),
+      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Copy the chart, then open Claude: the prompt is filled in, paste the chart and send.` }),
+      el("div", { class: "tv-ai-actions" },
+        copyImg,
+        el("a", { class: "tv-ai-btn primary", href: `https://claude.ai/new?q=${q}`, target: "_blank", rel: "noopener noreferrer" }, "2 · Open Claude ↗"),
+        el("a", { class: "tv-ai-btn", href: `https://chatgpt.com/?q=${q}`, target: "_blank", rel: "noopener noreferrer", title: "ChatGPT may send the prompt at once: paste the chart right after" }, "Open ChatGPT ↗"),
+        el("button", { type: "button", class: "tv-ai-btn", onclick: async () => { say.textContent = (await copyText(prompt)) ? "Prompt copied." : "Copy failed: select the prompt below."; } }, "Copy prompt"),
+        dl),
+      say,
+      img,
+      el("details", { class: "tv-ai-prompt" }, el("summary", { text: `The prompt (${prompt.split(/\s+/).length} words)` }), el("pre", { tabindex: "0", text: prompt })));
+    sheet.hidden = true;
+    aiPanel.hidden = false;
+  }
+
   /* ── time axis: calendar boundaries, the most significant first, never closer than ~90 px ───────────────── */
   function timeTicks(i0, i1) {
     const d = S.data, L = S.L;
@@ -851,6 +1403,15 @@
     c.fillText(text, L.plotW + 6 * S.dpr, y);
   }
 
+  function signalSpan(d, i) {  // "BLUE 3 bars ago" (and a TRIM since), when the paint is on
+    if (!S.show.paint) return null;
+    const sg = lastSignal(d, i);
+    if (!sg) return null;
+    return el("span", { class: `tv-l tv-sig tv-sig-${sg.kind.toLowerCase()}`, title: "The last BLUE / PINK flip at this bar" },
+      el("b", { text: sg.kind }), ` ${sg.ago ? `${sg.ago} bar${sg.ago === 1 ? "" : "s"} ago` : "now"}`,
+      sg.trimAgo !== null ? el("b", { class: "tv-sig-trim", text: ` · TRIM ${sg.trimAgo || "now"}` }) : null);
+  }
+
   function updateLegend() {
     const d = S.data;
     if (!legendBar) return;
@@ -870,6 +1431,7 @@
       el("span", { class: "tv-l tv-ind" }, "RSI ", el("b", { class: "tv-c-rsi", text: isNum(d.rsi[i]) ? d.rsi[i].toFixed(1) : "—" })),
       el("span", { class: "tv-l tv-ind" }, "MACD ", el("b", { class: "tv-c-macd", text: isNum(d.macd[i]) ? d.macd[i].toFixed(d.dec) : "—" }),
         " ", el("b", { class: "tv-c-signal", text: isNum(d.signal[i]) ? d.signal[i].toFixed(d.dec) : "—" })),
+      signalSpan(d, i),
       S.hover ? el("span", { class: "tv-l muted", text: timeLabel(i) }) : null);
     for (const b of legendSeries.querySelectorAll("b[data-val]")) {
       const v = d[b.dataset.val][i];
@@ -880,8 +1442,59 @@
   /* ── pointer: drag to pan (with inertia), pinch / wheel to zoom, hover / tap / long-press for the crosshair ── */
   function bindPointer() {
     const ptrs = new Map();
-    let drag = null, pinch = null, press = 0, inertia = 0;
+    let drag = null, pinch = null, press = 0, inertia = 0, ed = null;
     const pos = (e) => { const r = overlay.getBoundingClientRect(); return { x: (e.clientX - r.left) * S.dpr, y: (e.clientY - r.top) * S.dpr }; };
+    const inPrice = (p) => { const P = S.L.panes.price; return p.x < S.L.plotW && p.y >= P.y && p.y < P.y + P.h; };
+    // drawings first: a tool in hand draws; otherwise a press on a drawing selects it and drags a handle or the whole of it
+    const drawDown = (p) => {
+      if (!S.scale || !inPrice(p)) return false;
+      if (S.draw.tool) {
+        const at = anchorAt(p);
+        if (!S.draw.pending) S.draw.pending = { type: S.draw.tool, a: at, b: S.draw.tool === "hline" ? null : { ...at } };
+        else S.draw.pending.b = at;  // the second tap
+        ed = { mode: "create", x0: p.x, y0: p.y, moved: false, second: S.draw.pending.b && (S.draw.pending.b.t !== S.draw.pending.a.t || S.draw.pending.b.p !== S.draw.pending.a.p) };
+        requestDraw();
+        return true;
+      }
+      const hit = hitDrawing(p);
+      if (hit) {
+        const it = hit.item;
+        S.draw.sel = it;
+        ed = { mode: hit.handle ? "handle" : "move", handle: hit.handle, item: it, i0: idxOfX(p.x), p0: priceOfY(p.y), moved: false,
+          a0: { i: idxOfTime(it.a.t), p: it.a.p }, b0: it.b ? { i: idxOfTime(it.b.t), p: it.b.p } : null };
+        renderDrawButton(); requestDraw();
+        return true;
+      }
+      if (S.draw.sel) { S.draw.sel = null; renderDrawButton(); requestDraw(); }
+      return false;
+    };
+    const drawMove = (p) => {
+      if (!ed.moved && Math.hypot(p.x - (ed.x0 ?? p.x), p.y - (ed.y0 ?? p.y)) > 5 * S.dpr) ed.moved = true;
+      if (ed.mode === "create") {
+        const pd = S.draw.pending;
+        if (!pd) return;
+        if (pd.type === "hline") pd.a = anchorAt(p);
+        else if (ed.moved || ed.second) pd.b = anchorAt(p);
+      } else if (ed.mode === "handle") {
+        ed.moved = true;
+        ed.item[ed.handle] = anchorAt(p);
+      } else {
+        ed.moved = true;
+        const di = idxOfX(p.x) - ed.i0, dp = priceOfY(p.y) - ed.p0;
+        ed.item.a = { t: timeOfIdx(ed.a0.i + di), p: ed.a0.p + dp };
+        if (ed.b0) ed.item.b = { t: timeOfIdx(ed.b0.i + di), p: ed.b0.p + dp };
+      }
+      requestDraw();
+    };
+    const drawUp = () => {
+      const e_ = ed;
+      ed = null;
+      if (e_.mode === "create") {
+        const pd = S.draw.pending;
+        if (pd && (pd.type === "hline" || e_.moved || e_.second)) finishDrawing();
+        else status(`${TOOLS[S.draw.tool][0]}: now tap the second point · Esc cancels`);
+      } else if (e_.moved) saveDrawings();
+    };
     const stopInertia = () => { cancelAnimationFrame(inertia); inertia = 0; };
     const zoomAt = (x, factor) => {
       if (!S.data) return;
@@ -899,6 +1512,7 @@
       overlay.setPointerCapture(e.pointerId);
       const p = pos(e);
       ptrs.set(e.pointerId, p);
+      if (ptrs.size === 1 && drawDown(p)) { drag = null; return; }
       if (ptrs.size === 1) {
         drag = { x0: p.x, y0: p.y, right0: S.view.right, moved: false, touch: e.pointerType !== "mouse", hair: false, lx: p.x, lt: performance.now(), v: 0 };
         if (drag.touch) press = setTimeout(() => { if (drag && !drag.moved) { drag.hair = true; S.hover = p; S.pinned = true; requestDraw(true); } }, 350);
@@ -912,6 +1526,10 @@
     overlay.addEventListener("pointermove", (e) => {
       const p = pos(e);
       if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, p);
+      if (ed && ptrs.has(e.pointerId)) { drawMove(p); return; }
+      if (S.draw.tool && S.draw.pending && !ed && S.draw.pending.type !== "hline" && e.pointerType === "mouse") {
+        S.draw.pending.b = anchorAt(p); requestDraw();  // after the first click, the line follows the mouse
+      }
       if (pinch && ptrs.size >= 2) {
         const [a, b] = [...ptrs.values()];
         const dist = Math.abs(a.x - b.x) || 1;
@@ -937,6 +1555,7 @@
     });
     const end = (e) => {
       clearTimeout(press);
+      if (ed) { ptrs.delete(e.pointerId); drawUp(); return; }
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
       if (!drag || ptrs.size) return;
@@ -980,6 +1599,7 @@
   function onKey(e) {
     if (!S.data) return;
     const k = e.key;
+    if ((k === "Delete" || k === "Backspace") && deleteSelected()) { e.preventDefault(); return; }
     if (k === "ArrowLeft" || k === "ArrowRight") { S.view.right += (k === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1); clampView(); }
     else if (k === "+" || k === "=") S.view.barW *= 1.25;
     else if (k === "-" || k === "_") S.view.barW /= 1.25;
@@ -998,7 +1618,12 @@
     if (!S.open || String(sym).toUpperCase() !== S.sym) return;
     S.levels = levels || null;
     if (info) { S.info = Object.assign({}, S.info, info); if (info.name) $("#tv-name").textContent = info.name; }
+    S.zone = zoneOf(S.info);
     requestDraw();
+  }
+  function zoneOf(info) {  // the analysis' accumulation zone [low, high], or null
+    const z = info && info.technicals && info.technicals.accumulation_zone;
+    return Array.isArray(z) && isNum(z[0]) && isNum(z[1]) ? z : null;
   }
 
   function init() {

@@ -262,7 +262,7 @@
     p.setAttribute("d", "M6 3v3M6 15v6M4 6h4v9H4zM12 2v4M12 13v4M10 6h4v7h-4zM18 5v5M18 17v4M16 10h4v7h-4z");
     icon.append(p);
     return el("button", { type: "button", class: "btn-tv", "aria-label": `Open the trading view of ${d.ticker}`,
-      onclick: () => window.LynchTV.open(d.ticker, { levels: d.levels || null, info: { name: d.name } }) },
+      onclick: () => window.LynchTV.open(d.ticker, { levels: d.levels || null, info: { name: d.name, stats: d.stats, technicals: d.technicals } }) },
       icon, el("span", {}, "Trading view", el("small", { text: "Candles 1m–12M · S/R levels · SMA 50/100/200 · EMA 8/21 · RSI · MACD" })),
       el("span", { class: "chev", "aria-hidden": "true" }, "›"));
   }
@@ -714,7 +714,7 @@
       fns.forEach((f) => f(d));
       S.rendered.add(stage);
     }
-    if (d.levels !== undefined && window.LynchTV && window.LynchTV.isOpen()) window.LynchTV.setLevels(d.ticker || snap.ticker, d.levels, { name: d.name });
+    if (d.levels !== undefined && window.LynchTV && window.LynchTV.isOpen()) window.LynchTV.setLevels(d.ticker || snap.ticker, d.levels, { name: d.name, stats: d.stats, technicals: d.technicals });
     // technicals card combines two stages; render once both are settled
     const line = $("#status-line");
     let msg;

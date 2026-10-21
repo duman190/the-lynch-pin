@@ -116,5 +116,50 @@ b.tv-c-rsi { color: #B388FF; } b.tv-c-macd { color: #5D9CEC; } b.tv-c-signal { c
   .tv-ohlc .tv-ind { display: none; }
   .tv-chip-l { display: none; }
   .tv-chip-s { display: inline; }
+  .tv-series { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .tv-series::-webkit-scrollbar { display: none; }
+  .tv-chip { flex: none; }
   .tv-chip { padding: 4px 6px; gap: 4px; font-size: .72rem; }
+}
+
+/* toolbar tools: draw, assess, extended hours */
+.tv-tool { display: inline-flex; align-items: center; gap: 6px; border-color: var(--border) !important; color: var(--text) !important; white-space: nowrap; }
+.tv-tool svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tv-tool[aria-pressed="true"] { color: #10140A !important; background: #FFD54F !important; border-color: #FFD54F !important; }
+.tv-ext[aria-pressed="true"] { color: var(--white) !important; background: #233552 !important; border-color: var(--sky) !important; }
+.tv-ai-open { color: var(--white) !important; border-color: rgba(93, 156, 236, .7) !important; background: linear-gradient(180deg, rgba(93, 156, 236, .22), rgba(93, 156, 236, .08)) !important; }
+
+/* legend chips for the overlays and the signal readout */
+.tv-bb-i { width: 10px; height: 8px; display: inline-block; border-top: 2px solid #E0405A; border-bottom: 2px solid #26A69A; background: rgba(93, 156, 236, .25); }
+.tv-vp-i { width: 10px; height: 9px; display: inline-block; background: linear-gradient(90deg, transparent 30%, #A0AABE 30%) top/100% 3px no-repeat, linear-gradient(90deg, transparent 0, #FF9800 0) center/100% 3px no-repeat, linear-gradient(90deg, transparent 55%, #A0AABE 55%) bottom/100% 3px no-repeat; }
+.tv-zone-i { width: 10px; height: 8px; display: inline-block; background: rgba(46, 204, 113, .35); border: 1px dashed rgba(46, 204, 113, .9); }
+.tv-paint-i { width: 10px; height: 9px; display: inline-block; background: linear-gradient(90deg, #0151FC 50%, #F000D8 50%); border-radius: 2px; }
+.tv-sig b { font-weight: 800; }
+.tv-sig-blue b:first-child { color: #4C8DFF; }
+.tv-sig-pink b:first-child { color: #F000D8; }
+.tv-sig-trim { color: #C0F000; }
+
+/* drawings menu (the screenshot's "Drawings" sheet) */
+.tv-draw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.tv-draw-tool { display: flex !important; flex-direction: column; align-items: center; gap: 8px; padding: 16px 8px !important; background: #2C2C2E !important; color: var(--text) !important; border-radius: 12px !important; font: 600 .85rem/1.2 var(--sans) !important; }
+.tv-draw-tool svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.tv-draw-tool[aria-pressed="true"] { outline: 2px solid #FFD54F; }
+.tv-draw-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+/* assess with AI */
+.tv-ai { max-height: 92%; }
+.tv-ai-img { display: block; max-width: 100%; max-height: 40vh; width: auto; height: auto; margin: 10px auto; border-radius: 10px; border: 1px solid var(--border); background: #000; }
+.tv-ai-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.tv-ai-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 14px !important; border-radius: 10px !important; background: #2C2C2E !important; color: var(--text) !important; font: 700 .9rem/1.1 var(--sans) !important; text-decoration: none; border: 1px solid var(--border) !important; cursor: pointer; }
+.tv-ai-btn:hover { border-color: var(--sky) !important; color: var(--white) !important; }
+.tv-ai-btn.primary { background: linear-gradient(180deg, #7FB3F5, var(--sky)) !important; color: #0B1422 !important; border-color: transparent !important; }
+.tv-ai-btn:disabled { opacity: .45; cursor: default; }
+.tv-ai-say { min-height: 1.2em; margin: 8px 0 0; color: var(--green); font-size: .88rem; }
+.tv-ai-prompt { margin-top: 10px; }
+.tv-ai-prompt summary { cursor: pointer; color: var(--muted); font-size: .88rem; }
+.tv-ai-prompt pre { white-space: pre-wrap; font: .8rem/1.45 var(--mono); color: var(--text); background: #161616; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; max-height: 40vh; overflow: auto; }
+
+@media (max-width: 760px) {
+  .tv-tool-l { display: none; }
+  .tv-ai-open { padding-left: 8px !important; padding-right: 8px !important; }
 }

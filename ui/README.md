@@ -60,7 +60,7 @@ python -m ui.server --public --no-ai   # then: cloudflared tunnel run
 - **AI inference queue:** above the local model's share of AI overviews a minute, Gemini writes them; above Gemini's 15 a minute, the page shows the Quick overview with ↻ Retry AI (see *AI inference queue*).
 - **Quick Overview** with `--no-ai`: the AI overview's three sections built by fixed rules from the same data, no model involved (`ui/quick.py`). *Overview*: name, sector, HQ, employees, market cap, Yahoo's business summary, margins, dividend, analyst consensus and a valuation snapshot. *Reverse 5Y DCF*: "X% base ROI requires EPS to compound at Y%/yr for 5 years and a re-rating from Zx forward PE to a terminal ZZx" (the daily scan's Base ROI math), split into the EPS and multiple contributions, with how demanding those assumptions are. *Stomach test*: red flags from thresholds such as trailing PE > 50, forward PE > 40, growth > 40%, PEG ≥ 2.5, PEG > 1 SD above its mean, base ROI < 9%, a losing bear case, shrinking revenue, an income grade below A (subpar; C/D are serious), a credit rating below A (balance-sheet risk; junk is serious), negative free cash flow, an uncovered dividend, a falling trend, high beta or short interest.
 - With `--no-ai` there is no **↻ Refresh**: a cached ticker stays cached until midnight (or eviction), so repeat lookups never spend Yahoo calls again. Uncacheable results (errors, a Yahoo 429, a missing PEG history) still re-run when searched again.
-- **Trading view**: a *Trading view* button at the top of the Technicals card opens the ticker's candlestick chart (full screen on a phone) at 18 intervals — 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m, 1H, 2H, 3H, 4H, 1D, 1W, 1M, 3M, 6M, 12M — with date ranges (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, All), SMA 50/100/200, EMA 8/21, volume, RSI 14 and MACD 12/26/9, and the price levels below drawn on it (R/S lines with their touch probabilities, POC, 52-week high / low, the 1-month ±1σ range). See *Trading view*.
+- **Trading view**: a *Trading view* button at the top of the Technicals card opens the ticker's candlestick chart (full screen on a phone) at 18 intervals — 1m, 2m, 3m, 5m, 10m, 15m, 30m, 45m, 1H, 2H, 3H, 4H, 1D, 1W, 1M, 3M, 6M, 12M — with date ranges (1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, All), extended hours (ETH), SMA 50/100/200, EMA 8/21, Bollinger Bands, volume and a volume shelf, RSI 14 and MACD 12/26/9, the BLUE / PINK paint, drawings (trend line, ray, horizontal line, Fibonacci retracement, rectangle), the price levels below drawn on it (R/S lines with their touch probabilities, POC, 52-week high / low, the 1-month ±1σ range, the accumulation zone), and *🔬 Assess*: a snapshot of the setup and a prompt for Claude / ChatGPT written for the candles' horizon. See *Trading view*.
 - **Price levels** in the Technicals card, computed with the experimental trade assistant's toolkit (`experimental/quant_engine.py`): support and resistance from clustered pivots (6 months), the volume point of control (3 months), a 1-month expected range from realised volatility, and the 52-week range. Each level shows its chance of being touched within a month.
 - **Deep Dive Prompt** (above *How to read*): a research brief to paste into Claude, ChatGPT or Gemini. It casts the model as a hedge-fund portfolio manager and walks it through the last two earnings reports, call transcripts, the 10-Q, news, management's answers and red flags. It then makes the model loop, stress-testing its bull and bear case until another pass changes nothing, and asks for a verdict against the S&P 500 with price levels and signals to watch. The quant data, the price levels and the local AI overview are attached at the end. **Copy** works on plain-http LAN and Tailscale URLs too; **Show / Hide** toggles the full text.
 - The 5Y Growth value is tagged **Enriched** (Yahoo + FMP) or **Not enriched** (Yahoo only).
@@ -126,6 +126,50 @@ The per-ticker chart the Technicals card opens (`ui/static/tradingview.js`, `?t=
   - A chart fetch that gets a 429 opens the analyses' circuit breaker (*Concurrent lookups*), and while it is open charts are not fetched: viewers get the last series in memory, marked stale, or wait.
   - An unknown symbol (Yahoo's 404) is remembered for an hour, a failed fetch for 15 s.
 - **Viewers are limited** (`--tv-viewers`, default 50, from the benchmark below): a viewer is a page with the chart open, alive while it polls; one that stops polling for 75 s (`LYNCH_UI_TV_IDLE`) gives its place up, and closing the chart gives it up at once (`/api/tv/release`). Past the limit the page says "Trading view is full" with a countdown to when a place frees up and retries (429, *Trading view full* on the stats page). With `--public` a visitor (IP) may have 2 charts open. `/api/health` has the count under `tv`.
+
+### On the chart
+
+- **Extended hours (ETH, on by default for 1m-4H):** pre- and post-market bars (Yahoo's `includePrePost`), on a lighter background as TradingView shades them; each day's session then runs from the pre-market's open to the post-market's close, so 4H bars start at 04:00, 08:00, 12:00 and 16:00 New York. The page asks for `/api/tv/SYM?i=CODE&x=1` and the bars come with `sess` (r / e per bar); extended and regular series are cached apart.
+- **Bollinger Bands (20, 2):** the 20-SMA ± 2 population standard deviations (Pine's `ta.bb`), upper red, basis white, lower teal, shaded between (`bbu` / `bbm` / `bbl` from bars.rs).
+- **Volume shelf:** volume by price over the bars on screen (TradingView's visible-range profile), each bar's volume spread evenly over the 48 rows its high-low covers, drawn from the right edge; the value area (70% of the volume around the busiest row) brighter, and the point of control as an orange line across the pane with its price on the axis. It follows the view as you pan and zoom (computed in the page: ~0.1 ms).
+- **Accumulation zone:** the Technicals card's (daily SMA 200 ± 1 ATR, `engine/technical_timing.py`), shaded green across every interval; out of view, a pill in the corner says where it is and how far (`▼ Accumulation zone 674–773 · −16%`).
+- **Drawings:** trend line, ray, horizontal line, Fibonacci retracement (0, 0.236, 0.382, 0.5, 0.618, 0.786, 1 from the second point back to the first, TradingView's colours) and rectangle, from *✏ Draw* (TradingView's Drawings sheet). Drag to draw, or tap two points; tap a drawing to select it, drag a handle (or the whole of it) to move it, Delete / the sheet's *Delete selected* to remove it. Anchors are (time, price), so a drawing stays put across zoom, pan and intervals (a fib drawn on 4H sits at the same prices on 15m). They are kept per ticker in the browser (`localStorage`).
+
+### BLUE / PINK paint (reverse engineered)
+
+TradexWhisperer's TradingView charts paint MU's candles with a private indicator: BLUE at bottoms, PINK at tops, lime ("TRIM") to take profits, bright / dark green and red / dark red in between. The trading view paints the same way (*BLUE/PINK* chip), computed with the bars in bars.rs (`paint`; numpy mirror in tvdata.py):
+
+1. **A state machine.** Bars are bullish from a BLUE until a PINK, bearish from a PINK until a BLUE.
+   - **BLUE** (to bull): Stochastic %K (14, 3) was under 20 within the last 5 bars and RSI 14 is above its 14-bar average (momentum turning up after oversold), **or** the close clears the prior bar's high while the fast MACD (8, 17, 9) histogram is positive.
+   - **PINK** (to bear): the close breaks the prior bar's low while the fast MACD histogram is negative.
+2. **Shades.** Bullish bars: lime (TRIM) on the first down bar of each %K > 80 episode, dark green when the close is under the 9-EMA (a pullback), green otherwise. Bearish bars: dark red for a bounce (close at the prior high or above, over the 9-EMA), red otherwise.
+
+**How it was found** (`tmp/candle_re/`, not shipped): 6 screenshots (MU 1D, 3m × 2, 5m, 15m; 2026-10-15 to 10-20). Every candle body was cut out of the pixels (7 colours; body borders, wicks, labels and translucent drawn boxes masked) and matched to Yahoo's bar at the same time by fitting the bodies' heights to the bars' prices (r = −0.996 to −0.9999 on every chart; the two 3m screenshots agree on all 64 bars they share, so the indicator doesn't repaint). Then:
+- Colour is not the candle's direction (green on down bars, red on up bars) but a state; BLUE only on up bars and PINK only on down bars, and every green run starts with a BLUE, every red one with a PINK.
+- A single oscillator's sign gets at most 92.4% of states (78,000 MACD variants: sources, lengths and average types; RSI vs its average, WaveTrend, Stochastic, CCI, TSI, Fisher, SuperTrend, Heikin-Ashi did worse): it flips a few bars late. The flips were then searched as triggers — every AND of up to 3 of 100 conditions, scored on the bars where the true state could flip — and the state machine above was the best that also runs free from any start.
+
+| TradexWhisperer chart | Bars | Bull / bear state | Exact colour | BLUE / PINK on the exact bar |
+|---|---|---|---|---|
+| 1D, Sep 15 - Oct 16 | 24 | 100% | 83% | 2 / 2 |
+| 3m, Oct 15 (2 screenshots) | 104 | 93% | 73% | 4 / 7 |
+| 5m, Oct 20 | 34 | 94% | 88% | 2 / 3 |
+| 15m, Oct 20 | 22 | 100% | 77% | 1 / 1 |
+| **All** | **184** | **95.1%** | **77.7%** (all-green: 50.5%) | **9 / 13** |
+
+Intraday with extended hours, as the screenshots are; on regular-session bars the opening bars lack the pre-market's warm-up and the state agrees 88%. Lime is the weakest colour (TRIM fires on its own rule, a first pullback after overbought, rather than the screenshots' exact bars), and a short bull run in the 3m chop is missed. More screenshots (other tickers, timeframes) would tell whether the thresholds hold or were fitted to MU in October 2026.
+
+### 🔬 Assess this setup
+
+The toolbar's *🔬 Assess*, the trading view's counterpart of the Deep Dive Prompt: a snapshot of the chart as it is on screen (with a header: ticker, interval, last bar, OHLC, RSI, MACD) and a prompt for Claude or ChatGPT written for the candles' horizon:
+
+| Interval | Horizon | Prompt's emphasis |
+|---|---|---|
+| 1m-5m | scalp: minutes to an hour | tight stops (last swing / one bar-ATR), session timing (open, lunch, close, pre / post-market liquidity) |
+| 10m-1H | intraday swing: hours to ~3 days | the session's trend against the daily's, overnight gaps |
+| 2H-1D | swing: days to weeks | earnings, gaps, the weekly trend |
+| 1W-12M | position: months to years | valuation decides: the Lynch Pin's PEG, its deviation and the 5-year ROI cases are included |
+
+The prompt carries the exact numbers (the image is for structure): the last bar, every moving average with the price above or below it, RSI, MACD with the histogram's direction, Bollinger %B and bandwidth (and a squeeze), the volume shelf's POC and value area, the BLUE / PINK state and how many bars ago it flipped, the analysis' S/R levels with their touch probabilities, the 3-month POC, 52-week and 1-month ranges, the accumulation zone, and the drawings (a fib's levels at their prices). It asks for the read, a bias with a conviction score, entry / stop / two targets with reward:risk for that horizon, confirmation and invalidation, risks and a one-line verdict. *1 · Copy chart* puts the PNG on the clipboard (https or localhost; elsewhere it is saved, on an iPhone through the share sheet), *2 · Open Claude* opens claude.ai with the prompt filled in (`/new?q=`) to paste the chart into; *Open ChatGPT*, *Copy prompt* and *Download chart* too.
 
 ### Benchmark: how many viewers, and what they cost the lookups (2026-10-20)
 
