@@ -111,7 +111,8 @@ def download_jpeg(src, dest):
     data = r.raw.read(MAX_IMG_BYTES + 1, decode_content=True)
     if len(data) > MAX_IMG_BYTES:
         raise ValueError("image too large")
-    with Image.open(io.BytesIO(data)) as im:
+    # only the formats X serves: Pillow's other decoders (TIFF, PDF, EPS via Ghostscript, ...) never see remote bytes
+    with Image.open(io.BytesIO(data), formats=("JPEG", "PNG", "WEBP")) as im:
         im = im.convert("RGB")
         im.thumbnail((IMG_WIDTH, IMG_WIDTH * 2), Image.LANCZOS)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest), suffix=".part")

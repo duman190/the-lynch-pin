@@ -73,6 +73,9 @@ class Settings:
     # stats_visitor_days of DAU / MAU.
     stats: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_STATS", True))
     stats_port: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_PORT", 190))
+    # The stats page's address: empty = all interfaces; one address, e.g. this machine's Tailscale IP, keeps it off
+    # whatever Wi-Fi a laptop is on
+    stats_host: str = field(default_factory=lambda: os.environ.get("LYNCH_UI_STATS_HOST", ""))
     stats_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_DAYS", 30))
     stats_visitor_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_VISITOR_DAYS", 365))
 
@@ -181,7 +184,10 @@ class Settings:
     @property
     def stats_bind_host(self):
         """All interfaces with --lan or --public: with --public the portal stays on loopback for the tunnel,
-        while the stats page answers LAN / Tailscale clients only (ui/server.py: make_stats_handler)."""
+        while the stats page answers LAN / Tailscale clients only (ui/server.py: make_stats_handler). --stats-host
+        narrows it to one address."""
+        if self.stats_host:
+            return self.stats_host
         return "0.0.0.0" if self.lan or self.public else self.host
 
     @property

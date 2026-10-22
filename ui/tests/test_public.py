@@ -147,3 +147,81 @@ def test_public_health_strips_the_local_model_address():
     h = PortalApp(s, jobs=None, llm=LLM()).health()
     assert h["ai"] == {"available": False, "model": "qwen/qwen3", "model_short": "qwen3", "ctx": 65536,
                        "reason": "local model unavailable"}
+
+
+# ── what the tunnel forwards ────────────────────────────────────────────────
+def raw(httpd, data):
+    """Send raw bytes on one connection and read until the server closes it (or 2 s pass)."""
+    import socket
+    c = socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=2)
+    c.sendall(data)
+    out = b""
+    try:
+        while True:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            out += chunk
+    except socket.timeout:
+        pass
+    c.close()
+    return out
+
+
+@pytest.mark.parametrize("method,status", [("GET", b"400"), ("POST", b"405")])
+def test_a_request_body_is_never_parsed_as_the_next_request(settings, gate, method, status):
+    """cloudflared reuses its connections to the portal: a body left unread would be answered as a request of its
+    own, and that answer would go to the next visitor on the connection."""
+    httpd, jm = serve(settings, gate)
+    try:
+        smuggled = b"GET /api/health HTTP/1.1\r\nHost: lynch.example.com\r\n\r\n"
+        out = raw(httpd, f"{method} /api/scans HTTP/1.1\r\nHost: lynch.example.com\r\n"
+                         f"Content-Length: {len(smuggled)}\r\n\r\n".encode() + smuggled)
+        assert out.count(b"HTTP/1.1 ") == 1 and out.startswith(b"HTTP/1.1 " + status)
+        assert b"Connection: close" in out and b'"uptime_s"' not in out
+        out = raw(httpd, b"GET /api/scans HTTP/1.1\r\nHost: lynch.example.com\r\nTransfer-Encoding: chunked\r\n\r\n"
+                         b"0\r\n\r\nGET /api/health HTTP/1.1\r\nHost: lynch.example.com\r\n\r\n")
+        assert out.count(b"HTTP/1.1 ") == 1 and out.startswith(b"HTTP/1.1 400")
+    finally:
+        stop(httpd, jm)
+
+
+def test_keep_alive_without_a_body_still_works(settings, gate):
+    httpd, jm = serve(settings, gate)
+    try:
+        req = b"GET /api/scans HTTP/1.1\r\nHost: lynch.example.com\r\nContent-Length: 0\r\n\r\n"
+        out = raw(httpd, req + req.replace(b"Content-Length: 0\r\n", b"Connection: close\r\n"))
+        assert out.count(b"HTTP/1.1 200") == 2
+    finally:
+        stop(httpd, jm)
+
+
+def test_allow_host_narrows_the_public_host_names(settings, gate, monkeypatch):
+    """With --allow-host the public name(s) are the only foreign ones accepted, so a page that rebinds its own
+    domain to 127.0.0.1 in a browser on this machine is refused (it could set CF-Connecting-IP)."""
+    httpd, jm = serve(settings, gate)
+    try:
+        assert get(httpd, "/api/scans", host="evil.example")[0].status == 200  # no --allow-host: any name
+        monkeypatch.setenv("LYNCH_UI_ALLOWED_HOSTS", "lynch.example.com")
+        assert get(httpd, "/api/scans", host="evil.example")[0].status == 403
+        assert get(httpd, "/api/scans", ip="203.0.113.5")[0].status == 200
+        assert get(httpd, "/api/scans", host="LYNCH.example.com.")[0].status == 200
+        assert get(httpd, "/api/scans", host="localhost:8765")[0].status == 200  # checks on this machine
+    finally:
+        stop(httpd, jm)
+
+
+def test_hsts_only_behind_the_tunnel(settings, gate):
+    for public in (True, False):
+        httpd, jm = serve(settings, gate, public=public)
+        try:
+            r, _ = get(httpd, "/api/scans", host="localhost")
+            assert (r.getheader("Strict-Transport-Security") == "max-age=31536000") is public
+        finally:
+            stop(httpd, jm)
+
+
+def test_stats_host_narrows_the_stats_listener():
+    s, _ = parse_args(["--public", "--stats-host", "100.74.164.127"])
+    assert s.stats_bind_host == "100.74.164.127" and s.bind_host == "127.0.0.1"
+    assert parse_args(["--public"])[0].stats_bind_host == "0.0.0.0"

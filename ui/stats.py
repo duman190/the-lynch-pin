@@ -58,6 +58,7 @@ REJECTIONS = {
     "tv_live": (429, "Trading view: live full"),
     "bad_ticker": (400, "Invalid ticker"),
     "read_only": (405, "Write method"),
+    "request_body": (400, "Request with a body"),
     "yahoo_429": (429, "Yahoo rate limit"),
 }
 UPSTREAM = ("yahoo_429",)

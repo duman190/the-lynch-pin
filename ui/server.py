@@ -178,6 +178,8 @@ class PortalApp:
 
 def make_handler(app):
     settings = app.settings
+    # --public: the visitor reaches the tunnel over HTTPS, so browsers are told to stay on HTTPS
+    security_headers = dict(SECURITY_HEADERS, **({"Strict-Transport-Security": "max-age=31536000"} if app.public else {}))
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -202,8 +204,16 @@ def make_handler(app):
             self._code = self._reason = None  # one handler serves every request of a keep-alive connection
             self._action = False  # set by _get for what a visitor did (counted as a request on the stats page)
             self._t0, self._t0_mono = time.time(), time.monotonic()
+            # The portal never reads a request body, so one left on a keep-alive connection would be parsed as the
+            # next request: request smuggling through cloudflared's pooled connections (another visitor would get
+            # the smuggled request's answer). A request with a body is answered, then its connection is closed.
+            self._body = self.headers.get("Transfer-Encoding") is not None or \
+                self.headers.get("Content-Length", "0").strip() != "0"
+            if self._body:
+                self.close_connection = True
 
         _marked = None  # (visitor, hour) this connection last marked for DAU / MAU
+        _body = False  # the request carries a body (set by _begin)
 
         def _record(self):
             """Count this request on the stats page (--lan / --public): its minute, if refused why, and if served
@@ -245,10 +255,12 @@ def make_handler(app):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", cache)
-            for k, v in SECURITY_HEADERS.items():
+            for k, v in security_headers.items():
                 self.send_header(k, v)
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
+            if self._body:  # tell the tunnel not to reuse this connection (see _begin)
+                self.send_header("Connection", "close")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -283,7 +295,7 @@ def make_handler(app):
                 self.send_header("Cache-Control", cache)
                 for k, v in validators.items():
                     self.send_header(k, v)
-                for k, v in SECURITY_HEADERS.items():
+                for k, v in security_headers.items():
                     self.send_header(k, v)
                 self.end_headers()
                 return
@@ -308,12 +320,15 @@ def make_handler(app):
 
         def _guard(self):
             ip = self.client_address[0]
-            if app.public:  # only the tunnel on this machine; any public host name
+            if app.public:  # only the tunnel on this machine
                 if _ip(ip) is None or not _ip(ip).is_loopback:
                     return self._refuse("served through the local tunnel only (--public)",
-                                        "point cloudflared at http://localhost:<port>", "tunnel_only")
-                return True
-            if not is_local_client(ip):
+                                        "point cloudflared at http://127.0.0.1:<port>", "tunnel_only")
+                # Any Host name, unless --allow-host names the public ones: then a web page that rebinds its own
+                # domain to 127.0.0.1 in a browser on this machine (and could set CF-Connecting-IP) is refused too.
+                if not netguard.extra_allowed()[1]:
+                    return True
+            elif not is_local_client(ip):
                 return self._refuse("local network only",
                                     f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)", "outside_lan")
             host = self.headers.get("Host", "")
@@ -337,6 +352,9 @@ def make_handler(app):
         def _get(self):
             if not self._guard():
                 return
+            if self._body:
+                self._reason = "request_body"
+                return self.send_error_json(HTTPStatus.BAD_REQUEST, "request body not accepted")
             url = urlsplit(self.path)
             path, query = url.path, parse_qs(url.query)
             # The stats page counts what visitors do: open the portal, open a scan thread, look up a ticker (↻ Refresh
@@ -484,7 +502,7 @@ def make_handler(app):
                 self.send_response(HTTPStatus.NOT_MODIFIED)
                 self.send_header("Content-Length", "0")
                 self.send_header("Cache-Control", "no-cache")
-                for k, v in list(SECURITY_HEADERS.items()) + list(extra.items()):
+                for k, v in list(security_headers.items()) + list(extra.items()):
                     self.send_header(k, v)
                 self.end_headers()
                 return
@@ -512,7 +530,7 @@ def make_handler(app):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")  # no Content-Length: the body ends when we close
-            for k, v in SECURITY_HEADERS.items():
+            for k, v in security_headers.items():
                 self.send_header(k, v)
             self.end_headers()
             self.close_connection = True
@@ -730,6 +748,9 @@ def parse_args(argv=None):
     p.add_argument("--stats-port", type=int, default=s.stats_port,
                    help="port of the stats page, with --lan or --public, for LAN / Tailscale clients only "
                         "(default 190)")
+    p.add_argument("--stats-host", default=s.stats_host, metavar="ADDR",
+                   help="address the stats page listens on (default: all interfaces); this machine's Tailscale IP "
+                        "(tailscale ip -4) keeps it off the Wi-Fi a laptop is on")
     p.add_argument("--no-stats", action="store_true", help="no stats page and nothing recorded for it")
     p.add_argument("--tv-viewers", type=int, default=s.tv_viewers, metavar="N",
                    help=f"people who may have the trading view (per-ticker chart) open at once (default {s.tv_viewers}, "
@@ -762,7 +783,7 @@ def parse_args(argv=None):
     s.tv_live = max(0, a.tv_live)
     s.public = a.public
     s.verbose = a.verbose
-    s.stats, s.stats_port = s.stats and not a.no_stats, a.stats_port
+    s.stats, s.stats_port, s.stats_host = s.stats and not a.no_stats, a.stats_port, a.stats_host.strip()
     if s.stats_enabled and s.stats_port == s.port:
         p.error("--stats-port must differ from --port")
     try:
@@ -820,7 +841,7 @@ def main(argv=None):
         print(f"📊 Stats page on http://{settings.stats_bind_host}:{settings.stats_port} (LAN / Tailscale only"
               f"{', never through the tunnel' if settings.public else ''}; rolling {settings.stats_days}-day window "
               f"in {settings.stats_path if where.startswith('..') else where})", flush=True)
-        for a in lan_addrs:
+        for a in [settings.stats_host] if settings.stats_host else lan_addrs:
             print(f"   📊 stats: http://{a}:{settings.stats_port} {'over Tailscale' if a.startswith('100.') else 'on your Wi-Fi'}",
                   flush=True)
     if settings.lan:
@@ -830,9 +851,11 @@ def main(argv=None):
             where = "over Tailscale" if a.startswith("100.") else "on your Wi-Fi"
             print(f"   📱 open http://{a}:{settings.port} {where}", flush=True)
     if settings.public:
-        print("🌐 --public: only the local tunnel can connect; any Host name; visitor IPs from CF-Connecting-IP; "
-              "one analysis at a time per visitor; /api/cache off. No login: put Cloudflare Access in front "
-              "to restrict who can use it.", flush=True)
+        hosts = netguard.extra_allowed()[1]
+        print(f"🌐 --public: only the local tunnel can connect; "
+              f"{'Host ' + ', '.join(hosts) + ' (or this machine)' if hosts else 'any Host name (--allow-host narrows it)'}; "
+              "visitor IPs from CF-Connecting-IP; one analysis at a time per visitor; /api/cache off; requests with a "
+              "body refused. No login: put Cloudflare Access in front to restrict who can use it.", flush=True)
     nets, hosts = netguard.extra_allowed()
     if nets or hosts:
         print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)
