@@ -1306,18 +1306,24 @@
     return ok;
   }
 
-  /* The chart's download button: the lightbox's (app.js DOWNLOAD_ICON). On an iPhone / iPad a download strands the page
-     on a file preview, so the button opens the chart in the lightbox with its hint instead, as the valuation section's
-     charts do: "Press and hold the chart, then tap Save to Photos". */
-  const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  function chartDownload(url, dataUrl, name, alt) {
+  /* The chart's download button: the chart viewer's (app.js DOWNLOAD_ICON and downloadLink's rule). Browsers, Safari and
+     Chrome on an iPhone included, download the PNG. Only the iPhone home-screen app, where a download would strand the page
+     on a file preview, hands it to the share sheet ("Save Image") instead, or failing that shows it in the lightbox with
+     "Press and hold the chart, then tap Save to Photos". */
+  function chartDownload(url, blob, dataUrl, name, alt) {
     const a = el("a", { class: "tv-ai-dl", href: url, download: name, title: "Download chart", "aria-label": "Download chart" },
       typeof DOWNLOAD_ICON !== "undefined" ? DOWNLOAD_ICON.cloneNode(true) : "⤓");
-    a.addEventListener("click", (e) => {
-      if (!isIOS() || typeof openLightbox !== "function") return;  // browsers honour the download attribute
-      e.preventDefault();
+    const hint = () => {
+      if (typeof openLightbox !== "function") return;
       openLightbox(dataUrl, alt);  // data: (CSP img-src): the full chart, over the trading view
       $("#lightbox-hint").hidden = false;
+    };
+    a.addEventListener("click", (e) => {
+      if (navigator.standalone !== true) return;  // a browser honours the download attribute
+      e.preventDefault();
+      const file = new File([blob], name, { type: "image/png" });
+      if (!navigator.canShare || !navigator.canShare({ files: [file] })) { hint(); return; }
+      navigator.share({ files: [file] }).catch((err) => { if (!(err && err.name === "AbortError")) hint(); });
     });
     return a;
   }
@@ -1347,14 +1353,14 @@
     shot.toBlob((blob) => {
       if (!blob) return;
       aiUrl = URL.createObjectURL(blob);  // a download, not an image load: blob: is fine (the preview needs data:)
-      dlBox.append(chartDownload(aiUrl, dataUrl, name, alt));
+      dlBox.append(chartDownload(aiUrl, blob, dataUrl, name, alt));
     }, "image/png");
     put(aiPanel,
       el("div", { class: "card-title-row dd-head tv-ai-head" },
         el("h3", { text: "🔬 Trading setup prompt" }),
         el("div", { class: "dd-actions" }, copyBtn, showBtn, dlBox,
           el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { aiPanel.hidden = true; } }, "×"))),
-      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Paste it into Claude or ChatGPT with the chart attached (⤓ ${isIOS() ? "opens it: press and hold it to save it" : "saves it"}). ${prompt.split(/\s+/).length} words.` }),
+      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Paste it into Claude or ChatGPT with the chart attached (⤓ saves it). ${prompt.split(/\s+/).length} words.` }),
       say, pre, img);
     sheet.hidden = true;
     aiPanel.hidden = false;
