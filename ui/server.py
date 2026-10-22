@@ -625,7 +625,8 @@ def start_stats_server(settings, recorder):
         httpd = PortalServer((settings.stats_bind_host, settings.stats_port),
                              make_stats_handler(StatsApp(settings, recorder)))
     except OSError as e:
-        hint = " (ports below 1024 need root on Linux: try --stats-port 8190)" if isinstance(e, PermissionError) else ""
+        hint = (" (ports below 1024 need root on Linux, and on macOS too for one address (--stats-host): try "
+                "--stats-port 8190)") if isinstance(e, PermissionError) else ""
         print(f"⚠️  stats page not started on port {settings.stats_port}: {e.strerror or e}{hint}", flush=True)
         return None
     threading.Thread(target=httpd.serve_forever, name="lynch-stats-http", daemon=True).start()
