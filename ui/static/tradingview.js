@@ -48,7 +48,9 @@
     view: { right: 0, barW: 7 }, hover: null, pinned: false, range: null, pushed: false,
     show: { sma50: true, sma100: true, sma200: true, ema8: true, ema21: true, levels: true, bb: true, shelf: true, zone: true, paint: true },
     ext: true,  // intraday bars with pre- and post-market (the BUY / SELL paint was fitted on such charts)
-    draw: { tool: null, items: [], sel: null, pending: null },  // drawings of the open ticker (time / price anchors)
+    draw: { tool: null, items: [], sel: null, pending: null },
+    split: { rsi: 0.16, macd: 0.22 },  // the RSI and MACD panes' share of the height (drag the boundaries; remembered)
+    yman: null,  // a price range set by hand (drag / wheel on the price scale), or null = auto-fit to the bars on screen  // drawings of the open ticker (time / price anchors)
     dpr: 1, L: null, anim: 0, dirty: false, overlayDirty: false,
     sid: (() => {
       const a = new Uint8Array(12);
@@ -63,10 +65,11 @@
       if (p && LABEL[p.code]) S.code = p.code;
       if (p && p.show && typeof p.show === "object") for (const k of Object.keys(S.show)) if (typeof p.show[k] === "boolean") S.show[k] = p.show[k];
       if (p && typeof p.ext === "boolean") S.ext = p.ext;
+      if (p && p.split && isNum(p.split.rsi) && isNum(p.split.macd)) S.split = { rsi: p.split.rsi, macd: p.split.macd };
     } catch (_) { /* private mode */ }
   }
   function savePrefs() {
-    try { localStorage.setItem(PREFS, JSON.stringify({ code: S.code, show: S.show, ext: S.ext })); } catch (_) { /* private mode */ }
+    try { localStorage.setItem(PREFS, JSON.stringify({ code: S.code, show: S.show, ext: S.ext, split: S.split })); } catch (_) { /* private mode */ }
   }
   const isIntraday = (code) => /^\d+$/.test(code);  // minute codes: "1" … "240"
   const extOn = (code = S.code) => S.ext && isIntraday(code);
@@ -488,6 +491,7 @@
     if (!S.data) return;
     S.view.barW = defaultBarW() * S.dpr;
     S.view.right = S.data.n - 1 + 3;  // a few empty slots right of the last bar, as TradingView leaves
+    S.yman = null;
     S.hover = null;
     S.pinned = false;
   }
@@ -549,12 +553,20 @@
     const font = Math.round(11 * dpr);
     const axisW = Math.round(68 * dpr), timeH = Math.round(22 * dpr);
     const avail = H - timeH;
-    const priceH = Math.round(avail * 0.62), rsiH = Math.round(avail * 0.16);
-    S.L = { W, H, plotW: W - axisW, axisW, timeH, font, avail,
-      panes: { price: { y: 0, h: priceH }, rsi: { y: priceH, h: rsiH }, macd: { y: priceH + rsiH, h: avail - priceH - rsiH } } };
+    S.L = { W, H, plotW: W - axisW, axisW, timeH, font, avail, panes: null };
+    layoutPanes();
     if (keepSlots && S.data) S.view.barW = S.L.plotW / keepSlots;  // a rotated phone keeps the same bars
     clampView();
     requestDraw();
+  }
+
+  const MIN_PANE = 0.05, MIN_PRICE = 0.2;
+  function layoutPanes() {  // the panes' heights from S.split (price gets the rest)
+    const L = S.L, sp = S.split;
+    sp.rsi = Math.max(MIN_PANE, Math.min(0.5, sp.rsi)); sp.macd = Math.max(MIN_PANE, Math.min(0.5, sp.macd));
+    if (sp.rsi + sp.macd > 1 - MIN_PRICE) { const k = (1 - MIN_PRICE) / (sp.rsi + sp.macd); sp.rsi *= k; sp.macd *= k; }
+    const rsiH = Math.round(L.avail * sp.rsi), macdH = Math.round(L.avail * sp.macd), priceH = L.avail - rsiH - macdH;
+    L.panes = { price: { y: 0, h: priceH }, rsi: { y: priceH, h: rsiH }, macd: { y: priceH + rsiH, h: macdH } };
   }
 
   function requestDraw(overlayOnly = false) {
@@ -608,7 +620,7 @@
     if (!d || !d.n) return;
     const [i0, i1] = visible();
     const P = L.panes;
-    const px = priceScale(i0, i1);
+    const px = S.yman || priceScale(i0, i1);
     const yP = (v) => P.price.y + (px.hi - v) / (px.hi - px.lo) * P.price.h;
     S.scale = { px, yP };
     const lw = Math.max(1, Math.round(S.dpr));
@@ -770,6 +782,13 @@
     // pane titles
     c.textAlign = "left";
     c.fillStyle = C.dim;
+    if (S.yman) {  // the price scale is set by hand: "A" puts it back on auto-fit (TradingView's button)
+      const b = autoBox();
+      c.fillStyle = "#233552"; c.fillRect(b.x, b.y, b.w, b.h);
+      c.strokeStyle = C.white; c.lineWidth = Math.max(1, S.dpr); c.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      c.fillStyle = C.white; c.textAlign = "center"; c.fillText("A", b.x + b.w / 2, b.y + b.h / 2);
+      c.textAlign = "left"; c.fillStyle = C.dim;
+    }
     c.fillText("RSI 14", 6 * S.dpr, R.y + L.font);
     c.fillText("MACD 12 26 9", 6 * S.dpr, Mp.y + L.font);
   }
@@ -1287,17 +1306,18 @@
     return ok;
   }
 
-  /* The chart's download button: the lightbox's (app.js DOWNLOAD_ICON); in the iPhone home-screen app, where a
-     download would strand the page, the PNG goes to the share sheet ("Save Image") instead. */
-  function chartDownload(url, blob, name) {
+  /* The chart's download button: the lightbox's (app.js DOWNLOAD_ICON). On an iPhone / iPad a download strands the page
+     on a file preview, so the button opens the chart in the lightbox with its hint instead, as the valuation section's
+     charts do: "Press and hold the chart, then tap Save to Photos". */
+  const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function chartDownload(url, dataUrl, name, alt) {
     const a = el("a", { class: "tv-ai-dl", href: url, download: name, title: "Download chart", "aria-label": "Download chart" },
       typeof DOWNLOAD_ICON !== "undefined" ? DOWNLOAD_ICON.cloneNode(true) : "⤓");
     a.addEventListener("click", (e) => {
-      if (navigator.standalone !== true || !navigator.canShare) return;
-      const file = new File([blob], name, { type: "image/png" });
-      if (!navigator.canShare({ files: [file] })) return;
+      if (!isIOS() || typeof openLightbox !== "function") return;  // browsers honour the download attribute
       e.preventDefault();
-      navigator.share({ files: [file] }).catch(() => {});
+      openLightbox(dataUrl, alt);  // data: (CSP img-src): the full chart, over the trading view
+      $("#lightbox-hint").hidden = false;
     });
     return a;
   }
@@ -1322,18 +1342,19 @@
         setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
       } }, "Copy");
     const dlBox = el("span", { class: "tv-ai-dlbox" });
-    const img = el("img", { class: "tv-ai-img", alt: `Snapshot of the ${S.data.sym} ${LABEL[S.data.code]} chart`, src: shot.toDataURL("image/png") });
+    const dataUrl = shot.toDataURL("image/png"), alt = `Snapshot of the ${S.data.sym} ${LABEL[S.data.code]} chart`;
+    const img = el("img", { class: "tv-ai-img", alt, src: dataUrl });
     shot.toBlob((blob) => {
       if (!blob) return;
       aiUrl = URL.createObjectURL(blob);  // a download, not an image load: blob: is fine (the preview needs data:)
-      dlBox.append(chartDownload(aiUrl, blob, name));
+      dlBox.append(chartDownload(aiUrl, dataUrl, name, alt));
     }, "image/png");
     put(aiPanel,
       el("div", { class: "card-title-row dd-head tv-ai-head" },
         el("h3", { text: "🔬 Trading setup prompt" }),
         el("div", { class: "dd-actions" }, copyBtn, showBtn, dlBox,
           el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { aiPanel.hidden = true; } }, "×"))),
-      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Paste it into Claude or ChatGPT with the chart attached (⤓ saves it). ${prompt.split(/\s+/).length} words.` }),
+      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Paste it into Claude or ChatGPT with the chart attached (⤓ ${isIOS() ? "opens it: press and hold it to save it" : "saves it"}). ${prompt.split(/\s+/).length} words.` }),
       say, pre, img);
     sheet.hidden = true;
     aiPanel.hidden = false;
@@ -1570,9 +1591,63 @@
   }
 
   /* ── pointer: drag to pan (with inertia), pinch / wheel to zoom, hover / tap / long-press for the crosshair ── */
+  function autoBox() {
+    const L = S.L, P = L.panes.price, sz = L.font + 8 * S.dpr;
+    return { x: L.W - sz - 4 * S.dpr, y: P.y + P.h - sz - 4 * S.dpr, w: sz, h: sz };
+  }
+  /* The chart's frame: the boundaries between panes (drag to resize them) and the price scale (drag or wheel to zoom
+     prices; the "A" box or a double-click there goes back to auto-fit). */
+  function chromeAt(p) {
+    if (!S.L || !S.scale) return null;
+    const L = S.L, P = L.panes, tol = 8 * S.dpr;  // a finger-friendly grab of the boundaries
+    if (Math.abs(p.y - P.rsi.y) <= tol) return "sep-rsi";
+    if (Math.abs(p.y - P.macd.y) <= tol) return "sep-macd";
+    if (p.x >= L.plotW && p.y >= P.price.y && p.y < P.price.y + P.price.h) {
+      if (S.yman) { const b = autoBox(); if (p.x >= b.x && p.y >= b.y && p.y <= b.y + b.h) return "auto"; }
+      return "yscale";
+    }
+    return null;
+  }
+  function zoomPrices(factor, y) {  // around price y (or the middle): factor > 1 shows more prices
+    const px = S.yman || S.scale.px;
+    const P = S.L.panes.price;
+    const at = y === undefined ? (px.lo + px.hi) / 2 : px.hi - (y - P.y) / P.h * (px.hi - px.lo);
+    const lo = at - (at - px.lo) * factor, hi = at + (px.hi - at) * factor;
+    if (hi - lo > 0 && isFinite(lo) && isFinite(hi)) S.yman = { lo, hi };
+    requestDraw();
+  }
+
   function bindPointer() {
     const ptrs = new Map();
-    let drag = null, pinch = null, press = 0, inertia = 0, ed = null;
+    let drag = null, pinch = null, press = 0, inertia = 0, ed = null, frame = null;
+    const chromeDown = (p) => {
+      const kind = chromeAt(p);
+      if (!kind) return false;
+      if (kind === "auto") { S.yman = null; requestDraw(); return true; }
+      const P = S.L.panes;
+      frame = { kind, y0: p.y, b1: P.rsi.y / S.L.avail, b2: P.macd.y / S.L.avail, px0: { ...(S.yman || S.scale.px) } };
+      return true;
+    };
+    const chromeMove = (p) => {
+      const L = S.L;
+      if (frame.kind === "yscale") {  // drag down: more prices (zoom out), up: fewer (zoom in), as TradingView's scale
+        const f = Math.exp((p.y - frame.y0) / S.dpr * 0.006), c = (frame.px0.lo + frame.px0.hi) / 2, half = (frame.px0.hi - frame.px0.lo) / 2 * f;
+        S.yman = { lo: c - half, hi: c + half };
+      } else {
+        let b1 = frame.b1, b2 = frame.b2;
+        const y = p.y / L.avail;
+        if (frame.kind === "sep-rsi") b1 = Math.max(MIN_PRICE, Math.min(b2 - MIN_PANE, y));
+        else b2 = Math.max(b1 + MIN_PANE, Math.min(1 - MIN_PANE, y));
+        S.split = { rsi: b2 - b1, macd: 1 - b2 };
+        layoutPanes();
+      }
+      requestDraw();
+    };
+    const cursorFor = (p) => {  // a mouse over the frame: what dragging there does
+      const kind = chromeAt(p);
+      const cur = kind === "sep-rsi" || kind === "sep-macd" ? "row-resize" : kind === "yscale" ? "ns-resize" : kind === "auto" ? "pointer" : "crosshair";
+      if (overlay.style.cursor !== cur) overlay.style.cursor = cur;
+    };
     const pos = (e) => { const r = overlay.getBoundingClientRect(); return { x: (e.clientX - r.left) * S.dpr, y: (e.clientY - r.top) * S.dpr }; };
     const inPrice = (p) => { const P = S.L.panes.price; return p.x < S.L.plotW && p.y >= P.y && p.y < P.y + P.h; };
     // drawings first: a tool in hand draws; otherwise a press on a drawing selects it and drags a handle or the whole of it
@@ -1642,9 +1717,10 @@
       overlay.setPointerCapture(e.pointerId);
       const p = pos(e);
       ptrs.set(e.pointerId, p);
+      if (ptrs.size === 1 && chromeDown(p)) { drag = null; return; }
       if (ptrs.size === 1 && drawDown(p)) { drag = null; return; }
       if (ptrs.size === 1) {
-        drag = { x0: p.x, y0: p.y, right0: S.view.right, moved: false, touch: e.pointerType !== "mouse", hair: false, lx: p.x, lt: performance.now(), v: 0 };
+        drag = { ym0: S.yman ? { ...S.yman } : null, x0: p.x, y0: p.y, right0: S.view.right, moved: false, touch: e.pointerType !== "mouse", hair: false, lx: p.x, lt: performance.now(), v: 0 };
         if (drag.touch) press = setTimeout(() => { if (drag && !drag.moved) { drag.hair = true; S.hover = p; S.pinned = true; requestDraw(true); } }, 350);
       } else if (ptrs.size === 2) {
         clearTimeout(press);
@@ -1656,7 +1732,9 @@
     overlay.addEventListener("pointermove", (e) => {
       const p = pos(e);
       if (ptrs.has(e.pointerId)) ptrs.set(e.pointerId, p);
+      if (frame && ptrs.has(e.pointerId)) { chromeMove(p); return; }
       if (ed && ptrs.has(e.pointerId)) { drawMove(p); return; }
+      if (e.pointerType === "mouse" && !ptrs.size) cursorFor(p);
       if (S.draw.tool && S.draw.pending && !ed && S.draw.pending.type !== "hline" && e.pointerType === "mouse") {
         S.draw.pending.b = anchorAt(p); requestDraw();  // after the first click, the line follows the mouse
       }
@@ -1674,6 +1752,10 @@
           const now = performance.now();
           S.view.right = drag.right0 - (p.x - drag.x0) / S.view.barW;
           clampView();
+          if (drag.ym0) {  // a price scale set by hand: the chart pans up and down too
+            const P = S.L.panes.price, dp = (p.y - drag.y0) / P.h * (drag.ym0.hi - drag.ym0.lo);
+            S.yman = { lo: drag.ym0.lo + dp, hi: drag.ym0.hi + dp };
+          }
           drag.v = 0.8 * drag.v + 0.2 * ((p.x - drag.lx) / Math.max(1, now - drag.lt));
           drag.lx = p.x; drag.lt = now;
           S.range = null;
@@ -1685,6 +1767,7 @@
     });
     const end = (e) => {
       clearTimeout(press);
+      if (frame) { ptrs.delete(e.pointerId); if (frame.kind.startsWith("sep")) savePrefs(); frame = null; return; }
       if (ed) { ptrs.delete(e.pointerId); drawUp(); return; }
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
@@ -1713,13 +1796,19 @@
     overlay.addEventListener("pointerup", end);
     overlay.addEventListener("pointercancel", end);
     overlay.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !S.pinned) { S.hover = null; requestDraw(true); } });
-    overlay.addEventListener("dblclick", () => { resetView(); clampView(); S.range = null; markActive(); requestDraw(); });
+    overlay.addEventListener("dblclick", (e) => {
+      const kind = chromeAt(pos(e));
+      if (kind === "yscale" || kind === "auto") { S.yman = null; requestDraw(); return; }  // the price scale: auto again
+      if (kind && kind.startsWith("sep")) { S.split = { rsi: 0.16, macd: 0.22 }; layoutPanes(); savePrefs(); requestDraw(); return; }
+      resetView(); clampView(); S.range = null; markActive(); requestDraw();
+    });
     overlay.addEventListener("wheel", (e) => {
       if (!S.data) return;
       e.preventDefault();
       stopInertia();
       const p = pos(e);
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      if (chromeAt(p) === "yscale") { zoomPrices(Math.exp(e.deltaY * unit * 0.002), p.y); return; }  // wheel on the scale: prices
       if (e.ctrlKey || Math.abs(e.deltaY) >= Math.abs(e.deltaX)) zoomAt(p.x, Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0025)));
       else { S.view.right += e.deltaX * unit * S.dpr / S.view.barW; clampView(); S.range = null; requestDraw(); }
       if (e.pointerType === undefined && !S.pinned) { S.hover = p; requestDraw(true); }
