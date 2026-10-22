@@ -1512,6 +1512,11 @@
     const L = S.L, c = octx;
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, L.W, L.H);
+    if (S.sepHot && L.panes) {  // a pane boundary under the mouse or being dragged: TradingView's blue band
+      const y = Math.round(L.panes[S.sepHot === "sep-rsi" ? "rsi" : "macd"].y), band = 6 * S.dpr;
+      c.fillStyle = "rgba(41,98,255,.35)"; c.fillRect(0, y - band / 2, L.W, band);
+      c.fillStyle = "#2962FF"; c.fillRect(0, y - Math.max(1, S.dpr), L.W, Math.max(2, 2 * S.dpr));
+    }
     const d = S.data, h = S.hover;
     if (!d || !h || !S.scale) return;
     const i = Math.max(0, Math.min(d.n - 1, iAt(h.x)));
@@ -1598,11 +1603,11 @@
   /* The chart's frame: the boundaries between panes (drag to resize them) and the price scale (drag or wheel to zoom
      prices; the "A" box or a double-click there goes back to auto-fit). */
   function chromeAt(p) {
-    if (!S.L || !S.scale) return null;
+    if (!S.L || !S.L.panes) return null;
     const L = S.L, P = L.panes, tol = 8 * S.dpr;  // a finger-friendly grab of the boundaries
     if (Math.abs(p.y - P.rsi.y) <= tol) return "sep-rsi";
     if (Math.abs(p.y - P.macd.y) <= tol) return "sep-macd";
-    if (p.x >= L.plotW && p.y >= P.price.y && p.y < P.price.y + P.price.h) {
+    if (S.scale && p.x >= L.plotW && p.y >= P.price.y && p.y < P.price.y + P.price.h) {
       if (S.yman) { const b = autoBox(); if (p.x >= b.x && p.y >= b.y && p.y <= b.y + b.h) return "auto"; }
       return "yscale";
     }
@@ -1625,7 +1630,9 @@
       if (!kind) return false;
       if (kind === "auto") { S.yman = null; requestDraw(); return true; }
       const P = S.L.panes;
-      frame = { kind, y0: p.y, b1: P.rsi.y / S.L.avail, b2: P.macd.y / S.L.avail, px0: { ...(S.yman || S.scale.px) } };
+      frame = { kind, y0: p.y, b1: P.rsi.y / S.L.avail, b2: P.macd.y / S.L.avail,
+        px0: kind === "yscale" ? { ...(S.yman || S.scale.px) } : null };  // the price range: price-scale drags only
+      if (kind.startsWith("sep")) hot(kind);
       return true;
     };
     const chromeMove = (p) => {
@@ -1647,7 +1654,9 @@
       const kind = chromeAt(p);
       const cur = kind === "sep-rsi" || kind === "sep-macd" ? "row-resize" : kind === "yscale" ? "ns-resize" : kind === "auto" ? "pointer" : "crosshair";
       if (overlay.style.cursor !== cur) overlay.style.cursor = cur;
+      hot(kind && kind.startsWith("sep") ? kind : null);
     };
+    const hot = (kind) => { if (S.sepHot !== kind) { S.sepHot = kind; requestDraw(true); } };
     const pos = (e) => { const r = overlay.getBoundingClientRect(); return { x: (e.clientX - r.left) * S.dpr, y: (e.clientY - r.top) * S.dpr }; };
     const inPrice = (p) => { const P = S.L.panes.price; return p.x < S.L.plotW && p.y >= P.y && p.y < P.y + P.h; };
     // drawings first: a tool in hand draws; otherwise a press on a drawing selects it and drags a handle or the whole of it
@@ -1714,7 +1723,7 @@
     overlay.addEventListener("pointerdown", (e) => {
       if (!S.data) return;
       stopInertia();
-      overlay.setPointerCapture(e.pointerId);
+      try { overlay.setPointerCapture(e.pointerId); } catch (_) { /* a pointer the browser no longer tracks */ }
       const p = pos(e);
       ptrs.set(e.pointerId, p);
       if (ptrs.size === 1 && chromeDown(p)) { drag = null; return; }
@@ -1763,11 +1772,17 @@
         }
         return;
       }
-      if (e.pointerType === "mouse" && !S.pinned) { S.hover = p; requestDraw(true); }
+      if (e.pointerType === "mouse" && !S.pinned) { S.hover = S.sepHot ? null : p; requestDraw(true); }  // no crosshair on a boundary
     });
     const end = (e) => {
       clearTimeout(press);
-      if (frame) { ptrs.delete(e.pointerId); if (frame.kind.startsWith("sep")) savePrefs(); frame = null; return; }
+      if (frame) {
+        ptrs.delete(e.pointerId);
+        if (frame.kind.startsWith("sep")) savePrefs();
+        frame = null;
+        if (e.pointerType === "mouse") cursorFor(pos(e)); else hot(null);  // a finger lets go: the band goes too
+        return;
+      }
       if (ed) { ptrs.delete(e.pointerId); drawUp(); return; }
       ptrs.delete(e.pointerId);
       if (ptrs.size < 2) pinch = null;
@@ -1795,7 +1810,11 @@
     };
     overlay.addEventListener("pointerup", end);
     overlay.addEventListener("pointercancel", end);
-    overlay.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && !S.pinned) { S.hover = null; requestDraw(true); } });
+    overlay.addEventListener("pointerleave", (e) => {
+      if (e.pointerType !== "mouse") return;
+      if (!frame) hot(null);
+      if (!S.pinned) { S.hover = null; requestDraw(true); }
+    });
     overlay.addEventListener("dblclick", (e) => {
       const kind = chromeAt(pos(e));
       if (kind === "yscale" || kind === "auto") { S.yman = null; requestDraw(); return; }  // the price scale: auto again
