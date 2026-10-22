@@ -162,7 +162,7 @@ class PortalApp:
         out.pop("enrich", None)  # this machine's FMP quota
         out.pop("precache", None)
         if out.get("tv"):
-            out["tv"] = {k: out["tv"][k] for k in ("viewers", "limit")}
+            out["tv"] = {k: out["tv"][k] for k in ("viewers", "limit", "live", "live_limit") if k in out["tv"]}
         cache = out.get("cache")
         if cache:
             for k in ("top", "running", "ai_running", "inference"):  # inference: this machine's Gemini quota
@@ -468,13 +468,17 @@ def make_handler(app):
             if rest == "release":
                 app.tv.release(self.client_ip(), sid)
                 return self.send_json({"ok": True})
-            sym = rest.strip().upper()
-            if not TICKER_RE.match(sym):
+            sym, _, sub = rest.strip().partition("/")
+            sym = sym.upper()
+            if not TICKER_RE.match(sym) or sub not in ("", "live"):
                 return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
-            r = app.tv.chart(sym, query.get("i", [tvdata.DEFAULT_INTERVAL])[0], ip=self.client_ip(), sid=sid,
-                             if_none_match=self.headers.get("If-None-Match"), ext=query.get("x", ["0"])[0] == "1")
+            if sub == "live":  # the live last candle
+                r = app.tv.live(sym, ip=self.client_ip(), sid=sid, ext=query.get("x", ["0"])[0] == "1")
+            else:
+                    r = app.tv.chart(sym, query.get("i", [tvdata.DEFAULT_INTERVAL])[0], ip=self.client_ip(), sid=sid,
+                                 if_none_match=self.headers.get("If-None-Match"), ext=query.get("x", ["0"])[0] == "1")
             extra = dict(r.headers)
-            if r.status in (200, 304):
+            if r.status in (200, 304) and r.etag:
                 extra.update(ETag=r.etag, Vary="Accept-Encoding")
             if r.status == 304:
                 self.send_response(HTTPStatus.NOT_MODIFIED)
@@ -731,6 +735,9 @@ def parse_args(argv=None):
                    help=f"people who may have the trading view (per-ticker chart) open at once (default {s.tv_viewers}, "
                         "from the benchmark in ui/README.md; 0 = no limit)")
     p.add_argument("--no-tv", action="store_true", help="no trading view (per-ticker chart)")
+    p.add_argument("--tv-live", type=int, default=s.tv_live, metavar="N",
+                   help=f"people who may use the trading view's live last candle at once (default {s.tv_live}; each live "
+                        "ticker costs up to 30 Yahoo requests a minute)")
     p.add_argument("--tv-yahoo-rpm", type=int, default=s.tv_yahoo_rpm, metavar="N",
                    help=f"Yahoo requests the trading view may make a minute (default {s.tv_yahoo_rpm}; 0 = no budget): "
                         "the lookups' share of Yahoo stays theirs")
@@ -752,6 +759,7 @@ def parse_args(argv=None):
     s.precache = max(0, a.precache)
     s.workers = max(0, a.workers)
     s.tv, s.tv_viewers, s.tv_yahoo_rpm = s.tv and not a.no_tv, max(0, a.tv_viewers), max(0, a.tv_yahoo_rpm)
+    s.tv_live = max(0, a.tv_live)
     s.public = a.public
     s.verbose = a.verbose
     s.stats, s.stats_port = s.stats and not a.no_stats, a.stats_port

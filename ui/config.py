@@ -157,6 +157,8 @@ class Settings:
     tv_yahoo_rpm: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_YAHOO_RPM", 120))
     tv_viewer_rpm: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_VIEWER_RPM", 20))
     tv_idle: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_IDLE", 75))
+    # live last candle (every 2 s): viewers at once; each live ticker costs up to 30 Yahoo requests a minute
+    tv_live: int = field(default_factory=lambda: _env_int("LYNCH_UI_TV_LIVE", 2))
     tv_force_open: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_TV_FORCE_OPEN"))
 
     @property

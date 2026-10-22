@@ -83,10 +83,15 @@ def series_key(code, ext=False):
     return f"{base}:ext" if ext and unit == "minute" else base
 
 
+LIVE_QUERY = {"interval": "1m", "range": "1d"}  # the live last candle: today's 1-minute bars (tens of KB)
+
+
 def query_params(base, now=None):
-    """Yahoo's query string for one series: the regular session, or with ":ext" pre- and post-market too."""
-    base, _, ext = base.partition(":")
-    q = dict(BASES[base])
+    """Yahoo's query string for one series: the regular session, or with ":ext" pre- and post-market too; "live"
+    (or "live:ext") is today's 1-minute series, for the live last candle."""
+    parts = base.split(":")
+    base, ext = parts[0], "ext" in parts[1:]
+    q = dict(LIVE_QUERY if base == "live" else BASES[base])
     if "period1" in q:
         q["period2"] = int(now if now is not None else time.time())
     q.update(includePrePost="true" if ext else "false", events="div,splits")

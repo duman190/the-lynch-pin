@@ -13,7 +13,6 @@
     ["1D", "1D", "Days"], ["1W", "1W", "Days"], ["1M", "1M", "Days"], ["3M", "3M", "Days"], ["6M", "6M", "Days"], ["12M", "12M", "Days"],
   ];
   const LABEL = Object.fromEntries(INTERVALS.map(([c, l]) => [c, l]));
-  const QUICK = ["5", "15", "60", "240", "1D", "1W", "1M"];
   // Date ranges pick an interval and the window, as TradingView's do
   const RANGES = [
     ["1D", "1", { days: 1 }], ["5D", "5", { days: 5 }], ["1M", "30", { months: 1 }], ["3M", "60", { months: 3 }],
@@ -33,9 +32,9 @@
     zone: "rgba(46,204,113,.10)", zoneEdge: "rgba(46,204,113,.55)", ext: "rgba(255,255,255,.035)",
     shelf: "rgba(160,170,190,.22)", shelfVA: "rgba(160,170,190,.36)", vpoc: "#FF9800",
   };
-  // The BLUE / PINK paint (bars.rs ``paint``): code → candle colour, as on TradexWhisperer's charts
+  // The BUY / SELL paint (bars.rs ``paint``: blue BUY, pink SELL bars, as on TradexWhisperer's charts): code → candle colour
   const PAINT = { g: "#2AC83E", d: "#1A6420", L: "#C0F000", r: "#FC2323", x: "#A80000", B: "#0151FC", P: "#F000D8" };
-  const CALLOUT = { B: ["BLUE", "#0E8EA6", "#FFFFFF", 1], P: ["PINK", "#C0708A", "#FFFFFF", -1], L: ["TRIM", "#9DBF00", "#10140A", -1] };
+  const CALLOUT = { B: ["BUY", "#0E8EA6", "#FFFFFF", 1], P: ["SELL", "#C0708A", "#FFFFFF", -1], L: ["TRIM", "#9DBF00", "#10140A", -1] };
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const PREFS = "lynchpin.tv";
@@ -48,7 +47,7 @@
     prevClose: new Map(),  // SYM → yesterday's close, for the header's change
     view: { right: 0, barW: 7 }, hover: null, pinned: false, range: null, pushed: false,
     show: { sma50: true, sma100: true, sma200: true, ema8: true, ema21: true, levels: true, bb: true, shelf: true, zone: true, paint: true },
-    ext: true,  // intraday bars with pre- and post-market (the BLUE / PINK paint was fitted on such charts)
+    ext: true,  // intraday bars with pre- and post-market (the BUY / SELL paint was fitted on such charts)
     draw: { tool: null, items: [], sel: null, pending: null },  // drawings of the open ticker (time / price anchors)
     dpr: 1, L: null, anim: 0, dirty: false, overlayDirty: false,
     sid: (() => {
@@ -123,6 +122,7 @@
       bbu: F(j.bbu || []), bbm: F(j.bbm || []), bbl: F(j.bbl || []),
       paint: typeof j.paint === "string" && j.paint.length === n ? j.paint : null,
       sess: typeof j.sess === "string" && j.sess.length === n ? j.sess : null, ext: !!j.sess,
+      regular: j.regular || null, step: /^\d+$/.test(j.interval) ? +j.interval * 60 : null,  // s per bar (intraday)
       Y: new Int16Array(n), M: new Int8Array(n), D: new Int8Array(n), W: new Int8Array(n), mins: new Int16Array(n),
     };
     for (let i = 0; i < n; i++) d.hist[i] = d.macd[i] - d.signal[i];
@@ -137,7 +137,7 @@
   }
 
   /* ── DOM ────────────────────────────────────────────────────────────────── */
-  let dlg, canvas, overlay, ctx, octx, wrap, msgBox, legendBar, legendSeries, sheet, intBtn, quickBox, rangeBox, drawBtn, extBtn, drawSheet;
+  let dlg, canvas, overlay, ctx, octx, wrap, msgBox, legendBar, legendSeries, sheet, intBtn, drawBtn, extBtn, paintBtn, liveBtn, drawSheet;
 
   function svgIcon(path, size = 18) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -152,10 +152,6 @@
   function build() {
     if (dlg) return;
     intBtn = el("button", { type: "button", class: "tv-int", "aria-haspopup": "dialog", title: "Interval and date range", onclick: () => toggleSheet() });
-    quickBox = el("div", { class: "tv-quick", role: "group", "aria-label": "Interval" });
-    rangeBox = el("div", { class: "tv-ranges", role: "group", "aria-label": "Date range" });
-    for (const code of QUICK) quickBox.append(el("button", { type: "button", "data-code": code, onclick: () => setInterval_(code) }, LABEL[code]));
-    for (const [label, code, span] of RANGES) rangeBox.append(el("button", { type: "button", "data-range": label, onclick: () => applyRange(label, code, span) }, label));
     legendBar = el("div", { class: "tv-ohlc", "aria-live": "off" });
     legendSeries = el("div", { class: "tv-series", role: "group", "aria-label": "Indicators shown" });
     canvas = el("canvas", { class: "tv-canvas", role: "img", "aria-label": "Candlestick chart" });
@@ -167,7 +163,11 @@
     aiPanel = el("div", { class: "tv-sheet tv-ai", hidden: true, role: "dialog", "aria-label": "Assess this setup with AI" });
     drawBtn = el("button", { type: "button", class: "tv-tool", "aria-haspopup": "dialog", title: "Drawings: trend line, Fibonacci, rectangle…",
       onclick: () => { if (S.draw.tool) setTool(null); else { buildDrawSheet(); drawSheet.hidden = !drawSheet.hidden; sheet.hidden = aiPanel.hidden = true; } } });
-    extBtn = el("button", { type: "button", class: "tv-tool tv-ext", title: "Extended hours: pre- and post-market bars (the BLUE / PINK paint was fitted on them)",
+    paintBtn = el("button", { type: "button", class: "tv-tool tv-ext tv-paint", title: "BUY / SELL candles (blue / pink signal bars); off: plain green / red candles",
+      onclick: () => { S.show.paint = !S.show.paint; savePrefs(); markActive(); requestDraw(); } }, "BUY/SELL");
+    liveBtn = el("button", { type: "button", class: "tv-tool tv-live", title: "Live: the last candle updates every 2 s (a few people at a time: it spends Yahoo's quota)",
+      onclick: () => toggleLive() }, el("i", { class: "tv-live-dot", "aria-hidden": "true" }), "LIVE");
+    extBtn = el("button", { type: "button", class: "tv-tool tv-ext", title: "Extended hours: pre- and post-market bars (the BUY / SELL paint was fitted on them)",
       onclick: () => { S.ext = !S.ext; savePrefs(); markActive(); setInterval_(S.code, { force: true }); } }, "ETH");
     const aiBtn = el("button", { type: "button", class: "tv-tool tv-ai-open", title: "Assess this setup with Claude or ChatGPT: a snapshot of the chart and a prompt for this timeframe",
       onclick: () => { if (aiPanel.hidden) openAssess(); else aiPanel.hidden = true; } }, "🔬 Assess");
@@ -178,7 +178,7 @@
           el("span", { class: "tv-name muted", id: "tv-name" })),
         el("div", { class: "tv-quote", id: "tv-quote" }),
         el("button", { type: "button", class: "tv-close", "aria-label": "Close the trading view", onclick: () => close(true) }, "×")),
-      el("div", { class: "tv-toolbar" }, intBtn, drawBtn, aiBtn, extBtn, quickBox, rangeBox, el("span", { class: "tv-status muted", id: "tv-status" })),
+      el("div", { class: "tv-toolbar" }, intBtn, drawBtn, aiBtn, extBtn, paintBtn, liveBtn, el("span", { class: "tv-status muted", id: "tv-status" })),
       el("div", { class: "tv-legend" }, legendBar, legendSeries),
       wrap, sheet, drawSheet, aiPanel);
     document.body.append(dlg);
@@ -225,6 +225,8 @@
     intBtn.replaceChildren(svgIcon(CANDLE_ICON, 16), el("span", { text: LABEL[S.code] }), el("span", { class: "tv-caret", "aria-hidden": "true" }, "▾"));
     extBtn.hidden = !isIntraday(S.code);
     extBtn.setAttribute("aria-pressed", String(S.ext));
+    paintBtn.setAttribute("aria-pressed", String(S.show.paint));
+    liveBtn.setAttribute("aria-pressed", String(!!S.live));
     renderDrawButton();
     for (const b of dlg.querySelectorAll("[data-code]")) b.setAttribute("aria-pressed", String(b.dataset.code === S.code));
     for (const b of dlg.querySelectorAll("[data-range]")) b.setAttribute("aria-pressed", String(b.dataset.range === S.range));
@@ -240,8 +242,7 @@
         onclick: () => { S.show.levels = !S.show.levels; savePrefs(); renderSeriesToggles(); requestDraw(); } },
         el("i", { class: "tv-lv-i" }), el("span", { class: "tv-chip-l", text: "S/R levels" }), el("span", { class: "tv-chip-s", text: "S/R" })),
       [["bb", "Bollinger 20,2", "BB", "tv-bb-i", "Bollinger Bands (20, 2)"], ["shelf", "Volume shelf", "VP", "tv-vp-i", "Volume by price over the bars on screen, with its point of control"],
-        ["zone", "Accumulation zone", "Acc", "tv-zone-i", "The analysis' accumulation zone (daily SMA 200 ± 1 ATR)"],
-        ["paint", "BLUE/PINK", "B/P", "tv-paint-i", "Candles painted by the BLUE / PINK signal (reverse engineered from TradexWhisperer's charts)"]]
+        ["zone", "Accumulation zone", "Acc", "tv-zone-i", "The analysis' accumulation zone (daily SMA 200 ± 1 ATR)"]]
         .map(([k, label, short, icon, title]) => el("button", { type: "button", class: "tv-chip", "aria-pressed": String(S.show[k]), title,
           onclick: () => { S.show[k] = !S.show[k]; savePrefs(); renderSeriesToggles(); requestDraw(); } },
           el("i", { class: icon }), el("span", { class: "tv-chip-l", text: label }), el("span", { class: "tv-chip-s", text: short }))));
@@ -297,6 +298,7 @@
       if (typeof dlg.showModal === "function") dlg.showModal(); else dlg.setAttribute("open", "");
       document.addEventListener("visibilitychange", onVisibility);
       window.addEventListener("pagehide", release);
+      S.clock = setInterval(tick, 1000);
     }
     if (opts.push !== false) {
       const url = `?t=${encodeURIComponent(sym)}&tv=${encodeURIComponent(code)}`;
@@ -316,6 +318,8 @@
     S.pushed = false;
     S.token += 1;
     clearTimeout(S.timer);
+    stopLive();
+    clearInterval(S.clock); S.clock = 0;
     cancelAnimationFrame(S.anim);
     release();
     document.removeEventListener("visibilitychange", onVisibility);
@@ -344,7 +348,7 @@
   function onVisibility() {
     if (!S.open) return;
     clearTimeout(S.timer);
-    if (document.visibilityState === "visible") load(true);  // back: fresh bars (and this viewer's place) now
+    if (document.visibilityState === "visible") { load(true); if (S.live) liveTick(S.liveToken); }  // back: fresh bars now
   }
 
   /* ── loading ────────────────────────────────────────────────────────────── */
@@ -533,9 +537,10 @@
   function resize() {
     if (!wrap || !S.open) return;
     const r = wrap.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) return;  // not laid out yet (a just-opened dialog): no layout to keep
     const dpr = Math.min(3, window.devicePixelRatio || 1);
     const W = Math.max(1, Math.round(r.width * dpr)), H = Math.max(1, Math.round(r.height * dpr));
-    const keepSlots = S.L ? S.L.plotW / S.view.barW : null;
+    const keepSlots = S.L && S.L.plotW > 0 && S.view.barW > 0 ? S.L.plotW / S.view.barW : null;
     if (canvas.width !== W || canvas.height !== H) {
       canvas.width = overlay.width = W;
       canvas.height = overlay.height = H;
@@ -648,7 +653,7 @@
     c.lineJoin = "round";
     for (const [k, , col] of SERIES) if (S.show[k]) line(c, d[k], i0, i1, yP, col);
     // candles: wicks and bodies batched by colour (two fills per colour, however many bars); with the paint on,
-    // each bar takes its BLUE / PINK paint colour instead of up / down
+    // each bar takes its BUY / SELL paint colour instead of up / down
     const paint = S.show.paint && d.paint;
     const paths = new Map();
     const pathFor = (col) => { let p = paths.get(col); if (!p) paths.set(col, p = new Path2D()); return p; };
@@ -757,7 +762,11 @@
       fixed = { y: ly, text: fmtPrice(lc, d.dec), bg: col, fg: "#0B1422" };
     }
     for (const t of stackTags(tags, fixed, L.font + 6 * S.dpr)) tag(c, t.y, t.text, t.bg, t.fg);
-    if (fixed) tag(c, fixed.y, fixed.text, fixed.bg, fixed.fg);
+    if (fixed) {
+      tag(c, fixed.y, fixed.text, fixed.bg, fixed.fg);
+      const left = barLeft();  // TradingView's countdown to the next candle, under the last price
+      if (left !== null) tag(c, fixed.y + L.font + 6 * S.dpr, fmtLeft(left), "#2A2A2A", fixed.bg);
+    }
     // pane titles
     c.textAlign = "left";
     c.fillStyle = C.dim;
@@ -850,7 +859,7 @@
     return above.concat(below).filter((t) => t.y > P.y + h / 2 && t.y < P.y + P.h - h / 2);
   }
 
-  /* ── extended hours, accumulation zone, Bollinger Bands, volume shelf, BLUE / PINK callouts ─────────────── */
+  /* ── extended hours, accumulation zone, Bollinger Bands, volume shelf, BUY / SELL callouts ─────────────── */
   function drawExtHours(c, i0, i1) {  // pre- and post-market bars on a lighter background, as TradingView shades them
     const d = S.data, L = S.L, w = S.view.barW;
     c.fillStyle = C.ext;
@@ -1156,13 +1165,13 @@
   ];
   const horizonOf = (code) => HORIZONS.find((h) => h[0].includes(code)) || HORIZONS[2];
 
-  function lastSignal(d, i) {  // the newest BLUE / PINK at or before bar i, and a TRIM after it
+  function lastSignal(d, i) {  // the newest BUY / SELL at or before bar i, and a TRIM after it
     if (!d.paint) return null;
     for (let k = i; k >= 0; k--) {
       const ch = d.paint[k];
       if (ch === "B" || ch === "P") {
         const trim = ch === "B" ? d.paint.lastIndexOf("L", i) : -1;
-        return { kind: ch === "B" ? "BLUE" : "PINK", ago: i - k, price: d.c[k], trimAgo: trim > k ? i - trim : null };
+        return { kind: ch === "B" ? "BUY" : "SELL", ago: i - k, price: d.c[k], trimAgo: trim > k ? i - trim : null };
       }
     }
     return null;
@@ -1197,9 +1206,9 @@
     if (isNum(pctB)) L.push(`- Volatility: Bollinger (20, 2) ${f(d.bbu[i])} / ${f(d.bbm[i])} / ${f(d.bbl[i])}; %B ${pctB.toFixed(2)}; bandwidth ${bw.toFixed(1)}%` +
       (isNum(bwMin) && bw <= bwMin * 1.1 ? " (near its narrowest of the last 120 bars: a squeeze)" : ""));
     if (S.shelf) L.push(`- Volume shelf (bars on screen): point of control ${f(S.shelf.pocPrice)}, value area (70%) ${f(S.shelf.val)}–${f(S.shelf.vah)}`);
-    if (sig) L.push(`- BLUE / PINK paint: ${sig.kind === "BLUE" ? "bullish" : "bearish"} since a ${sig.kind} ${sig.ago} bar${sig.ago === 1 ? "" : "s"} ago at ${f(sig.price)}` +
+    if (sig) L.push(`- BUY / SELL signal: ${sig.kind === "BUY" ? "bullish" : "bearish"} since a ${sig.kind} ${sig.ago} bar${sig.ago === 1 ? "" : "s"} ago at ${f(sig.price)}` +
       (sig.trimAgo !== null ? `; TRIM (first pullback after overbought) ${sig.trimAgo} bar${sig.trimAgo === 1 ? "" : "s"} ago` : "") +
-      ". (BLUE: momentum turns up after an oversold stochastic, or a close above the prior high with the fast MACD rising; PINK: a close below the prior low with the fast MACD falling.)");
+      ". (BUY: momentum turns up after an oversold stochastic, or a close above the prior high with the fast MACD rising; SELL: a close below the prior low with the fast MACD falling.)");
     const lv = S.levels;
     if (lv) {
       const lvl = (x, k) => `${k} ${f(x.price)}${isNum(x.p_touch_1m) ? ` (${x.p_touch_1m.toFixed(0)}% chance of a touch within a month)` : ""}`;
@@ -1259,21 +1268,38 @@
     c.fillText(stats, 12 * dpr, 42 * dpr);
     c.drawImage(canvas, 0, head);
     c.fillStyle = C.dim; c.font = `${Math.round(11 * dpr)}px system-ui, sans-serif`;
-    c.fillText("The Lynch Pin · Quant Portal — SMA 50/100/200, EMA 8/21, Bollinger 20/2, volume shelf, BLUE/PINK paint, S/R levels", 12 * dpr, out.height - foot / 2);
+    c.fillText("The Lynch Pin · Quant Portal — SMA 50/100/200, EMA 8/21, Bollinger 20/2, volume shelf, BUY/SELL signals, S/R levels", 12 * dpr, out.height - foot / 2);
     return out;
   }
 
-  async function copyText(text) {
+  async function copyText(text, host) {
     if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
       try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall back */ }
     }
+    // plain-http LAN pages have no clipboard API: copy from a textarea, inside the dialog (outside a modal dialog
+    // everything is inert, so a textarea under <body> can't take the focus the copy needs)
     const ta = el("textarea", { readonly: true, class: "dd-clip", "aria-hidden": "true", tabindex: "-1" });
     ta.value = text;
-    document.body.append(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    (host || dlg).append(ta); ta.focus({ preventScroll: true }); ta.select(); ta.setSelectionRange(0, text.length);
     let ok = false;
     try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
     ta.remove();
     return ok;
+  }
+
+  /* The chart's download button: the lightbox's (app.js DOWNLOAD_ICON); in the iPhone home-screen app, where a
+     download would strand the page, the PNG goes to the share sheet ("Save Image") instead. */
+  function chartDownload(url, blob, name) {
+    const a = el("a", { class: "tv-ai-dl", href: url, download: name, title: "Download chart", "aria-label": "Download chart" },
+      typeof DOWNLOAD_ICON !== "undefined" ? DOWNLOAD_ICON.cloneNode(true) : "⤓");
+    a.addEventListener("click", (e) => {
+      if (navigator.standalone !== true || !navigator.canShare) return;
+      const file = new File([blob], name, { type: "image/png" });
+      if (!navigator.canShare({ files: [file] })) return;
+      e.preventDefault();
+      navigator.share({ files: [file] }).catch(() => {});
+    });
+    return a;
   }
 
   let aiPanel = null, aiUrl = null;
@@ -1283,42 +1309,146 @@
     const [, hname, htext] = horizonOf(S.data.code);
     const name = `${S.data.sym}_${LABEL[S.data.code]}_setup.png`;
     if (aiUrl) URL.revokeObjectURL(aiUrl);
-    const img = el("img", { class: "tv-ai-img", alt: `Snapshot of the ${S.data.sym} ${LABEL[S.data.code]} chart` });
-    const say = el("p", { class: "tv-ai-say", role: "status", "aria-live": "polite" });
-    const canCopyImage = window.isSecureContext && navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem === "function";
-    const dl = el("a", { class: "tv-ai-btn", download: name, href: "#" }, "Download chart");
-    const copyImg = el("button", { type: "button", class: "tv-ai-btn primary" }, canCopyImage ? "1 · Copy chart" : "1 · Save chart");
-    img.src = shot.toDataURL("image/png");
+    const say = el("p", { class: "sr-only", role: "status", "aria-live": "polite" });
+    const pre = el("pre", { class: "dd-text tv-ai-text", tabindex: "0", hidden: true, text: prompt });
+    const showBtn = el("button", { type: "button", class: "btn-ghost", "aria-expanded": "false",
+      onclick: () => { pre.hidden = !pre.hidden; showBtn.textContent = pre.hidden ? "Show" : "Hide"; showBtn.setAttribute("aria-expanded", String(!pre.hidden)); } }, "Show");
+    const copyBtn = el("button", { type: "button", class: "btn-primary btn-sm",
+      onclick: async () => {
+        const ok = await copyText(prompt, aiPanel);
+        copyBtn.textContent = ok ? "Copied ✓" : "Select & copy";
+        say.textContent = ok ? "Prompt copied" : "Copy failed: the prompt is shown, select it";
+        if (!ok) { pre.hidden = false; showBtn.textContent = "Hide"; window.getSelection().selectAllChildren(pre); }
+        setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+      } }, "Copy");
+    const dlBox = el("span", { class: "tv-ai-dlbox" });
+    const img = el("img", { class: "tv-ai-img", alt: `Snapshot of the ${S.data.sym} ${LABEL[S.data.code]} chart`, src: shot.toDataURL("image/png") });
     shot.toBlob((blob) => {
       if (!blob) return;
-      aiUrl = URL.createObjectURL(blob);
-      dl.href = aiUrl;  // a download isn't an image load: blob: is fine; the preview needs data: (CSP img-src 'self' data:)
-      copyImg.onclick = async () => {
-        if (canCopyImage) {
-          try { await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); say.textContent = "Chart copied: paste it into the chat (⌘V / Ctrl+V, or long-press → Paste)."; return; }
-          catch (_) { /* save it instead */ }
-        }
-        if (typeof downloadLink === "function") { const a = downloadLink(aiUrl, name, "Chart", null, "Save chart"); a.click(); }
-        else dl.click();
-        say.textContent = "Chart saved: attach it to the chat.";
-      };
+      aiUrl = URL.createObjectURL(blob);  // a download, not an image load: blob: is fine (the preview needs data:)
+      dlBox.append(chartDownload(aiUrl, blob, name));
     }, "image/png");
-    const q = encodeURIComponent(prompt);
     put(aiPanel,
-      el("div", { class: "tv-sheet-head" }, el("h3", { text: "🔬 Assess this setup with AI" }),
-        el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { aiPanel.hidden = true; } }, "×")),
-      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Copy the chart, then open Claude: the prompt is filled in, paste the chart and send.` }),
-      el("div", { class: "tv-ai-actions" },
-        copyImg,
-        el("a", { class: "tv-ai-btn primary", href: `https://claude.ai/new?q=${q}`, target: "_blank", rel: "noopener noreferrer" }, "2 · Open Claude ↗"),
-        el("a", { class: "tv-ai-btn", href: `https://chatgpt.com/?q=${q}`, target: "_blank", rel: "noopener noreferrer", title: "ChatGPT may send the prompt at once: paste the chart right after" }, "Open ChatGPT ↗"),
-        el("button", { type: "button", class: "tv-ai-btn", onclick: async () => { say.textContent = (await copyText(prompt)) ? "Prompt copied." : "Copy failed: select the prompt below."; } }, "Copy prompt"),
-        dl),
-      say,
-      img,
-      el("details", { class: "tv-ai-prompt" }, el("summary", { text: `The prompt (${prompt.split(/\s+/).length} words)` }), el("pre", { tabindex: "0", text: prompt })));
+      el("div", { class: "card-title-row dd-head tv-ai-head" },
+        el("h3", { text: "🔬 Trading setup prompt" }),
+        el("div", { class: "dd-actions" }, copyBtn, showBtn, dlBox,
+          el("button", { type: "button", class: "tv-sheet-x", "aria-label": "Close", onclick: () => { aiPanel.hidden = true; } }, "×"))),
+      el("p", { class: "muted small", text: `${LABEL[S.data.code]} candles → ${hname}: ${htext}. Paste it into Claude or ChatGPT with the chart attached (⤓ saves it). ${prompt.split(/\s+/).length} words.` }),
+      say, pre, img);
     sheet.hidden = true;
     aiPanel.hidden = false;
+  }
+
+  /* ── the countdown to the next candle, and LIVE: the last candle every 2 s ─────────────────────────────────── */
+  function barLeft() {  // seconds until the last candle closes, or null (closed market, weekly / monthly bars)
+    const d = S.data;
+    if (!d || !d.n) return null;
+    const now = Date.now() / 1000;
+    let end = null;
+    if (d.step) end = d.t[d.n - 1] + d.step;
+    else if (d.code === "1D" && d.regular && now >= d.regular.start) end = d.regular.end;
+    if (end === null || now >= end || end - now > (d.step || 86400)) return null;
+    return end - now;
+  }
+  function fmtLeft(x) {
+    const s_ = Math.max(0, Math.ceil(x)), h = Math.floor(s_ / 3600), m = Math.floor(s_ % 3600 / 60), sec = s_ % 60;
+    return h ? `${h}:${pad2(m)}:${pad2(sec)}` : `${pad2(m)}:${pad2(sec)}`;
+  }
+  function tick() {  // every second while open: the countdown, and the next candle as soon as it is due
+    if (!S.open || document.visibilityState === "hidden" || !S.data) return;
+    const left = barLeft();
+    if (left !== null) { S.wasCounting = true; requestDraw(); return; }
+    if (S.wasCounting) {  // the candle just closed: fetch the next one (Yahoo has it a few seconds later)
+      S.wasCounting = false;
+      requestDraw();
+      setTimeout(() => { if (S.open) load(true); }, 3000);
+    }
+  }
+
+  function toggleLive() {
+    if (S.live) { stopLive(); status(""); }
+    else { S.live = true; S.liveToken = (S.liveToken || 0) + 1; liveTick(S.liveToken); status("live: every 2 s"); }
+    markActive();
+  }
+  function stopLive() {
+    S.live = false;
+    S.liveToken = (S.liveToken || 0) + 1;
+    clearTimeout(S.liveTimer);
+    if (liveBtn) liveBtn.setAttribute("aria-pressed", "false");
+  }
+  async function liveTick(token) {
+    clearTimeout(S.liveTimer);
+    if (!S.live || token !== S.liveToken || !S.open || document.visibilityState === "hidden") return;
+    const sym = S.sym, code = S.code, ext = extOn(code);
+    let next = 2000;
+    try {
+      const res = await fetch(`/api/tv/${encodeURIComponent(sym)}/live?i=${encodeURIComponent(code)}${ext ? "&x=1" : ""}&s=${S.sid}`, { cache: "no-store" });
+      if (token !== S.liveToken || sym !== S.sym) return;
+      if (res.status === 429) {
+        let msg = "live is full";
+        try { msg = (await res.json()).error || msg; } catch (_) { /* not JSON */ }
+        stopLive(); markActive(); status(""); message(`${msg.charAt(0).toUpperCase()}${msg.slice(1)}.`, "wait");
+        setTimeout(() => { if (msgBox && msgBox.className.includes("wait")) message(""); }, 6000);
+        return;
+      }
+      if (res.ok) {
+        const p = await res.json();
+        if (token !== S.liveToken) return;
+        applyLive(p, code, ext);
+        if (!p.open) { status("live: market closed"); next = 15000; } else status("live: every 2 s");
+      } else next = 5000;
+    } catch (_) { next = 5000; }
+    S.liveTimer = setTimeout(() => liveTick(token), next);
+  }
+  function applyLive(p, code, ext) {  // today's 1-minute bars → the last candle, and new candles as they start
+    const d = S.data;
+    if (!d || !d.n || d.code !== code || d.ext !== ext || !Array.isArray(p.bars)) return;
+    const n = d.n - 1, start = d.t[n];
+    const end = d.step ? start + d.step : d.code === "1D" ? start + 20 * 3600 : Infinity;
+    let h = d.h[n], l = d.l[n], c = d.c[n], vol = 0, seen = false;
+    const later = new Map();  // candle start → [o, h, l, c, v] of the 1-minute bars past the last candle
+    for (const [t, bo, bh, bl, bc, bv] of p.bars) {
+      if (t < start) continue;
+      if (t < end) { seen = true; h = Math.max(h, bh); l = Math.min(l, bl); c = bc; vol += bv || 0; continue; }
+      if (!d.step) continue;
+      const k = start + Math.floor((t - start) / d.step) * d.step;
+      const b = later.get(k);
+      if (b) { b[1] = Math.max(b[1], bh); b[2] = Math.min(b[2], bl); b[3] = bc; b[4] += bv || 0; }
+      else later.set(k, [bo, bh, bl, bc, bv || 0]);
+    }
+    if (seen) {
+      d.h[n] = h; d.l[n] = l; d.c[n] = c;
+      if (d.step || d.code === "1D") d.vol[n] = Math.max(d.vol[n], vol);
+    }
+    for (const [t, b] of [...later.entries()].sort((a, b_) => a[0] - b_[0])) appendBar(d, t, b);
+    const last = p.bars[p.bars.length - 1];
+    if (last && (later.size || (!d.step && last[0] >= end))) {
+      // the chart (and its indicators) is behind the market: ask for it again, at most every 20 s
+      const now = Date.now();
+      if (!S.liveReloadAt || now - S.liveReloadAt > 20000) { S.liveReloadAt = now; load(true); }
+    }
+    if (!seen && !later.size) return;
+    if (d.regular && p.time >= d.regular.start && p.time < d.regular.end) d.price = d.c[d.n - 1];  // the header: regular hours
+    if (later.size && S.view.right >= d.n - 1 - later.size - 1.5) S.view.right += later.size;  // following the last bar
+    updateQuote();
+    requestDraw();
+  }
+
+  function appendBar(d, t, [o, h, l, c, v]) {  // a candle the server hasn't built yet (indicators come with the next fetch)
+    const n = d.n;
+    const grow = (a, val) => { const b = new a.constructor(n + 1); b.set(a); b[n] = val; return b; };
+    for (const k of ["sma50", "sma100", "sma200", "ema8", "ema21", "rsi", "macd", "signal", "hist", "bbu", "bbm", "bbl"]) d[k] = grow(d[k], NaN);
+    d.t = grow(d.t, t); d.o = grow(d.o, o); d.h = grow(d.h, h); d.l = grow(d.l, l); d.c = grow(d.c, c); d.vol = grow(d.vol, v);
+    const dm = Math.round((t - d.t[n - 1]) / 60);  // its calendar: the previous candle's, moved on
+    let mins = d.mins[n - 1] + dm, D = d.D[n - 1], W = d.W[n - 1];
+    if (mins >= 1440) { mins -= 1440; D += 1; W = (W + 1) % 7; }
+    d.Y = grow(d.Y, d.Y[n - 1]); d.M = grow(d.M, d.M[n - 1]); d.D = grow(d.D, D); d.W = grow(d.W, W); d.mins = grow(d.mins, mins);
+    if (d.paint) {  // the state carries on until the next fetch decides
+      const bull = "gdLB".includes(d.paint[n - 1]);
+      d.paint += bull ? (c >= o ? "g" : "d") : (c >= o ? "x" : "r");
+    }
+    if (d.sess) d.sess += d.sess[n - 1];
+    d.n = n + 1;
   }
 
   /* ── time axis: calendar boundaries, the most significant first, never closer than ~90 px ───────────────── */
@@ -1403,11 +1533,11 @@
     c.fillText(text, L.plotW + 6 * S.dpr, y);
   }
 
-  function signalSpan(d, i) {  // "BLUE 3 bars ago" (and a TRIM since), when the paint is on
+  function signalSpan(d, i) {  // "BUY 3 bars ago" (and a TRIM since), when the paint is on
     if (!S.show.paint) return null;
     const sg = lastSignal(d, i);
     if (!sg) return null;
-    return el("span", { class: `tv-l tv-sig tv-sig-${sg.kind.toLowerCase()}`, title: "The last BLUE / PINK flip at this bar" },
+    return el("span", { class: `tv-l tv-sig tv-sig-${sg.kind.toLowerCase()}`, title: "The last BUY / SELL signal at this bar" },
       el("b", { text: sg.kind }), ` ${sg.ago ? `${sg.ago} bar${sg.ago === 1 ? "" : "s"} ago` : "now"}`,
       sg.trimAgo !== null ? el("b", { class: "tv-sig-trim", text: ` · TRIM ${sg.trimAgo || "now"}` }) : null);
   }

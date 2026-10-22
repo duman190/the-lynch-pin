@@ -526,3 +526,53 @@ def test_public_health_shows_only_the_count():
     from ui.server import PortalApp
     out = PortalApp._public_health({"tv": {"viewers": 3, "limit": 50, "fetches": 9, "series_mb": 1.0}})
     assert out["tv"] == {"viewers": 3, "limit": 50}
+
+
+# ── live last candle and the bar-boundary refresh ───────────────────────────────────────────────────────────────────
+def test_live_payload_takes_the_last_bars_and_the_bar_in_progress():
+    from ui.tradingview import live_payload
+    ts = [MON + 13 * H + 30 * M + k * M for k in range(5)]
+    raw = json.loads(yahoo(ts, c=[10, 11, 12, 13, None], o=[10, 11, 12, 13, 13.5], h=[11, 12, 13, 14, 14], l=[9, 10, 11, 12, 13],
+                           meta={"regularMarketPrice": 13.75, "regularMarketTime": ts[-1] + 20}))
+    p = live_payload(raw, ext=False)
+    assert [b[0] for b in p["bars"]] == ts and p["bars"][-1][4] == 13.75 and p["price"] == 13.75
+    assert p["bars"][-1][2] == 14 and p["bars"][-1][3] == 13
+
+
+def test_live_is_shared_cached_and_limited():
+    clock = Clock()
+    minute = yahoo([MON + 13 * H + 30 * M + k * M for k in range(3)])
+    y = FakeYahoo(body=minute)
+    tv = make_tv(y, clock=clock)
+    tv.live_limit = 2
+    r1 = tv.live("AAA", ip="1.1.1.1", sid="viewer01")
+    r2 = tv.live("AAA", ip="1.1.1.2", sid="viewer02")
+    assert r1.status == r2.status == 200 and y.calls == [("AAA", "live")]          # one Yahoo read for both
+    assert json.loads(r1.body(False))["bars"][-1][4] == 102
+    r3 = tv.live("AAA", ip="1.1.1.3", sid="viewer03")
+    assert r3.status == 429 and r3.reason == "tv_live"                              # two live viewers at a time
+    clock.t += 3                                                                     # LIVE_TTL later: read again
+    assert tv.live("AAA", ip="1.1.1.1", sid="viewer01", ext=True).status == 200 and y.calls[-1] == ("AAA", "live:ext")
+    tv.release("1.1.1.2", "viewer02")                                                # closing the chart frees it
+    assert tv.live("AAA", ip="1.1.1.3", sid="viewer03").status == 200
+    clock.t += 11                                                                    # stopped polling: place freed
+    assert tv.live("BBB", ip="1.1.1.4", sid="viewer04").status == 200
+    assert tv.status()["live_limit"] == 2
+    tv.shutdown()
+
+
+def test_open_market_series_expire_at_the_next_bar():
+    reg_start = MON + 13 * H + 30 * M
+    tv = make_tv(force_open=False, wall=lambda: reg_start + 9 * M + 50)            # 9m50s into the session
+    ttl, live = tv._ttl("5m", {"regular": {"start": reg_start, "end": reg_start + 390 * M}})
+    assert live and ttl == 10 + 3                                                   # the 5m bar closes in 10 s (not 60)
+    ttl, _ = tv._ttl("15m", {"regular": {"start": reg_start, "end": reg_start + 390 * M}})
+    assert ttl == OPEN_TTL["15m"]                                                   # 5m10s to go: the usual 60 s
+    ttl, _ = tv._ttl("1d", {"regular": {"start": reg_start, "end": reg_start + 390 * M}})
+    assert ttl == OPEN_TTL["1d"]
+    tv.shutdown()
+
+
+def test_query_params_for_live():
+    assert tvdata.query_params("live") ["interval"] == "1m" and tvdata.query_params("live")["includePrePost"] == "false"
+    assert tvdata.query_params("live:ext")["includePrePost"] == "true" and tvdata.query_params("live:ext")["range"] == "1d"

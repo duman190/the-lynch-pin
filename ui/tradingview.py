@@ -50,6 +50,10 @@ FETCH_TIMEOUT = 20
 SERIES_BYTES = 128 << 20   # raw Yahoo series kept in memory (~50-500 KB each)
 CHART_BYTES = 64 << 20     # built charts kept (gzip, ~1-100 KB each)
 PER_VISITOR = 2            # --public: open trading views per visitor IP (two tabs)
+LIVE_TTL = 2.0             # s: the live last candle is read from Yahoo at most this often per ticker, for every live viewer
+LIVE_IDLE = 10.0           # s: a live viewer that stopped polling (every 2 s) gives its live place up
+LIVE_BARS = 60             # 1-minute bars sent to a live page (it updates its last candle from those after its start)
+BASE_STEP = {"1m": 60, "2m": 120, "5m": 300, "15m": 900, "60m": 3600}
 
 
 class Series:
@@ -132,6 +136,11 @@ class TradingView:
         self._fetched = collections.deque()  # clock of each chart fetch in the last minute (for /api/health)
         self._viewer_fetched = {}            # viewer → deque of the same (per-viewer cap)
         self._sleep = time.sleep
+        # live last candle: a few viewers at a time (each costs up to 30 Yahoo requests a minute for its ticker)
+        self.live_limit = max(0, int(getattr(settings, "tv_live", 2) or 0))
+        self._live_leases = {}  # (ip, sid) → last live poll (clock)
+        self._live = {}         # (sym, ext) → (fetched clock, payload bytes gzip)
+        self._live_inflight = {}
         workers = max(1, int(getattr(settings, "tv_fetches", 4) or 4))
         self._pool = concurrent.futures.ThreadPoolExecutor(workers, thread_name_prefix="lynch-tv-yahoo")
         self.fetch_workers = workers
@@ -173,6 +182,7 @@ class TradingView:
     def release(self, ip, sid):
         with self._lock:
             self._leases.pop((ip, sid or ""), None)
+            self._live_leases.pop((ip, sid or ""), None)
 
     def viewers(self):
         with self._lock:
@@ -204,6 +214,10 @@ class TradingView:
         if not (isinstance(start, int) and isinstance(end, int)):
             return OPEN_TTL[base], True
         if start <= now < end + 60:
+            step = BASE_STEP.get(base)
+            if step:  # fresh bars right after each bar closes: a series expires at the next bar boundary (+3 s)
+                nxt = start + -(-(now - start) // step) * step
+                return int(max(3, min(OPEN_TTL[base], nxt - now + 3))), True
             return OPEN_TTL[base], True
         if now < start:  # before today's open: fresh bars as soon as it opens
             return int(max(OPEN_TTL[base], min(CLOSED_TTL, start - now + 5))), False
@@ -390,6 +404,70 @@ class TradingView:
             return Reply(304, etag=ch.etag, headers=headers)
         return Reply(200, gz=ch.gz, etag=ch.etag, headers=headers)
 
+    # ── live: the last candle every 2 s ─────────────────────────────────────────────────────────────────────────
+    def live(self, sym, ip=None, sid=None, ext=False):
+        """Today's last 1-minute bars and price for the page's live last candle (gzipped JSON), shared by every live
+        viewer of ``sym`` and read from Yahoo at most every LIVE_TTL seconds. At most ``live_limit`` live viewers."""
+        self._count("live_requests")
+        refused = self.admit(ip, sid)  # a live viewer is a viewer too
+        if refused is not None:
+            return refused
+        key, now = (ip, sid or ""), self._clock()
+        with self._lock:
+            for k in [k for k, t in self._live_leases.items() if now - t > LIVE_IDLE]:
+                del self._live_leases[k]
+            if key not in self._live_leases and len(self._live_leases) >= self.live_limit:
+                self._count("live_refused")
+                wait = max(1, int(LIVE_IDLE - (now - min(self._live_leases.values(), default=now))) + 1)
+                return Reply(429, error=f"live is in use ({self.live_limit} at a time: it spends Yahoo's quota) — the chart "
+                                        "still refreshes every bar", reason="tv_live", retry_after=wait)
+            self._live_leases[key] = now
+            skey = (sym, bool(ext))
+            hit = self._live.get(skey)
+            if hit is not None and now - hit[0] < LIVE_TTL:
+                return Reply(200, gz=hit[1])
+            wait = self._paused()
+            if wait:
+                if hit is not None:
+                    return Reply(200, gz=hit[1], headers={"X-TV-Stale": "1"})
+                return Reply(503, error=f"Yahoo Finance is rate-limiting this server — retrying in {wait} s",
+                             reason="yahoo_paused", retry_after=wait)
+            fut = self._live_inflight.get(skey)
+            if fut is None:
+                fut = self._live_inflight[skey] = self._pool.submit(self._live_fetch, skey)
+        try:
+            fut.result(timeout=FETCH_TIMEOUT + 5)
+        except Exception:
+            pass
+        with self._lock:
+            hit = self._live.get(skey)
+        if hit is None:
+            return Reply(502, error="Yahoo Finance did not answer", retry_after=5)
+        return Reply(200, gz=hit[1], headers={"X-TV-Stale": "1"} if self._clock() - hit[0] > 3 * LIVE_TTL else {})
+
+    def _live_fetch(self, skey):
+        import json
+        sym, ext = skey
+        self._count("live_fetches")
+        payload = None
+        status = None
+        try:
+            status, body = self.fetch(sym, "live:ext" if ext else "live")
+            if status == 200:
+                payload = live_payload(json.loads(body), ext)
+        except Exception:
+            payload = None
+        with self._lock:
+            self._live_inflight.pop(skey, None)
+            if payload is not None:
+                self._live[skey] = (self._clock(), gzip.compress(json.dumps(payload).encode(), 2))
+                while len(self._live) > 64:
+                    self._live.pop(next(iter(self._live)))
+        if status == 429:
+            self._count("yahoo_429")
+            if self.jobs is not None and hasattr(self.jobs, "yahoo_throttled"):
+                self.jobs.yahoo_throttled(f"trading view live {sym}")
+
     def status(self):
         with self._lock:
             self._sweep(self._clock())
@@ -399,6 +477,8 @@ class TradingView:
                    "charts": len(self._charts), "charts_mb": round(self._chart_bytes / 1048576, 1),
                    "fetching": len(self._inflight), "fetch_workers": self.fetch_workers,
                    "yahoo_last_min": sum(1 for t in self._fetched if self._clock() - t < 60),
+                   "live": sum(1 for t in self._live_leases.values() if self._clock() - t <= LIVE_IDLE),
+                   "live_limit": self.live_limit,
                    "yahoo_rpm": self.yahoo_rpm}
         with self._counters_lock:
             out.update(self.counters)
@@ -406,3 +486,31 @@ class TradingView:
 
     def shutdown(self):
         self._pool.shutdown(wait=False)
+
+
+def live_payload(chart, ext):
+    """Yahoo's 1-minute chart JSON → {price, time, open, bars: [[t, o, h, l, c, v], …]} (the last LIVE_BARS)."""
+    r = (chart.get("chart", {}).get("result") or [None])[0]
+    if not r:
+        return None
+    m = r.get("meta") or {}
+    ts = r.get("timestamp") or []
+    q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+    cols = [q.get(k) or [] for k in ("open", "high", "low", "close", "volume")]
+    price, ptime = m.get("regularMarketPrice"), m.get("regularMarketTime")
+    bars = []
+    for i in range(max(0, len(ts) - LIVE_BARS), len(ts)):
+        o, h, lo, c, v = (col[i] if i < len(col) else None for col in cols)
+        if c is None and i == len(ts) - 1 and isinstance(price, (int, float)):
+            c = price  # Yahoo's bar in progress can come without its close
+        if None in (o, h, lo, c):
+            continue
+        bars.append([ts[i], o, max(h, o, c), min(lo, o, c), c, v or 0])
+    cur = m.get("currentTradingPeriod") or {}
+    start = (cur.get("pre") if ext else cur.get("regular")) or {}
+    end = (cur.get("post") if ext else cur.get("regular")) or {}
+    now = time.time()
+    is_open = isinstance(start.get("start"), int) and isinstance(end.get("end"), int) and start["start"] <= now < end["end"]
+    if bars:  # with extended hours the newest trade is the newest bar's close, not the regular session's price
+        price, ptime = (bars[-1][4], bars[-1][0]) if ext or not isinstance(price, (int, float)) else (price, ptime)
+    return {"price": price, "time": ptime, "open": bool(is_open), "bars": bars}

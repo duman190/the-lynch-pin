@@ -55,6 +55,7 @@ REJECTIONS = {
     "tv_full": (429, "Trading view full"),
     "tv_visitor": (429, "Trading views per visitor"),
     "tv_rate": (429, "Trading view: new charts a minute"),
+    "tv_live": (429, "Trading view: live full"),
     "bad_ticker": (400, "Invalid ticker"),
     "read_only": (405, "Write method"),
     "yahoo_429": (429, "Yahoo rate limit"),
