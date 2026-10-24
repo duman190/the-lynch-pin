@@ -123,8 +123,8 @@ def parse_multpl(page):
 
 
 def fetch_shiller(url=SHILLER_URL):
-    from curl_cffi.requests import Session
-    with Session(impersonate="chrome", timeout=30) as s:
+    from engine.http_session import browser_session
+    with browser_session(timeout=30) as s:
         r = s.get(url)
     if r.status_code != 200:
         raise RuntimeError(f"{url}: HTTP {r.status_code}")

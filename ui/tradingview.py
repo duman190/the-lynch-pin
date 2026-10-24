@@ -100,8 +100,8 @@ class YahooFetcher:
         if self._session is None:
             with self._lock:
                 if self._session is None:
-                    from curl_cffi import requests as cr
-                    self._session = cr.Session(impersonate="chrome")
+                    from engine.http_session import browser_session  # never decompressed in libcurl
+                    self._session = browser_session()
         return self._session
 
     def __call__(self, sym, base):

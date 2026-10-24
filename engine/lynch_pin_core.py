@@ -5,7 +5,7 @@ import warnings
 import time
 import json
 from datetime import datetime
-from curl_cffi.requests import Session
+from engine.http_session import browser_session
 
 # Silence internal warnings for cleaner logs
 warnings.filterwarnings("ignore", category=UserWarning, module='urllib3')
@@ -18,7 +18,8 @@ def get_robust_session():
     """
     # yfinance strictly requires curl_cffi to bypass Yahoo's anti-bot measures.
     # 'impersonate="chrome"' makes the request look like a standard browser.
-    session = Session(
+    # Replies are never decompressed in libcurl (engine/http_session.py: the Brotli CVE-2026-111497).
+    session = browser_session(
         impersonate="chrome",
         timeout=30,      # Give Yahoo 30s before timing out
         verify=True
@@ -30,7 +31,7 @@ GLOBAL_SESSION = get_robust_session()
 
 # SEC EDGAR config
 _SEC_HEADERS = {'User-Agent': 'LynchPin/1.0 (contact@example.com)'}
-_SEC_SESSION = Session(impersonate="chrome", timeout=15, verify=True)
+_SEC_SESSION = browser_session(timeout=15, verify=True)
 _CIK_MAP = None  # Lazy-loaded ticker->CIK map
 _CIK_MAP_LOADED = False
 

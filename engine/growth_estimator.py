@@ -10,9 +10,9 @@ Env vars (optional — graceful degradation if missing):
 import os
 import time
 import pandas as pd
-from curl_cffi.requests import Session
+from engine.http_session import browser_session
 
-_SESSION = Session(impersonate="chrome", timeout=15, verify=True)
+_SESSION = browser_session(timeout=15, verify=True)
 
 FMP_KEY = os.environ.get("FMP_API_KEY")
 
