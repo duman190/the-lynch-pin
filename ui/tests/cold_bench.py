@@ -9,7 +9,7 @@ seen today (--offset), otherwise lookups are cache hits. Run it with the FMP key
 so the benchmark does not spend the FMP daily quota.
 
 --visitors: each lookup comes from its own visitor IP, sent as CF-Connecting-IP the way Cloudflare's
-tunnel does. Needed against --public, which allows one analysis at a time per visitor: without it every
+tunnel does. Needed against --public, which allows 2 analyses at a time per visitor: without it every
 lookup comes from 127.0.0.1 and waits for the previous one.
 --home: each visitor first loads the home page (HTML, CSS, scripts, artwork, Latest scans with its
 chart previews, Socials with its post images), as a browser does before the search.

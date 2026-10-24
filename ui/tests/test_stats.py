@@ -278,7 +278,7 @@ def test_summary(rec):
     rj = s["rejections"]
     assert rj["requests"] == 12 and rj["total"] == 1 and rj["rate"] == round(100 / 12, 3)  # Yahoo isn't a request
     by = {r["reason"]: r for r in rj["reasons"]}
-    assert by["visitor_busy"]["code"] == 429 and by["visitor_busy"]["label"] == "One analysis per visitor"
+    assert by["visitor_busy"]["code"] == 429 and by["visitor_busy"]["label"] == "Analyses per visitor"
     assert by["yahoo_429"]["upstream"] and by["yahoo_429"]["pct"] is None
     assert len(rj["daily"]) == 8 and rj["daily"][-1]["n"] == 1
     ai = s["ai"]

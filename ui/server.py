@@ -721,7 +721,7 @@ def build_app(settings, with_search=True, with_ai=True):
             workers = settings.analysis_workers(with_ai=llm is not None)
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
                               allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
-                              max_per_client=1 if settings.public else None,  # --public: one per visitor
+                              max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
                               stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown)
         except ImportError:
             jobs = None
@@ -785,7 +785,7 @@ def parse_args(argv=None):
                         "(default: only an AI on/off dot)")
     p.add_argument("--public", action="store_true", default=s.public,
                    help="serve the internet through a tunnel on this machine (e.g. cloudflared → localhost): any "
-                        "Host name, visitor IPs from CF-Connecting-IP, one analysis at a time per visitor, "
+                        "Host name, visitor IPs from CF-Connecting-IP, 2 analyses at a time per visitor (LYNCH_UI_VISITOR_ANALYSES), "
                         "no /api/cache. The portal listens on loopback only (not with --lan); the stats page "
                         "(--stats-port) answers LAN / Tailscale clients only")
     p.add_argument("--social-read-at", default=s.social_read_at, metavar="HH:MM",
@@ -906,8 +906,8 @@ def main(argv=None):
         hosts = netguard.extra_allowed()[1]
         print(f"🌐 --public: only the local tunnel can connect; "
               f"{'Host ' + ', '.join(hosts) + ' (or this machine)' if hosts else 'any Host name (--allow-host narrows it)'}; "
-              "visitor IPs from CF-Connecting-IP; one analysis at a time per visitor; /api/cache off; requests with a "
-              "body refused. No login: put Cloudflare Access in front to restrict who can use it.", flush=True)
+              f"visitor IPs from CF-Connecting-IP; {settings.visitor_analyses} analyses at a time per visitor; /api/cache "
+              "off; requests with a body refused. No login: put Cloudflare Access in front to restrict who can use it.", flush=True)
     nets, hosts = netguard.extra_allowed()
     if nets or hosts:
         print(f"🔓 Also allowing: {', '.join(nets + hosts)}", flush=True)

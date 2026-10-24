@@ -1,4 +1,4 @@
-"""--public: served to the internet through a local tunnel (cloudflared) — one analysis per visitor."""
+"""--public: served to the internet through a local tunnel (cloudflared) — a few analyses per visitor."""
 import http.client
 import json
 import threading
@@ -69,7 +69,7 @@ def test_public_env(monkeypatch):
     assert parse_args([])[0].public is True
 
 
-# ── one analysis per visitor ────────────────────────────────────────────────
+# ── analyses per visitor ────────────────────────────────────────────────────
 def test_one_analysis_at_a_time_per_visitor(settings, gate):
     httpd, jm = serve(settings, gate)
     try:
@@ -94,6 +94,20 @@ def test_one_analysis_at_a_time_per_visitor(settings, gate):
         assert r.status == 200 and nxt["status"] in ("queued", "running", "done")
         r, cached = get(httpd, "/api/ticker/MSFT", ip="203.0.113.5")  # cache hits are never limited
         assert r.status == 200 and cached["cached"] is True
+    finally:
+        stop(httpd, jm)
+
+
+def test_two_analyses_per_visitor_by_default(settings, gate):
+    assert Settings().visitor_analyses == 2
+    httpd, jm = serve(settings, gate, max_per_client=settings.visitor_analyses)
+    try:
+        for sym in ("MSFT", "AAPL"):
+            r, a = get(httpd, f"/api/ticker/{sym}", ip="203.0.113.5")
+            assert r.status == 200 and a["status"] in ("queued", "running")
+        r, busy = get(httpd, "/api/ticker/NVDA", ip="203.0.113.5")
+        assert r.status == 429 and busy["reason"] == "visitor_busy"
+        assert "2 analyses at a time per visitor" in busy["error"] and "MSFT" in busy["error"] and "AAPL" in busy["error"]
     finally:
         stop(httpd, jm)
 

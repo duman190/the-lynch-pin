@@ -363,8 +363,10 @@ class JobManager:
             if client is not None and self.max_per_client:
                 mine = [j.sym for j in self._inflight.values() if j.owner == client]
                 if len(mine) >= self.max_per_client:
+                    n = self.max_per_client
                     return {"ticker": sym, "status": "busy", "retry_after": 5, "reason": "visitor_busy",
-                            "error": f"one analysis at a time per visitor — waiting for {', '.join(mine)} to finish"}
+                            "error": f"{'one analysis' if n == 1 else f'{n} analyses'} at a time per visitor — "
+                                     f"waiting for {', '.join(mine)} to finish"}
             if len(self._queue) >= self.max_queue:
                 return {"ticker": sym, "status": "busy", "retry_after": 10, "reason": "queue_full",
                         "error": f"analysis queue is full ({self.max_queue} tickers) — try again shortly"}

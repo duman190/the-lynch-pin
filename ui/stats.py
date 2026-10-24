@@ -49,7 +49,7 @@ REJECTIONS = {
     "outside_lan": (403, "Client outside the LAN"),
     "foreign_host": (403, "Foreign Host header"),
     "tunnel_only": (403, "Not through the tunnel"),
-    "visitor_busy": (429, "One analysis per visitor"),
+    "visitor_busy": (429, "Analyses per visitor"),
     "queue_full": (429, "Analysis queue full"),
     "ai_queue_full": (429, "AI queue full"),
     "tv_full": (429, "Trading view full"),

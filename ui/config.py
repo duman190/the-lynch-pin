@@ -63,7 +63,7 @@ class Settings:
     port: int = field(default_factory=lambda: _env_int("LYNCH_UI_PORT", 8765))
     lan: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_LAN"))
     # Served to the internet through a tunnel on this machine (e.g. cloudflared → 127.0.0.1): any Host
-    # header, the visitor's IP from CF-Connecting-IP, one analysis at a time per visitor, less metadata.
+    # header, the visitor's IP from CF-Connecting-IP, visitor_analyses at a time per visitor, less metadata.
     public: bool = field(default_factory=lambda: _env_bool("LYNCH_UI_PUBLIC"))
     # -v: the page shows the local model's name, its token counts and thinking setting, and the cache
     # chip. Off by default: the header shows only "AI" with a green/red dot.
@@ -122,6 +122,9 @@ class Settings:
     # Seconds after a ticker's last analysis before ↻ Refresh re-runs it (0 = any time): one visitor looping on a
     # refresh would otherwise spend those 225 FMP requests in ~15 minutes
     refresh_cooldown: int = field(default_factory=lambda: _env_int("LYNCH_UI_REFRESH_COOLDOWN", 300))
+    # --public: cold lookups one visitor (IP; IPv6 /64) may have running or queued at once. 2 of the ~160 a minute
+    # the workers manage (2026-10-24) still leaves room for dozens of visitors at once
+    visitor_analyses: int = field(default_factory=lambda: _env_int("LYNCH_UI_VISITOR_ANALYSES", 2))
     # Tickers cached per day: 2500 is about what the AI writes in a day at full load before Gemini's daily cap runs
     # out (39 overviews a minute, 24 local + 15 Gemini, for 975 / 15 = 65 minutes). An entry is ~35 KB of RAM with
     # its AI overview (~21 KB without), so 2500 cost ~85 MB (measured: server RSS +80 MB over 500, and cold lookups
