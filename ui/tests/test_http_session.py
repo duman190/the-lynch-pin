@@ -82,3 +82,13 @@ def test_every_portal_session_is_a_browser_session():
         assert isinstance(s, BrowserSession)
         assert s.curl_options.get(CurlOpt.HTTP_CONTENT_DECODING) == 0
         assert s.headers.get("Accept-Encoding") == "gzip, deflate"
+
+
+def test_a_decompression_bomb_or_truncated_body_is_refused(monkeypatch):
+    from engine import http_session
+    monkeypatch.setattr(http_session, "MAX_DECODED", 1000)
+    with pytest.raises(ContentDecodingError, match="more than"):
+        http_session.DECODERS["gzip"](gzip.compress(b"0" * 5000))
+    with pytest.raises(ContentDecodingError, match="truncated"):
+        http_session.DECODERS["gzip"](gzip.compress(BODY)[:-6])
+    assert http_session.DECODERS["deflate"](zlib.compress(b"0" * 1000)) == b"0" * 1000

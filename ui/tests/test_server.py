@@ -300,3 +300,67 @@ def test_socket_settings_for_keepalive_latency_and_bursts(server):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ── security audit leftovers ────────────────────────────────────────────────
+def fetch(httpd, path, headers):
+    conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=10)
+    conn.request("GET", path, headers=headers)
+    r = conn.getresponse()
+    body = r.read()
+    conn.close()
+    return r, body
+
+
+@pytest.mark.parametrize("site,api_ok", [("cross-site", False), ("same-site", False), ("same-origin", True),
+                                         ("none", True), (None, True)])
+def test_another_sites_page_cant_call_the_api(server, site, api_ok):
+    """A page elsewhere could start lookups / AI overviews from a browser on this machine or the LAN with a blind
+    <img src=http://127.0.0.1:8765/api/ticker/X?refresh=1>: the browser's Sec-Fetch-Site gives it away."""
+    h = {"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "no-cors"} if site else {}
+    r, body = fetch(server, "/api/health", h)
+    assert (r.status == 200) is api_ok
+    if not api_ok:
+        assert r.status == 403 and json.loads(body)["error"] == "cross-site request"
+    assert fetch(server, "/", dict(h, **{"Sec-Fetch-Mode": "navigate"}))[0].status == 200  # a link to the portal
+
+
+def test_stdlib_error_pages_carry_the_security_headers(server):
+    import socket
+    for req, code in ((b"GARBAGE\r\n\r\n", b"400"), (b"BREW / HTTP/1.1\r\nHost: localhost\r\n\r\n", b"501")):
+        c = socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5)
+        c.sendall(req)
+        out = b""
+        while chunk := c.recv(65536):
+            out += chunk
+        c.close()
+        head, _, body = out.partition(b"\r\n\r\n")
+        assert head.startswith(b"HTTP/1.") and b" " + code + b" " in head.split(b"\r\n")[0]
+        for h in (b"Content-Security-Policy", b"X-Content-Type-Options: nosniff", b"X-Frame-Options",
+                  b"Content-Type: application/json"):
+            assert h in head, (req, h)
+        assert json.loads(body)["status"] == int(code)
+
+
+def test_refusal_hint_escapes_the_host_header(tmp_path, capsys):
+    import socket
+    from ui import server as srv
+    s = Settings()
+    s.cache_dir = str(tmp_path / "cache")
+    httpd = serve(PortalApp(s))
+    try:
+        srv._REFUSED.clear()
+        c = socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=5)
+        c.sendall(b"GET /api/health HTTP/1.1\r\nHost: x\x1b]0;T\x07\r\n z\r\n\r\n")
+        assert b" 403 " in c.recv(65536).split(b"\r\n")[0]
+        c.close()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    line = [l for l in capsys.readouterr().err.splitlines() if "unexpected Host" in l][0]
+    assert not any(ord(ch) < 0x20 or 0x7f <= ord(ch) < 0xa0 for ch in line), line
+
+
+def test_to_json_survives_a_lone_surrogate():
+    """Third-party text (a company name, a post) with a lone surrogate must not break every reply for that ticker."""
+    assert json.loads(to_json({"name": "Acme \ud800 Corp"}))["name"].startswith("Acme ")

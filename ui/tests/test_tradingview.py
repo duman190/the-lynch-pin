@@ -610,3 +610,23 @@ def test_open_market_series_expire_at_the_next_bar():
 def test_query_params_for_live():
     assert tvdata.query_params("live") ["interval"] == "1m" and tvdata.query_params("live")["includePrePost"] == "false"
     assert tvdata.query_params("live:ext")["includePrePost"] == "true" and tvdata.query_params("live:ext")["range"] == "1d"
+
+
+def test_an_oversized_yahoo_reply_never_reaches_the_parser(monkeypatch):
+    """The native parser runs in-process: a huge allocation there aborts the whole portal, so a reply far beyond
+    any real chart (a compromised or broken upstream) is refused before it."""
+    import ui.tradingview as tv
+
+    class Reply:
+        status_code, content = 200, b"x" * 2048
+
+    class Session:
+        def get(self, *a, **kw):
+            return Reply()
+
+    monkeypatch.setattr(tv, "MAX_REPLY", 1024)
+    f = tv.YahooFetcher()
+    f._session = Session()
+    assert f("MSFT", "1d") == (502, b"")
+    Reply.content = b"x" * 1000
+    assert f("MSFT", "1d") == (200, b"x" * 1000)

@@ -33,6 +33,10 @@ from ui.analysis import STAGES, TickerAnalyzer
 FINAL = ("done", "nodata", "error")
 RATE_LIMIT_BACKOFF = (30.0, 600.0)  # first pause, longest pause (doubles per throttled probe)
 RATE_LIMIT_RETRIES = 2              # re-queues of a lookup that Yahoo throttled before it gives up
+# Live AI streams (SSE) at once: each holds an HTTP thread and a socket until its overview ends (up to ai_deadline)
+AI_STREAMS = 64
+AI_STREAMS_PER_CLIENT = 4           # one visitor's tabs (--public; elsewhere only the total applies)
+AI_STREAMS_FULL = object()          # ai_events(): over the caps (the page polls the JSON instead)
 
 
 class DayStore:
@@ -187,6 +191,31 @@ class AIStream:
                     "metrics": dict(self.metrics), "reasoning_tokens": self.metrics.get("reasoning_tokens", 0)}
 
 
+class _Subscription:
+    """An SSE subscriber's events, counted against the stream caps until exhausted or closed (idempotent)."""
+
+    def __init__(self, events, release):
+        self._events, self._release = events, release
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            return next(self._events)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        release, self._release = self._release, None
+        if release is not None:
+            self._events.close()
+            release()
+
+    __del__ = close
+
+
 class AIJob:
     __slots__ = ("sym", "entry", "status", "result", "error", "created", "started", "finished", "gen", "stream",
                  "warm", "backend")
@@ -247,6 +276,9 @@ class JobManager:
         self._ai_queue = collections.deque()
         self._ai_inflight = {}
         self._recent_ai = {}
+        self.max_ai_streams, self.max_ai_streams_per_client = AI_STREAMS, AI_STREAMS_PER_CLIENT
+        self._ai_streams = 0            # live SSE subscribers
+        self._ai_client_streams = {}    # visitor → its live SSE subscribers
         self._ai_running = {}   # ai worker token → its running AIJob
         self._ai_live = set()   # tokens of the AI workers that own the queue; a timed-out worker's is dropped
         self._ai_token = 0
@@ -531,8 +563,10 @@ class JobManager:
         return out
 
     # ── live AI stream (Server-Sent Events) ──────────────────────────────────
-    def ai_events(self, sym, heartbeat=10.0, coalesce=0.08):
-        """Event generator for the AI job of ``sym`` (in flight or just finished), or None.
+    def ai_events(self, sym, heartbeat=10.0, coalesce=0.08, client=None):
+        """Event iterator for the AI job of ``sym`` (in flight or just finished), None, or AI_STREAMS_FULL when
+        the job is still running and ``max_ai_streams`` (or ``client``'s ``max_ai_streams_per_client``) are open.
+        A running job's subscriber counts until its iterator ends or is closed: the caller closes it.
 
         Yields ``(event, data)``: ``snapshot`` first (full state, so reconnects are seamless), then
         ``delta`` (new reasoning text, re-parsed sections when the answer changed, metrics),
@@ -541,9 +575,26 @@ class JobManager:
         """
         with self._cv:
             job = self._ai_inflight.get(sym) or self._recent_ai.get(sym)
-        if job is None:
-            return None
-        return self._ai_event_loop(job, heartbeat, coalesce)
+            if job is None:
+                return None
+            if job.stream.final is not None:  # finished: the replay returns at once
+                return self._ai_event_loop(job, heartbeat, coalesce)
+            mine = self._ai_client_streams.get(client, 0)
+            if self._ai_streams >= self.max_ai_streams or (
+                    client is not None and mine >= self.max_ai_streams_per_client):
+                return AI_STREAMS_FULL
+            self._ai_streams += 1
+            if client is not None:
+                self._ai_client_streams[client] = mine + 1
+        return _Subscription(self._ai_event_loop(job, heartbeat, coalesce), lambda: self._ai_unsubscribe(client))
+
+    def _ai_unsubscribe(self, client):
+        with self._cv:
+            self._ai_streams -= 1
+            if client is not None:
+                n = self._ai_client_streams.pop(client, 1) - 1
+                if n:
+                    self._ai_client_streams[client] = n
 
     def _ai_event_loop(self, job, heartbeat, coalesce):
         st = job.stream
@@ -906,8 +957,17 @@ class JobManager:
                                       wait_s=aj.started - aj.created, backend=aj.backend)
                         if not aj.warm:
                             self.stats.ai_route(aj.sym, "quick", "timeout")
-                    self._spawn_ai_worker(aj.backend)
+                    self._spawn(self._spawn_ai_worker, aj.backend)
                 self._cv.wait(1.0)
+
+    @staticmethod
+    def _spawn(start, *args):
+        """The watchdog's replacement worker: a failed thread start (the process at its thread limit) is logged, not
+        raised — that would end the watchdog, and no hung job would be expired after it."""
+        try:
+            start(*args)
+        except RuntimeError as e:
+            print(f"⚠️  could not start a replacement worker: {e}", file=sys.stderr, flush=True)
 
     def _expire(self, job):
         """Called with the lock held: fail the hung job and replace its worker.
@@ -923,5 +983,5 @@ class JobManager:
             self._probing = job.probe = False
         self._live.discard(job.gen)
         self._finish(job)
-        self._spawn_worker()
+        self._spawn(self._spawn_worker)
         self._cv.notify_all()

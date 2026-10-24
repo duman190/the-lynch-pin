@@ -56,6 +56,8 @@ REJECTIONS = {
     "tv_visitor": (429, "Trading views per visitor"),
     "tv_rate": (429, "Trading view: new charts a minute"),
     "tv_live": (429, "Trading view: live full"),
+    "ai_streams": (429, "Live AI streams full"),
+    "cross_site": (403, "Cross-site request"),
     "bad_ticker": (400, "Invalid ticker"),
     "read_only": (405, "Write method"),
     "request_body": (400, "Request with a body"),
@@ -136,6 +138,10 @@ class StatsRecorder:
             self._db.execute("INSERT INTO meta VALUES ('visitor_key', ?)", row)
         self._key = bytes.fromhex(row[0])
         self._db.commit()
+        try:  # the visitor key: owner-only (SQLite gives the -wal / -shm files the database's mode)
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         self._thread = None
         if start:
             self._thread = threading.Thread(target=self._flusher, name="lynch-stats", daemon=True)

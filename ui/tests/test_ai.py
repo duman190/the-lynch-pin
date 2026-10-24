@@ -793,3 +793,51 @@ def _reset_fakes():
     infos, rows = dict(fakes.FakeEngine.infos), dict(fakes.FakeEngine.rows)
     yield
     fakes.FakeEngine.infos, fakes.FakeEngine.rows = infos, rows
+
+
+def test_ai_streams_are_capped_per_visitor_and_in_total(settings):
+    """Each SSE subscriber holds an HTTP thread and a socket until the overview ends (up to ~21 min): capped, so a
+    visitor can't hold them by the thousand. Over the cap the page falls back to polling the JSON."""
+    from ui.jobs import AI_STREAMS_FULL, AIJob
+    jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends()), store=DayStore(),
+                    llm=None, start=False)
+    jm.max_ai_streams, jm.max_ai_streams_per_client = 3, 2
+    job = AIJob("MSFT", {}, jm._clock())
+    jm._ai_inflight["MSFT"] = job
+    a1, a2 = jm.ai_events("MSFT", client="a"), jm.ai_events("MSFT", client="a")
+    assert jm.ai_events("MSFT", client="a") is AI_STREAMS_FULL  # per visitor
+    b1 = jm.ai_events("MSFT", client="b")
+    assert jm.ai_events("MSFT", client="c") is AI_STREAMS_FULL  # in total
+    assert next(a1)[0] == "snapshot"
+    a1.close()  # the page left (or its connection broke)
+    a1.close()  # idempotent
+    a3 = jm.ai_events("MSFT", client="a")
+    assert a3 is not AI_STREAMS_FULL
+    job.stream.finish({"status": "done", "ticker": "MSFT"})
+    for g in (a2, b1, a3):
+        assert [e for e, _ in g][-1] == "done"  # run to the end: released
+    assert jm._ai_streams == 0 and not jm._ai_client_streams
+    jm._recent_ai["MSFT"], jm._ai_inflight = jm._ai_inflight.pop("MSFT"), {}
+    jm.max_ai_streams = 0
+    replay = jm.ai_events("MSFT", client="a")  # a finished overview replays at once: not counted
+    assert [e for e, _ in replay] == ["snapshot", "done"]
+
+
+def test_ai_stream_over_the_cap_is_a_429(settings, lm):
+    from ui.jobs import AIJob
+    jm, _, client = make(settings)
+    jm.max_ai_streams = 0
+    jm._ai_inflight["MSFT"] = AIJob("MSFT", {}, jm._clock())
+    httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(settings, jobs=jm, llm=client)))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=5)
+        c.request("GET", "/api/ticker/MSFT/ai/stream")
+        r = c.getresponse()
+        assert r.status == 429 and r.getheader("Retry-After") and "streams" in json.loads(r.read())["error"]
+        c.close()
+    finally:
+        jm._ai_inflight.clear()
+        httpd.shutdown()
+        httpd.server_close()
+        jm.shutdown()

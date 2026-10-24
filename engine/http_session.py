@@ -8,11 +8,11 @@ asked for; impersonating Chrome also sends ``Accept-Encoding: gzip, deflate, br,
 dropping ``br`` from CURLOPT_ACCEPT_ENCODING changes nothing. So libcurl's decoding is switched off, the session
 asks for gzip / deflate only, and decodes those in Python (zlib, not Brotli). Yahoo, SEC and multpl.com answer
 Chrome's ``br`` with gzip anyway, so the bytes on the wire stay the same. A reply in any other encoding (br, zstd)
-never meets a decoder: it fails as a ContentDecodingError. ``stream=True`` replies come back as sent.
+never meets a decoder: it fails as a ContentDecodingError, as does a body that decodes to more than MAX_DECODED (a
+decompression bomb) or is cut short. ``stream=True`` replies come back as sent.
 
 Remove once curl_cffi ships libcurl-impersonate with brotli >= 1.2.1 (check: ``curl_cffi.Curl().version()``).
 """
-import gzip
 import zlib
 
 from curl_cffi import CurlOpt
@@ -21,17 +21,38 @@ from curl_cffi.requests.exceptions import ContentDecodingError
 
 NO_DECODING = {CurlOpt.HTTP_CONTENT_DECODING: 0}
 ACCEPT = {"Accept-Encoding": "gzip, deflate"}
+MAX_DECODED = 256 << 20  # bytes; SEC's largest companyfacts are a few tens of MB
+
+
+def _decode(data, wbits):
+    d = zlib.decompressobj(wbits)
+    out = d.decompress(data, MAX_DECODED + 1)
+    if len(out) > MAX_DECODED:
+        raise ContentDecodingError(f"body decodes to more than {MAX_DECODED} bytes")
+    if not d.eof:
+        raise ContentDecodingError("compressed body is truncated")
+    return out
+
+
+def _gunzip(data):
+    try:
+        return _decode(data, 16 + zlib.MAX_WBITS)
+    except zlib.error as e:
+        raise ContentDecodingError(f"bad gzip body: {e}") from None
 
 
 def _inflate(data):
     """deflate as servers send it: zlib-wrapped (RFC 9110) or raw."""
     try:
-        return zlib.decompress(data)
+        return _decode(data, zlib.MAX_WBITS)
     except zlib.error:
-        return zlib.decompress(data, -zlib.MAX_WBITS)
+        try:
+            return _decode(data, -zlib.MAX_WBITS)
+        except zlib.error as e:
+            raise ContentDecodingError(f"bad deflate body: {e}") from None
 
 
-DECODERS = {"gzip": gzip.decompress, "x-gzip": gzip.decompress, "deflate": _inflate}
+DECODERS = {"gzip": _gunzip, "x-gzip": _gunzip, "deflate": _inflate}
 
 
 class BrowserSession(Session):
@@ -44,10 +65,7 @@ class BrowserSession(Session):
             decode = DECODERS.get(enc)
             if decode is None:
                 raise ContentDecodingError(f"refusing Content-Encoding {enc!r}: only gzip and deflate are decoded")
-            try:
-                r.content = decode(r.content)
-            except (OSError, EOFError, zlib.error) as e:
-                raise ContentDecodingError(f"bad {enc} body: {e}") from None
+            r.content = decode(r.content)
         return r
 
 

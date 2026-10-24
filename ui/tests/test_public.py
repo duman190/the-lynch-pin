@@ -247,3 +247,23 @@ def test_stats_host_narrows_the_stats_listener():
     s, _ = parse_args(["--public", "--stats-host", "100.74.164.127"])
     assert s.stats_bind_host == "100.74.164.127" and s.bind_host == "127.0.0.1"
     assert parse_args(["--public"])[0].stats_bind_host == "0.0.0.0"
+
+
+def test_stats_count_an_ipv6_visitor_as_its_64(settings, gate):
+    """DAU / MAU rows per /64: one subscriber line can't add 2^64 visitors to the stats database."""
+    seen = []
+
+    class Stats:
+        def hit(self, *a, **kw): pass
+        def visit(self, visitor, ts=None): seen.append(visitor)
+
+    settings.public = True
+    httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(settings, stats=Stats())))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        for ip in ("2001:db8:1:2::1", "2001:db8:1:2:ffff::9", "203.0.113.7"):
+            get(httpd, "/api/scans", ip=ip)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    assert seen == ["2001:db8:1:2::/64", "2001:db8:1:2::/64", "203.0.113.7"]

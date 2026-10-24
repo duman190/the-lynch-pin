@@ -50,6 +50,8 @@ NODATA_TTL = 3600          # an unknown symbol is asked again after an hour
 FAIL_TTL = 15              # a failed fetch (network, 5xx) is retried after this long
 BUDGET_WAIT = 8.0          # s a fetch may wait for its share of the Yahoo budget before it is refused
 FETCH_TIMEOUT = 20
+MAX_REPLY = 16 << 20  # bytes; Yahoo's largest series (60m) is ~0.5 MB. The native parser runs in-process, where a
+                      # failed allocation aborts the whole portal: a broken or hostile reply never reaches it
 SERIES_BYTES = 128 << 20   # raw Yahoo series kept in memory (~50-500 KB each)
 CHART_BYTES = 64 << 20     # built charts kept (gzip, ~1-100 KB each)
 PER_VISITOR = 2            # --public: open trading views per visitor IP (two tabs)
@@ -106,6 +108,8 @@ class YahooFetcher:
 
     def __call__(self, sym, base):
         r = self.session().get(YAHOO_CHART.format(sym=sym), params=tvdata.query_params(base), timeout=FETCH_TIMEOUT)
+        if len(r.content) > MAX_REPLY:
+            return 502, b""
         return r.status_code, r.content
 
 

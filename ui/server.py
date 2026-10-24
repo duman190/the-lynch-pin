@@ -88,7 +88,13 @@ def _sanitize(o):
 
 
 def to_json(payload):
-    return json.dumps(_sanitize(payload), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    # "replace": a lone surrogate in third-party text (a name, a post) must not break every reply that carries it
+    return json.dumps(_sanitize(payload), ensure_ascii=False, allow_nan=False).encode("utf-8", "replace")
+
+
+def _printable(text):
+    """``text`` with non-printable characters as \\xNN, for the terminal / log (no escape sequences from headers)."""
+    return "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in text)
 
 
 class PortalApp:
@@ -192,13 +198,32 @@ def make_handler(app):
 
         # ── plumbing ─────────────────────────────────────────────────────────────
         def log_message(self, fmt, *args):  # quieter, single-line access log
-            line = (fmt % args).encode("ascii", "backslashreplace").decode("ascii")
-            line = "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in line)
+            line = _printable((fmt % args).encode("ascii", "backslashreplace").decode("ascii"))
             sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_addr()} {line}\n")
 
         def send_response(self, code, message=None):
             self._code = code  # for the stats page
             super().send_response(code, message)
+
+        def send_error(self, code, message=None, explain=None):
+            """The stdlib's own errors (malformed request, unknown method, oversized headers) as JSON, with the
+            security headers its HTML pages lack; the connection is closed."""
+            self.close_connection = True
+            try:
+                phrase = HTTPStatus(code).phrase
+            except ValueError:
+                phrase = "error"
+            body = to_json({"error": message or phrase, "status": int(code)})
+            self.send_response(code, phrase)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            for k, v in security_headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD" and code >= 200 and code not in (HTTPStatus.NO_CONTENT, HTTPStatus.NOT_MODIFIED):
+                self.wfile.write(body)
 
         def _begin(self):
             self._code = self._reason = None  # one handler serves every request of a keep-alive connection
@@ -236,7 +261,7 @@ def make_handler(app):
                 cf = self.headers.get("CF-Connecting-IP")
                 ip = _ip(cf.strip()) if cf else None  # parsing "" raises inside ipaddress: µs per request
                 if ip is not None:
-                    return str(ip)
+                    return netguard.visitor_key(ip)  # an IPv6 visitor is its /64: no 2^64 rows from one line
             return peer
 
         def client_addr(self):
@@ -320,7 +345,7 @@ def make_handler(app):
             key = (self.client_address[0], message)
             if key not in _REFUSED:  # explain once per client, not on every request
                 _REFUSED.add(key)
-                sys.stderr.write(f"⛔ {self.client_address[0]}: {message} — {hint}\n")
+                sys.stderr.write(_printable(f"⛔ {self.client_address[0]}: {message} — {hint}") + "\n")
             self.send_error_json(HTTPStatus.FORBIDDEN, message)
             return False
 
@@ -330,13 +355,20 @@ def make_handler(app):
                 if _ip(ip) is None or not _ip(ip).is_loopback:
                     return self._refuse("served through the local tunnel only (--public)",
                                         "point cloudflared at http://127.0.0.1:<port>", "tunnel_only")
-                # Any Host name, unless --allow-host names the public ones: then a web page that rebinds its own
-                # domain to 127.0.0.1 in a browser on this machine (and could set CF-Connecting-IP) is refused too.
-                if not netguard.extra_allowed()[1]:
-                    return True
             elif not is_local_client(ip):
                 return self._refuse("local network only",
                                     f"to allow it restart with --allow-net {ip}/32 (or its CIDR range)", "outside_lan")
+            # Another site's page in a browser here or on the LAN could start lookups and AI overviews with a blind
+            # <img src=http://127.0.0.1:8765/api/ticker/X?refresh=1>: network position isn't consent. Browsers say
+            # where a request comes from; the portal's own pages are same-origin, a typed URL or bookmark "none".
+            if self.path.startswith("/api/") and \
+                    (self.headers.get("Sec-Fetch-Site") or "").lower() in ("cross-site", "same-site"):
+                return self._refuse("cross-site request", "a page on another site asked for an API route; only the "
+                                    "portal's own pages may (Sec-Fetch-Site)", "cross_site")
+            # --public: any Host name, unless --allow-host names the public ones: then a web page that rebinds its
+            # own domain to 127.0.0.1 in a browser on this machine (and could set CF-Connecting-IP) is refused too.
+            if app.public and not netguard.extra_allowed()[1]:
+                return True
             host = self.headers.get("Host", "")
             if not is_allowed_host(host):
                 name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
@@ -528,9 +560,22 @@ def make_handler(app):
 
         def route_ai_stream(self, sym):
             """Server-Sent Events: the AI overview token by token, with TTFT / tok/s metrics."""
-            events = app.jobs.ai_events(sym)
+            from ui.jobs import AI_STREAMS_FULL  # loaded with app.jobs already
+            events = app.jobs.ai_events(sym, client=self.client_ip() if app.public else None)
             if events is None:
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "no AI overview in progress")
+            if events is AI_STREAMS_FULL:  # the page falls back to polling /ai, which carries the live text too
+                self._reason = "ai_streams"
+                return self._send(HTTPStatus.TOO_MANY_REQUESTS,
+                                  to_json({"error": "too many live AI streams — following by polling instead",
+                                           "status": 429}), "application/json; charset=utf-8",
+                                  extra={"Retry-After": "10"})
+            try:
+                self._stream_ai(events)
+            finally:
+                events.close()
+
+        def _stream_ai(self, events):
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
