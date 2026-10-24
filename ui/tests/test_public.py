@@ -98,6 +98,28 @@ def test_one_analysis_at_a_time_per_visitor(settings, gate):
         stop(httpd, jm)
 
 
+def test_an_ipv6_visitor_is_its_64(settings, gate):
+    """One subscriber line holds a whole /64: each of its 2^64 addresses must not count as another visitor."""
+    httpd, jm = serve(settings, gate)
+    try:
+        assert get(httpd, "/api/ticker/MSFT", ip="2001:db8:1:2::1")[0].status == 200
+        assert gate.entered.wait(5)
+        r, busy = get(httpd, "/api/ticker/AAPL", ip="2001:db8:1:2:ffff:ffff:ffff:fffe")  # same /64
+        assert r.status == 429 and busy["reason"] == "visitor_busy"
+        r, other = get(httpd, "/api/ticker/AAPL", ip="2001:db8:1:3::1")  # the next /64: another visitor
+        assert r.status == 200 and other["status"] in ("queued", "running")
+    finally:
+        stop(httpd, jm)
+
+
+def test_visitor_key():
+    from ipaddress import ip_address
+    from ui.netguard import visitor_key
+    assert visitor_key(ip_address("203.0.113.5")) == "203.0.113.5"
+    assert visitor_key(ip_address("2001:db8:1:2:aaaa::1")) == visitor_key(ip_address("2001:db8:1:2::ffff")) \
+        == "2001:db8:1:2::/64"
+
+
 @pytest.mark.parametrize("header", [None, "", "not-an-ip", "1.2.3.4, 5.6.7.8", "1.2.3.4 <script>"])
 def test_missing_or_garbage_cf_ip_falls_back_to_the_tunnel_address(settings, gate, header):
     httpd, jm = serve(settings, gate)

@@ -194,7 +194,7 @@ def make_handler(app):
         def log_message(self, fmt, *args):  # quieter, single-line access log
             line = (fmt % args).encode("ascii", "backslashreplace").decode("ascii")
             line = "".join(c if c.isprintable() else "\\x%02x" % ord(c) for c in line)
-            sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_ip()} {line}\n")
+            sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_addr()} {line}\n")
 
         def send_response(self, code, message=None):
             self._code = code  # for the stats page
@@ -239,7 +239,7 @@ def make_handler(app):
                     return str(ip)
             return peer
 
-        def client_ip(self):
+        def client_addr(self):
             """The visitor's IP. With --public the peer is always the local tunnel (cloudflared), which
             passes the real address in CF-Connecting-IP; the header is only trusted from loopback."""
             peer = self.client_address[0]
@@ -247,8 +247,14 @@ def make_handler(app):
             if app.public and headers is not None and (_ip(peer) is not None and _ip(peer).is_loopback):
                 ip = _ip((headers.get("CF-Connecting-IP") or "").strip())
                 if ip is not None:
-                    return str(ip)
+                    return ip
             return peer
+
+        def client_ip(self):
+            """The visitor for per-visitor limits: client_addr, an IPv6 visitor through the tunnel as its /64
+            (netguard.visitor_key)."""
+            ip = self.client_addr()
+            return ip if isinstance(ip, str) else netguard.visitor_key(ip)
 
         def _send(self, status, body, ctype, cache="no-store", extra=None):
             self.send_response(status)
@@ -671,7 +677,7 @@ def build_app(settings, with_search=True, with_ai=True):
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
                               allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
                               max_per_client=1 if settings.public else None,  # --public: one per visitor
-                              stats=stats, gemini=gemini)
+                              stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown)
         except ImportError:
             jobs = None
     if jobs is None:

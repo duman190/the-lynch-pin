@@ -36,6 +36,14 @@ def _ip(value):
     return ip
 
 
+def visitor_key(ip):
+    """One visitor for per-visitor limits: an IPv4 address, or an IPv6 address's /64 — one subscriber line gets a
+    whole /64 (2^64 addresses), so counting each address would let one visitor be billions."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
+
+
 _CLI_NETS = []   # added at startup from --allow-net
 _CLI_HOSTS = set()  # added at startup from --allow-host
 

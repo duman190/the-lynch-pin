@@ -20,7 +20,10 @@ Yahoo is shared with the analyses (~12 Yahoo calls per cold lookup), so the trad
   page gets 429 "trading view full" with when a place frees up. ui/README.md has the benchmark behind the default.
 * **Chart fetches have a Yahoo budget:** at most ``tv_yahoo_rpm`` a minute for everyone (default 120, ~6% of the
   ~2100 Yahoo requests a minute the lookups make at full speed) and ``tv_viewer_rpm`` (20) a minute triggered by one
-  viewer, so no viewer behaviour — nor a script cycling through tickers — can take Yahoo's quota from the lookups.
+  visitor — its IP (an IPv6 /64 behind the tunnel), not the page's ``s`` id, which the page picks and can change —
+  so no viewer behaviour — nor a script cycling through tickers — can take Yahoo's quota from the lookups. A live
+  viewer's 2-second reads of its own ticker are covered by the live limit instead; a live read of any other ticker
+  (a viewer switching tickers, or a script cycling through them) is a new fetch and pays like one.
   The budget is a token bucket (a burst of a quarter of a minute's worth, so a crowd arriving at once is served):
   past it, a fetch waits its turn up to 8 s while viewers see the last series in memory (marked stale) if there is
   one; beyond that it is refused for a few seconds. Cached charts and joining a fetch already under way cost
@@ -134,11 +137,12 @@ class TradingView:
         self._burst = max(4.0, self.yahoo_rpm / 4)
         self._tokens, self._refilled = self._burst, clock()
         self._fetched = collections.deque()  # clock of each chart fetch in the last minute (for /api/health)
-        self._viewer_fetched = {}            # viewer → deque of the same (per-viewer cap)
+        self._viewer_fetched = {}            # visitor IP → deque of the same (per-viewer cap)
         self._sleep = time.sleep
         # live last candle: a few viewers at a time (each costs up to 30 Yahoo requests a minute for its ticker)
         self.live_limit = max(0, int(getattr(settings, "tv_live", 2) or 0))
         self._live_leases = {}  # (ip, sid) → last live poll (clock)
+        self._live_bound = {}   # (ip, sid) → the (sym, ext) its last paid live read was for: re-reads of it are free
         self._live = {}         # (sym, ext) → (fetched clock, payload bytes gzip)
         self._live_inflight = {}
         workers = max(1, int(getattr(settings, "tv_fetches", 4) or 4))
@@ -183,6 +187,7 @@ class TradingView:
         with self._lock:
             self._leases.pop((ip, sid or ""), None)
             self._live_leases.pop((ip, sid or ""), None)
+            self._live_bound.pop((ip, sid or ""), None)
 
     def viewers(self):
         with self._lock:
@@ -361,7 +366,7 @@ class TradingView:
             return refused
         base = tvdata.series_key(code, ext)  # "15m", or "15m:ext" with extended hours (intraday only)
         ext = base.endswith(":ext")
-        s, stale, err = self.series(sym, base, viewer=(ip, sid or ""))
+        s, stale, err = self.series(sym, base, viewer=ip or "")  # the per-viewer cap is per visitor, whatever its sid
         if err is not None:
             return err
         if s.nodata:
@@ -416,6 +421,7 @@ class TradingView:
         with self._lock:
             for k in [k for k, t in self._live_leases.items() if now - t > LIVE_IDLE]:
                 del self._live_leases[k]
+                self._live_bound.pop(k, None)
             if key not in self._live_leases and len(self._live_leases) >= self.live_limit:
                 self._count("live_refused")
                 wait = max(1, int(LIVE_IDLE - (now - min(self._live_leases.values(), default=now))) + 1)
@@ -434,6 +440,11 @@ class TradingView:
                              reason="yahoo_paused", retry_after=wait)
             fut = self._live_inflight.get(skey)
             if fut is None:
+                if self._live_bound.get(key) != skey:  # a new lease, or another ticker: a fetch like a chart's
+                    paid = self._budget(ip or "", now)
+                    if isinstance(paid, Reply):
+                        return Reply(200, gz=hit[1], headers={"X-TV-Stale": "1"}) if hit is not None else paid
+                    self._live_bound[key] = skey
                 fut = self._live_inflight[skey] = self._pool.submit(self._live_fetch, skey)
         try:
             fut.result(timeout=FETCH_TIMEOUT + 5)

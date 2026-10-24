@@ -473,7 +473,9 @@ def test_ai_offline_returns_unavailable_without_queueing(settings, lm):
     jm, _, _ = make(settings)
     wait(lambda: jm.request("MSFT"), lambda s: s["status"] == "done")
     snap = jm.request_ai("MSFT")
-    assert snap["status"] == "unavailable" and "not reachable" in snap["error"]
+    # a fixed message: the probe's reason names the model's address, which is no visitor's business
+    assert snap["status"] == "unavailable" and snap["error"] == "local model unavailable"
+    assert "127.0.0.1:9" not in json.dumps(snap)
     assert jm.cache_stats()["ai_queue"] == 0
     jm.shutdown()
 

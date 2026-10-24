@@ -24,6 +24,7 @@ import collections
 import copy
 import datetime as _dt
 import os
+import sys
 import threading
 import time
 
@@ -202,7 +203,8 @@ class AIJob:
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
-                 backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None):
+                 backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None,
+                 refresh_cooldown=0.0):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -220,6 +222,11 @@ class JobManager:
         # ↻ Refresh re-runs a cached ticker. Off (--no-ai): a cached ticker stays until the cache clears at
         # midnight (or is evicted), so lookups never re-spend Yahoo calls on what is already known.
         self.allow_refresh = allow_refresh
+        # Seconds after a ticker's last analysis started before a ↻ Refresh re-runs it (earlier ones get the cached
+        # result): a refresh costs Yahoo calls and, for a GARP ticker, one of the FMP budget's daily requests, so a
+        # loop on one ticker must not be able to spend them for everyone.
+        self.refresh_cooldown = float(refresh_cooldown or 0)
+        self._analysed = {}   # sym → clock its last analysis was queued (refresh cooldown)
         # --public: analyses one client may have queued or running at once (None = no limit). Cached
         # tickers, polls and joining a ticker someone else is already analysing are never limited.
         self.max_per_client = max_per_client
@@ -304,6 +311,10 @@ class JobManager:
             for k in [k for k, j in self._recent.items()
                       if now - j.finished > self.recent_ttl or j.day != today]:
                 del self._recent[k]
+            for k in [k for k, t in self._analysed.items() if now - t >= self.refresh_cooldown]:
+                del self._analysed[k]
+            if refresh and sym in self._analysed:
+                refresh = False  # analysed moments ago: answered like a lookup (the cached result, stale by seconds)
             if not refresh:
                 hit = self.lookup(sym) if poll else self.store.get(sym)
                 if hit is not None:
@@ -328,6 +339,8 @@ class JobManager:
             job = Job(sym, self._clock(), self._today())
             job.owner = client
             self._wait(job, "refresh" if refresh else "fresh")
+            if self.refresh_cooldown:
+                self._analysed[sym] = now
             self._inflight[sym] = job
             self._queue.append(job)
             self._cv.notify_all()
@@ -414,7 +427,8 @@ class JobManager:
         and a night with the local model down used to add ~100 "at capacity" overviews."""
         out = {"ticker": sym, "status": "unavailable", "fallback": "quick", "retry_after": wait}
         if not st.get("available") and (self.gemini is None or warm):
-            out.update(reason="offline", error=st.get("reason") or "local model unavailable")
+            # the probe's reason names the model's address: /api/health shows it on the LAN, never a visitor
+            out.update(reason="offline", error="local model unavailable")
         else:
             out.update(reason="busy", error="AI overviews are at capacity right now")
         if self.stats is not None and not warm:
@@ -604,7 +618,7 @@ class JobManager:
         self._threads.append(t)
 
     def _ai_worker(self, token, backend="local"):
-        from ui.llm import LLMCancelled, LLMError, LLMUnavailable, ticker_narrative
+        from ui.llm import LLMCancelled, LLMError, LLMUnavailable, public_error, ticker_narrative
         queue, client = (self._ai_queue, self.llm) if backend == "local" else (self._gemini_queue, self.gemini)
         attempts = 2 if backend == "local" else 1  # Gemini: one request per overview admitted against its quota
         while True:
@@ -625,12 +639,13 @@ class JobManager:
                                           cancelled=cancelled, attempts=attempts)
             except LLMCancelled:
                 continue  # watchdog / shutdown already finalised the job
-            except LLMUnavailable as e:
-                result = {"status": "unavailable", "error": str(e)}
-            except LLMError as e:
-                result = {"status": "error", "error": str(e)}
             except Exception as e:  # never let the AI worker die
-                result = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+                # every visitor sees job.error: a fixed message; the details (backend body, address) go to the log —
+                # an unexpected exception only by its type, since its text may carry a request header
+                detail = str(e) if isinstance(e, LLMError) else type(e).__name__
+                print(f"⚠️  AI overview for {job.sym} ({backend}): {detail}", file=sys.stderr)
+                result = {"status": "unavailable" if isinstance(e, LLMUnavailable) else "error",
+                          "error": public_error(e)}
             with self._cv:
                 if token not in self._ai_live or job.status != "running":
                     continue  # timed out meanwhile; result discarded

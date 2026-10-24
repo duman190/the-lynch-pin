@@ -191,6 +191,15 @@ def test_gemini_needs_a_key_and_can_be_switched_off(settings):
     assert GeminiClient.from_settings(settings, api_key="k") is None
 
 
+def test_gemini_key_is_stripped_and_a_broken_one_turns_gemini_off(settings, monkeypatch, capsys):
+    monkeypatch.setenv("GEMINI_API_KEY", "  AIza-test_key.1\r\n")  # a CRLF-saved .env, a pasted newline
+    assert GeminiClient.from_settings(settings).http.headers["Authorization"] == "Bearer AIza-test_key.1"
+    for bad in ("AIza\rtest", "AIza\ntest", "AIza test", "AIza\x1btest", "ключ"):
+        assert GeminiClient.from_settings(settings, api_key=bad) is None
+    err = capsys.readouterr().err
+    assert "Gemini offload is off" in err and "AIza" not in err  # the warning never prints the key
+
+
 def test_cli_sets_the_watermarks():
     s, _ = parse_args(["--llm-rpm", "12", "--gemini-rpm", "10", "--gemini-rpd", "500", "--gemini-model", "m"])
     assert (s.llm_rpm, s.gemini_rpm, s.gemini_rpd, s.gemini_model, s.gemini) == (12, 10, 500, "m", True)
@@ -254,6 +263,56 @@ def test_gemini_failure_falls_back_to_quick_and_can_be_retried(settings, local, 
         assert jm.request_ai("MSFT")["status"] == "unavailable"  # the same failure for a few minutes, no new request
         jm.request_ai("MSFT", refresh=True)  # ↻ Retry AI
         assert wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] == "done")["backend"] == "gemini"
+    finally:
+        jm.shutdown()
+
+
+def test_backend_error_bodies_never_reach_visitors(settings, local, remote, tmp_path, more_tickers, capsys):
+    settings.llm_rpm = 0  # everything to Gemini
+    body = {"error": {"message": "API key not valid for project 12345 at http://10.0.0.5:1234"}}
+    remote[1]["http_errors"] = [(400, body)]
+    jm = make(settings, gemini_client(settings, remote, tmp_path))
+    try:
+        jm.request_ai("MSFT")
+        failed = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] not in ("queued", "running"))
+        assert failed["status"] == "error" and failed["error"] == "the AI overview failed"
+        assert "10.0.0.5" not in json.dumps(failed) and "12345" not in json.dumps(failed)
+        assert "API key not valid" in capsys.readouterr().err  # the operator still sees why
+    finally:
+        jm.shutdown()
+
+
+def test_unexpected_exception_text_never_reaches_visitors(settings, local, remote, tmp_path, more_tickers, capsys):
+    # requests refuses a header with a CR and quotes the header — "Bearer <key>" — in its exception
+    settings.llm_rpm = 0
+    budget = GeminiBudget(str(tmp_path / "g.sqlite3"), rpm=15, rpd=975)
+    jm = make(settings, GeminiClient(settings, "secret-key\r", budget=budget, base_url=remote[0]))
+    try:
+        jm.request_ai("MSFT")
+        failed = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] not in ("queued", "running"))
+        assert failed["status"] == "error" and failed["error"] == "the AI overview failed"
+        assert "secret-key" not in json.dumps(failed)
+        err = capsys.readouterr().err
+        assert "InvalidHeader" in err and "secret-key" not in err  # logged by type only
+        assert not remote[1].get("requests")  # refused before anything was sent
+    finally:
+        jm.shutdown()
+
+
+def test_local_model_errors_never_name_its_address(settings, local, tmp_path, more_tickers):
+    # LM Studio answers a chat with an error body, then disappears: neither its body nor its address is shown
+    local[1]["http_errors"] = [(500, {"error": "CUDA out of memory on 192.168.1.50"})] * 2
+    jm = make(settings)
+    try:
+        jm.request_ai("MSFT")
+        failed = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] not in ("queued", "running"))
+        assert failed["error"] == "the AI overview failed" and "192.168" not in json.dumps(failed)
+        jm.llm.base = "http://127.0.0.1:9"  # gone mid-request: LLMUnavailable("LM Studio not reachable at …")
+        jm.llm._status_at = 1e18           # its last probe said "up": the chat request finds it gone
+        jm.request_ai("MSFT", refresh=True)
+        gone = wait(lambda: jm.request_ai("MSFT"), lambda s: s["status"] not in ("queued", "running"))
+        assert gone["status"] == "unavailable" and gone["error"] == "local model unavailable"
+        assert "127.0.0.1:9" not in json.dumps(gone)
     finally:
         jm.shutdown()
 

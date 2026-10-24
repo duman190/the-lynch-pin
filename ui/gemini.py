@@ -28,6 +28,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 
@@ -37,6 +38,7 @@ from ui.llm import LLMError, LLMUnavailable, LocalLLMClient
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 PACIFIC = "America/Los_Angeles"  # Google resets requests-per-day at midnight Pacific
+KEY_RE = re.compile(r"^[\x21-\x7e]+\Z")  # printable ASCII, no spaces: what a Bearer header can carry
 MAX_TOKENS = 2048                # a reply is ~300 tokens and Flash-Lite writes no reasoning tokens
 
 
@@ -164,9 +166,13 @@ class GeminiClient(LocalLLMClient):
 
     @classmethod
     def from_settings(cls, settings, api_key=None):
-        """The portal's Gemini offload, or None when it is off or GEMINI_API_KEY is not set."""
-        key = api_key or os.environ.get("GEMINI_API_KEY")
+        """The portal's Gemini offload, or None when it is off or GEMINI_API_KEY is not set (or not a key)."""
+        key = (api_key or os.environ.get("GEMINI_API_KEY") or "").strip()  # a CRLF-saved .env, a pasted newline
         if not settings.gemini or not key or settings.gemini_rpm <= 0 or settings.gemini_rpd <= 0:
+            return None
+        if not KEY_RE.match(key):
+            # requests would refuse the header and echo it in its error: never let the key near a message
+            print("⚠️  GEMINI_API_KEY has spaces or control characters — Gemini offload is off", file=sys.stderr)
             return None
         budget = GeminiBudget(settings.gemini_budget_path, settings.gemini_rpm, settings.gemini_rpd)
         return cls(settings, key, budget)
@@ -188,9 +194,9 @@ class GeminiClient(LocalLLMClient):
             return self.http.post(f"{self.base}/chat/completions", json=payload, stream=True,
                                   timeout=(5, self.settings.llm_timeout))
         except requests.ConnectionError as e:
-            raise LLMUnavailable(f"Gemini not reachable ({type(e).__name__})") from e
+            raise LLMUnavailable(f"Gemini not reachable ({type(e).__name__})", public=True) from e
         except requests.Timeout as e:
-            raise LLMError(f"Gemini timed out after {self.settings.llm_timeout}s") from e
+            raise LLMError(f"Gemini timed out after {self.settings.llm_timeout}s", public=True) from e
 
     def _http_error(self, status, body_text, model):
         if status == 429:
@@ -199,7 +205,7 @@ class GeminiClient(LocalLLMClient):
             if self.budget is not None:
                 self.budget.cooldown(delay, whole_day=whole_day)
             raise LLMUnavailable("Gemini's daily quota is used up" if whole_day
-                                 else f"Gemini rate limit — retry in {int(math.ceil(delay))}s")
+                                 else f"Gemini rate limit — retry in {int(math.ceil(delay))}s", public=True)
         if status >= 500:
-            raise LLMUnavailable(f"Gemini is overloaded (HTTP {status}) — try again shortly")
+            raise LLMUnavailable(f"Gemini is overloaded (HTTP {status}) — try again shortly", public=True)
         raise LLMError(f"Gemini HTTP {status}: {body_text[:300]}")

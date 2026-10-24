@@ -31,12 +31,26 @@ _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 _NOT_LOADED = ("model not loaded", "no models loaded", "model_not_found", "not found", "no model")
 
 
-class LLMUnavailable(Exception):
-    """LM Studio unreachable or no usable model (not a failure of this request)."""
-
-
 class LLMError(Exception):
-    pass
+    """A failed generation. ``str(e)`` is for the operator's log; visitors see ``e.public`` — a fixed message, or
+    the text itself when it says nothing about this machine (``public=True``). Backend bodies, addresses and
+    exception text never reach the page."""
+    PUBLIC = "the AI overview failed"
+
+    def __init__(self, message="", public=None):
+        super().__init__(message)
+        self.public = message if public is True else (public or self.PUBLIC)
+
+
+class LLMUnavailable(LLMError):
+    """LM Studio unreachable or no usable model (not a failure of this request)."""
+    PUBLIC = "local model unavailable"
+
+
+def public_error(e):
+    """What a visitor may see of ``e``: its fixed message, never its text (an unexpected exception may carry
+    anything — a request header, a URL)."""
+    return e.public if isinstance(e, LLMError) else LLMError.PUBLIC
 
 
 class LLMCancelled(LLMError):
@@ -346,7 +360,7 @@ class LocalLLMClient:
         messages = [{"role": "user", "content": prompt}] if isinstance(prompt, str) else list(prompt)
         est = estimate_tokens("\n".join(m["content"] for m in messages))
         if est + PROMPT_MARGIN > ctx:
-            raise LLMError(f"prompt (~{est} tokens) does not fit the {ctx}-token context window")
+            raise LLMError(f"prompt (~{est} tokens) does not fit the {ctx}-token context window", public=True)
         budget = max(256, min(max_tokens or self.settings.llm_max_tokens, ctx - est - 256))
         self._autoload(model)
         if messages[0].get("role") == "system":
@@ -369,7 +383,7 @@ class LocalLLMClient:
                 self._http_error(r.status_code, r.text[:400], model)
             content, finish, usage, served = self._consume(r, meter, on_delta, cancelled, on_rewind, self.NAME)
         except requests.RequestException as e:  # connection dropped / read timeout mid-stream
-            raise LLMError(f"stream from {self.NAME} interrupted ({type(e).__name__})") from e
+            raise LLMError(f"stream from {self.NAME} interrupted ({type(e).__name__})", public=True) from e
         finally:
             r.close()
         meter.finish(usage)
@@ -426,7 +440,7 @@ class LocalLLMClient:
             self._mark(False, f"LM Studio not reachable at {self.base}")
             raise LLMUnavailable(f"LM Studio not reachable at {self.base}") from e
         except requests.Timeout as e:
-            raise LLMError(f"local model timed out after {self.settings.llm_timeout}s") from e
+            raise LLMError(f"local model timed out after {self.settings.llm_timeout}s", public=True) from e
 
     @staticmethod
     def _consume(r, meter, on_delta, cancelled, on_rewind=None, name="LM Studio"):

@@ -561,6 +561,40 @@ def test_live_is_shared_cached_and_limited():
     tv.shutdown()
 
 
+def test_a_new_sid_does_not_reset_the_per_visitor_cap():
+    """The page picks its sid: closing the chart (release) and opening it again under a new one must not buy a
+    visitor more Yahoo fetches than viewer_rpm a minute."""
+    clock, y = Clock(), FakeYahoo()
+    tv = make_tv(y, clock=clock, public=True, viewers=10, yahoo_rpm=60, viewer_rpm=3)
+    for i, sym in enumerate(("A", "B", "C")):
+        assert tv.chart(sym, "1D", ip="203.0.113.7", sid=f"rot{i:05d}").status == 200
+        tv.release("203.0.113.7", f"rot{i:05d}")
+    r = tv.chart("D", "1D", ip="203.0.113.7", sid="rot00099")
+    assert r.status == 429 and r.reason == "tv_rate" and len(y.calls) == 3
+    assert tv.chart("D", "1D", ip="198.51.100.2", sid="other001").status == 200  # another visitor is unaffected
+    tv.shutdown()
+
+
+def test_live_reads_of_other_tickers_pay_like_chart_fetches():
+    """A live viewer's own ticker every 2 s is covered by the live limit; cycling one live lease through tickers
+    is a new Yahoo fetch each time and goes through the budget (per visitor and for everyone)."""
+    clock = Clock()
+    y = FakeYahoo(body=yahoo([MON + 13 * H + 30 * M + k * M for k in range(3)]))
+    tv = make_tv(y, clock=clock, yahoo_rpm=60, viewer_rpm=3)
+    tv.live_limit = 1
+    assert [tv.live(f"S{i}", ip="203.0.113.7", sid="viewer01").status for i in range(3)] == [200] * 3
+    r = tv.live("S3", ip="203.0.113.7", sid="viewer01")  # a 4th ticker in a minute: refused, no fetch
+    assert r.status == 429 and r.reason == "tv_rate" and len(y.calls) == 3
+    for _ in range(10):                                  # its own (last paid) ticker every 2 s: free
+        clock.t += 2.5
+        assert tv.live("S2", ip="203.0.113.7", sid="viewer01").status == 200
+    assert len(y.calls) == 13 and tv.status()["yahoo_last_min"] == 3
+    tv.release("203.0.113.7", "viewer01")                # a new lease pays for its first read too
+    r = tv.live("S9", ip="203.0.113.7", sid="viewer02")
+    assert r.status == 429 and r.reason == "tv_rate" and len(y.calls) == 13
+    tv.shutdown()
+
+
 def test_open_market_series_expire_at_the_next_bar():
     reg_start = MON + 13 * H + 30 * M
     tv = make_tv(force_open=False, wall=lambda: reg_start + 9 * M + 50)            # 9m50s into the session
