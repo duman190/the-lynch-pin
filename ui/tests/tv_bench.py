@@ -16,7 +16,9 @@ separately per ticker) and measures it from client processes:
 refresh rates at any hour, the worst case; the shipped viewer limit and Yahoo budget unless ``--unlimited``) once per
 viewer count, then runs ``--count`` cold lookups from
 ``--clients`` threads (cold_bench.py's loop, Nasdaq-100) while N viewers use the trading view, each on its own S&P 500
-ticker outside the Nasdaq-100 (nothing shared: the worst case for Yahoo). A viewer opens the chart, switches interval
+ticker outside the Nasdaq-100 (nothing shared: the worst case for Yahoo). ``--public`` runs the server as it runs behind
+the tunnel (``--public``: per-visitor limits on), every viewer and every lookup a visitor of its own (CF-Connecting-IP);
+without it they all come from 127.0.0.1 and share one visitor's caps. A viewer opens the chart, switches interval
 every ~12 s (exponential, weighted towards 1D / 4H / 1H / 15m / 5m), and polls in between as the page does (every
 15-45 s, ETag). Reported: cold lookups/min, their latency, the chart's latency, Yahoo requests and 429s.
 
@@ -185,9 +187,15 @@ def closed_loop(args):
     return out
 
 
+def visitor_ip(k):
+    """The k-th benchmark visitor's IP (TEST-NET-2, as cold_bench.py's --visitors), sent as CF-Connecting-IP."""
+    return f"198.51.{100 + k // 250}.{k % 250 + 1}"
+
+
 def viewer_loop(args):
-    """(port, symbols, seconds, seed, arrive) → per-request records of viewers using the chart like a person does."""
-    port, symbols, seconds, seed, arrive = args
+    """(port, symbols, seconds, seed, arrive, first visitor or None) → per-request records of viewers using the chart
+    like a person does."""
+    port, symbols, seconds, seed, arrive, first = args
     rnd = random.Random(seed)
     codes, weights = list(WEIGHTS), list(WEIGHTS.values())
     recs, lock = [], threading.Lock()
@@ -202,8 +210,9 @@ def viewer_loop(args):
         code = "1D"
         next_switch = time.time() + rnd.expovariate(1 / SWITCH_EVERY)
         kind = "open"
+        ip = {"CF-Connecting-IP": visitor_ip(first + k)} if first is not None else {}
         while time.time() < stop:
-            h = {"Accept-Encoding": "gzip"}
+            h = {"Accept-Encoding": "gzip", **ip}
             if kind == "poll" and code in etags:
                 h["If-None-Match"] = etags[code]
             t0 = time.perf_counter()
@@ -229,7 +238,7 @@ def viewer_loop(args):
                 time.sleep(max(0.0, poll_at - time.time()))
                 kind = "poll"
         try:
-            c.get(f"/api/tv/release?s={sid}")
+            c.get(f"/api/tv/release?s={sid}", ip)
         except Exception:
             pass
         with lock:
@@ -241,10 +250,12 @@ def viewer_loop(args):
     return recs
 
 
-def run_viewers(port, symbols, seconds, procs=4, arrive=5.0):
+def run_viewers(port, symbols, seconds, procs=4, arrive=5.0, visitors=None):
+    """visitors: the first visitor_ip() index of the viewers (one each), or None to send no CF-Connecting-IP."""
     chunks = [symbols[i::procs] for i in range(procs)]
+    firsts = [None if visitors is None else visitors + sum(len(c) for c in chunks[:i]) for i in range(procs)]
     with mp.get_context("spawn").Pool(procs) as pool:
-        parts = pool.map(viewer_loop, [(port, ch, seconds, 1000 + i, arrive) for i, ch in enumerate(chunks) if ch])
+        parts = pool.map(viewer_loop, [(port, ch, seconds, 1000 + i, arrive, firsts[i]) for i, ch in enumerate(chunks) if ch])
     return [r for p in parts for r in p]
 
 
@@ -319,13 +330,15 @@ def offline(a):
 
 
 # ── live ────────────────────────────────────────────────────────────────────────────────────────────────────────────
-def cold_lookups(base, tickers, clients):
-    """cold_bench.py's loop: (results, wall seconds)."""
+def cold_lookups(base, tickers, clients, visitors=False):
+    """cold_bench.py's loop: (results, wall seconds). visitors: each lookup from its own visitor IP."""
     from concurrent.futures import ThreadPoolExecutor
+    ips = {sym: visitor_ip(k) for k, sym in enumerate(tickers)} if visitors else {}
 
-    def get(path):
+    def get(path, sym):
+        req = urllib.request.Request(base + path, headers={"CF-Connecting-IP": ips[sym]} if sym in ips else {})
         try:
-            with urllib.request.urlopen(base + path, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=60) as r:
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
@@ -333,7 +346,7 @@ def cold_lookups(base, tickers, clients):
     def cold(sym):
         t0, first = time.time(), True
         while True:
-            code, s = get(f"/api/ticker/{sym}" + ("" if first else "?poll=1"))
+            code, s = get(f"/api/ticker/{sym}" + ("" if first else "?poll=1"), sym)
             if code == 429:
                 time.sleep(1)
                 continue
@@ -354,7 +367,7 @@ def live(a):
     others = [l.strip() for l in open(os.path.join(REPO, "database", "sp500.txt")) if l.strip() and l.strip() not in nasdaq]
     rnd = random.Random(7)
     rnd.shuffle(others)
-    results = {"workers": a.workers, "clients": a.clients, "count": a.count, "runs": []}
+    results = {"workers": a.workers, "clients": a.clients, "count": a.count, "public": a.public, "runs": []}
     for n in a.viewers:
         cache = tempfile.mkdtemp(prefix="tvbench-")
         env = dict(os.environ, LYNCH_UI_CACHE_DIR=cache, LYNCH_UI_SOCIALS="0", LYNCH_UI_VALUATION="0", FMP_API_KEY="",
@@ -363,7 +376,7 @@ def live(a):
             env.update(LYNCH_UI_TV_VIEWERS="0", LYNCH_UI_TV_YAHOO_RPM="0", LYNCH_UI_TV_VIEWER_RPM="0")
         log = open(os.path.join(cache, "server.log"), "w")
         srv = subprocess.Popen([sys.executable, "-m", "ui.server", "--no-ai", "--port", str(a.port), "--enrich", "off",
-                                "--workers", str(a.workers), "--precache", "0"], env=env, cwd=REPO, stdout=log, stderr=log)
+                                "--workers", str(a.workers), "--precache", "0", *(["--public"] if a.public else [])], env=env, cwd=REPO, stdout=log, stderr=log)
         base = f"http://127.0.0.1:{a.port}"
         try:
             wait_up(base)
@@ -374,11 +387,11 @@ def live(a):
             if n:
                 symbols = (others * (n // len(others) + 1))[:n]
                 box = {}
-                th = threading.Thread(target=lambda: box.update(recs=run_viewers(a.port, symbols, a.tv_seconds,
-                                                                                 arrive=a.lead)))
+                th = threading.Thread(target=lambda: box.update(recs=run_viewers(
+                    a.port, symbols, a.tv_seconds, arrive=a.lead, visitors=len(cold) if a.public else None)))
                 th.start()
                 time.sleep(a.lead)  # viewers are on the charts before the lookups start
-            res, wall = cold_lookups(base, cold, a.clients)
+            res, wall = cold_lookups(base, cold, a.clients, visitors=a.public)
             cpu = proc_cpu(srv.pid) - cpu0
             h = health(base)
             if th is not None:
@@ -395,7 +408,8 @@ def live(a):
                 out["chart"] = viewer_report(recs, a.tv_seconds, n)
                 tvh = h.get("tv") or {}
                 out["chart"]["yahoo_fetches"] = tvh.get("fetches")
-                out["chart"]["yahoo_fetches_per_viewer_min"] = round((tvh.get("fetches") or 0) / n / (a.tv_seconds / 60), 2)
+                out["chart"]["yahoo_fetches_per_viewer_min"] = (  # None with --public: its health hides the counters
+                    None if tvh.get("fetches") is None else round(tvh["fetches"] / n / (a.tv_seconds / 60), 2))
             results["runs"].append(out)
             ch = out.get("chart") or {}
             sw = ch.get("switch") or {}
@@ -446,6 +460,8 @@ def main(argv=None):
     lv.add_argument("--pause", type=float, default=20, help="s between runs (Yahoo)")
     lv.add_argument("--unlimited", action="store_true",
                     help="no viewer limit and no Yahoo budget (the shipped defaults otherwise)")
+    lv.add_argument("--public", action="store_true",
+                    help="run the server with --public, every viewer and lookup a visitor of its own (CF-Connecting-IP)")
     a = ap.parse_args(argv)
     if a.mode == "record":
         return record(a.sym)
