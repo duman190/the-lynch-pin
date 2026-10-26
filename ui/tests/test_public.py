@@ -258,8 +258,8 @@ def test_hsts_only_behind_the_tunnel(settings, gate):
 
 
 def test_stats_host_narrows_the_stats_listener():
-    s, _ = parse_args(["--public", "--stats-host", "100.74.164.127"])
-    assert s.stats_bind_host == "100.74.164.127" and s.bind_host == "127.0.0.1"
+    s, _ = parse_args(["--public", "--stats-host", "100.64.0.1"])
+    assert s.stats_bind_host == "100.64.0.1" and s.bind_host == "127.0.0.1"
     assert parse_args(["--public"])[0].stats_bind_host == "0.0.0.0"
 
 
