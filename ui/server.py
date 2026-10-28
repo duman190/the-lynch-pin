@@ -727,7 +727,9 @@ def build_app(settings, with_search=True, with_ai=True):
             from ui.jobs import JobManager
             workers = settings.analysis_workers(with_ai=llm is not None)
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
-                              allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
+                              # --no-ai and --public: a cached ticker stays cached for the day (no ↻ Refresh, and
+                              # ?refresh=1 is ignored), so visitors can't re-spend Yahoo / FMP on it
+                              allow_refresh=llm is not None and not settings.public,
                               max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
                               stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown,
                               cache_llm=cache_llm)

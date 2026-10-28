@@ -211,3 +211,16 @@ def test_health_reports_refresh_only_with_ai(tmp_path, no_ai):
         assert f["ai"] is (not no_ai) and f["refresh"] is (not no_ai) and app.jobs.allow_refresh is (not no_ai)
     finally:
         app.jobs.shutdown()
+
+
+def test_public_never_refreshes_a_cached_ticker(tmp_path):
+    """--public with the AI overview on: no ↻ Refresh, and ?refresh=1 gets the cached result for the rest of the day."""
+    from ui.server import build_app, parse_args
+    s, a = parse_args(["--public", "--workers", "1", "--llm-url", "http://127.0.0.1:1"])
+    s.cache_dir = str(tmp_path / "cache")
+    app = build_app(s, with_ai=not a.no_ai)
+    try:
+        assert app.llm is not None and app.health()["features"]["refresh"] is False
+        assert app.jobs.allow_refresh is False
+    finally:
+        app.jobs.shutdown()

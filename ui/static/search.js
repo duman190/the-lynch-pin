@@ -114,7 +114,7 @@
     put($("#rh-badges"), ...badges);
   }
 
-  /** ↻ Refresh is off with the AI overview off: a cached ticker stays cached until midnight. */
+  /** ↻ Refresh is off with the AI overview off and in --public: a cached ticker stays cached until midnight. */
   function canRefresh() {
     const f = S.app.health && S.app.health.features;
     return !f || f.refresh !== false;
