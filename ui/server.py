@@ -144,6 +144,10 @@ class PortalApp:
                 out["ai"]["offload"] = self.jobs.gemini.model_id
                 if not out["ai"].get("available"):  # the local model is down: Gemini writes the overviews
                     out["ai"].update(available=True, local_available=False, checking=False)
+            if self.jobs is not None and self.jobs.cache_llm is not None:  # the nightly pre-cache's model
+                st = self.jobs.cache_llm.status(block=False)
+                out["ai"]["cache_llm"] = {k: st[k] for k in ("available", "checking", "model", "base_url", "reason")
+                                          if k in st}
         if self.tv is not None:
             out["tv"] = self.tv.status()
         if self.jobs is not None:
@@ -705,7 +709,7 @@ def build_app(settings, with_search=True, with_ai=True):
         from ui.stats import StatsRecorder
         stats = StatsRecorder(settings.stats_path, retention_days=settings.stats_days,
                               visitor_days=settings.stats_visitor_days)
-    gemini = None
+    gemini = cache_llm = None
     if with_ai:
         try:
             from ui.llm import LocalLLMClient
@@ -715,6 +719,9 @@ def build_app(settings, with_search=True, with_ai=True):
     if llm is not None:
         from ui.gemini import GeminiClient
         gemini = GeminiClient.from_settings(settings)  # None without GEMINI_API_KEY or with --no-gemini
+        if settings.cache_llm_base_url:
+            from ui.llm import CacheLLMClient
+            cache_llm = CacheLLMClient(settings)  # the nightly pre-cache's model (--cache-llm-url)
     if with_search:
         try:
             from ui.jobs import JobManager
@@ -722,7 +729,8 @@ def build_app(settings, with_search=True, with_ai=True):
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
                               allow_refresh=llm is not None,  # --no-ai: cached tickers stay cached
                               max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
-                              stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown)
+                              stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown,
+                              cache_llm=cache_llm)
         except ImportError:
             jobs = None
     if jobs is None:
@@ -744,20 +752,32 @@ def parse_args(argv=None):
                    help="extra Host name(s) to accept, e.g. a reverse-proxy name (repeatable)")
     p.add_argument("--lan", action="store_true", default=s.lan,
                    help="listen on all interfaces so phones on the same private network can connect")
-    p.add_argument("--llm-url", default=s.llm_base_url, help="LM Studio base URL (default http://127.0.0.1:1234)")
-    p.add_argument("--llm-model", default=s.llm_model, help="model id (default: first model the server lists)")
+    p.add_argument("--llm-url", default=s.llm_base_url,
+                   help="the online model's OpenAI-compatible base URL (default: port 8000 of LYNCH_SWITCHBOARD, "
+                        "Qwen3.8-27B; without it LM Studio's http://127.0.0.1:1234)")
+    p.add_argument("--llm-model", default=s.llm_model,
+                   help="model id (default mlx-community/Qwen3.8-27B-4bit with LYNCH_SWITCHBOARD; '' = the first model "
+                        "the server lists)")
+    p.add_argument("--cache-llm-url", default=s.cache_llm_base_url, metavar="URL",
+                   help="the nightly pre-cache's model: its AI overviews are written there, one at a time, then "
+                        "--llm-url is primed again (default: port 8002 of LYNCH_SWITCHBOARD, Qwen3.8-Flash-Next on "
+                        "Strata, ~30 s an overview; '' = the online model)")
+    p.add_argument("--cache-llm-model", default=s.cache_llm_model,
+                   help="model id at --cache-llm-url (default Qwen3.8-Flash-Next; '' = the first model it lists)")
+    p.add_argument("--no-cache-llm", action="store_true", help="the online model writes the pre-cache's overviews too")
     p.add_argument("--llm-ctx", type=int, default=s.llm_ctx, help="context window in tokens (default 65536)")
     p.add_argument("--llm-max-tokens", type=int, default=s.llm_max_tokens)
     p.add_argument("--llm-reasoning", choices=("off", "on"), default=s.llm_reasoning if s.llm_reasoning in ("off", "on")
                    else "off", help="thinking for reasoning models: off sends reasoning_effort=none (default off)")
     p.add_argument("--llm-parallel", type=int, default=s.llm_parallel,
-                   help="AI overviews generated at once (default 1; see ui/README.md, Local AI tuning)")
+                   help=f"AI overviews generated at once (default {s.llm_parallel}: the switchboard admits 4 per Splash "
+                        "model; see ui/README.md, Local AI tuning)")
     p.add_argument("--llm-autoload", action="store_true", default=s.llm_autoload,
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
     p.add_argument("--llm-rpm", type=int, default=s.llm_rpm, metavar="N",
-                   help="low watermark: AI overviews a minute the local model is given (default 24: Qwen3.6-35B-A3B "
-                        "on Splash with --llm-parallel 4; use 4 for the 27B). Above it, Gemini; above "
-                        "--llm-rpm + --gemini-rpm, the Quick overview with a Retry AI button")
+                   help=f"low watermark: AI overviews a minute the local model is given (default {s.llm_rpm}: "
+                        "Qwen3.8-27B on the M6's Splash with --llm-parallel 4; 56 for Qwen3.6-35B-A3B). Above it, "
+                        "Gemini; above --llm-rpm + --gemini-rpm, the Quick overview with a Retry AI button")
     p.add_argument("--gemini-model", default=s.gemini_model,
                    help="Gemini model for overviews above the low watermark (default gemini-flash-lite-latest; "
                         "needs GEMINI_API_KEY)")
@@ -774,8 +794,8 @@ def parse_args(argv=None):
                         "day minus 25 for the daily scans); past it lookups are not enriched")
     p.add_argument("--precache", type=int, default=s.precache, metavar="N",
                    help="right after the cache resets at midnight, analyse the N most looked-up tickers of the "
-                        "last 30 days, one at a time with their AI overviews (default 100; 0 = off; needs the "
-                        "stats page, i.e. --lan or --public)")
+                        "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 100: ~50 "
+                        "min on Flash-Next; 0 = off; needs the stats page, i.e. --lan or --public)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--edge", action="store_true", default=s.edge,
                    help="run the 6M directional edge backtest for each ticker (off by default: ~2.5 s of CPU a lookup)")
@@ -820,6 +840,8 @@ def parse_args(argv=None):
     a = p.parse_args(argv)
     s.host, s.port, s.lan = a.host, a.port, a.lan
     s.llm_base_url, s.llm_model, s.llm_ctx = a.llm_url.rstrip("/"), a.llm_model, a.llm_ctx
+    s.cache_llm_base_url = "" if a.no_cache_llm else a.cache_llm_url.strip().rstrip("/")
+    s.cache_llm_model = a.cache_llm_model
     s.llm_max_tokens, s.llm_autoload, s.llm_reasoning = a.llm_max_tokens, a.llm_autoload, a.llm_reasoning
     s.llm_parallel = max(1, a.llm_parallel)
     s.llm_rpm = max(0, a.llm_rpm)
@@ -929,8 +951,11 @@ def main(argv=None):
     if app.jobs is not None and app.stats is not None and settings.precache:
         from ui.precache import Precacher
         precacher = app.precacher = Precacher(app.jobs, app.stats, settings.precache).start()
+        cache = app.jobs.cache_llm
         print(f"🌙 Pre-cache: each night after the cache resets, the {settings.precache} most looked-up tickers "
-              f"of the last 30 days{' with their AI overviews' if app.llm is not None else ''}, one at a time",
+              f"of the last 30 days{' with their AI overviews' if app.llm is not None else ''}, one at a time"
+              + (f"; overviews by {cache.settings.llm_base_url} model={cache.settings.llm_model or '(auto)'} "
+                 f"(--cache-llm-url), then the online model is primed again" if cache is not None else ""),
               flush=True)
     if app.valuation is not None:
         print(f"📉 Market valuation: the Shiller PE each weekday at {settings.valuation_at}, the S&P 500 forward PEG "

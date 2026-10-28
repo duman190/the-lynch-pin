@@ -45,10 +45,24 @@ def seed(rec, counts, status="done", ts=NOW - 3600):
     rec.flush(final=True)
 
 
-def make(settings, rec, ai=True):
+@pytest.fixture
+def night():
+    """The pre-cache's own model (--cache-llm-url), e.g. Flash-Next on the switchboard's port 8002."""
+    httpd, state = fake_lmstudio.serve(state={"delay": 0.0})
+    yield f"http://127.0.0.1:{httpd.server_address[1]}", state
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def make(settings, rec, ai=True, cache=False):
     jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=fakes.backends(engine=fakes.AnyEngine)),
-                    store=DayStore(), deadline=30, stats=rec, llm=L.LocalLLMClient(settings) if ai else None)
+                    store=DayStore(), deadline=30, stats=rec, llm=L.LocalLLMClient(settings) if ai else None,
+                    cache_llm=L.CacheLLMClient(settings) if cache else None)
     return jm
+
+
+def chats(state):
+    return [r for path, r in state.get("requests", []) if path == "/v1/chat/completions"]
 
 
 def test_top_tickers(rec):
@@ -88,6 +102,52 @@ def test_run_is_sequential_with_ai_and_off_the_books(settings, rec, lm):
         assert after["ai"]["n"] == 0                                         # nor a visitor's AI overview
         again = Precacher(jm, rec, count=100).run()                          # already cached: nothing re-run
         assert again["outcomes"] == {"cached": 3} and again["ai"] == 3
+    finally:
+        jm.shutdown()
+
+
+def test_overviews_by_the_cache_llm_then_the_online_model_is_primed(settings, rec, lm, night):
+    """--cache-llm-url writes the night's overviews, one at a time and outside the online model's minute; then the
+    online model is primed (the switchboard swapped it out). Visitors' overviews stay on the online model."""
+    from ui.server import PortalApp
+    seed(rec, {"NVDA": 2, "AMD": 1})
+    settings.cache_llm_base_url, settings.cache_llm_model = night[0], ""
+    jm = make(settings, rec, cache=True)
+    try:
+        out = Precacher(jm, rec, count=100).run()
+        assert out["analysed"] == 2 and out["ai"] == 2 and out["online_warm"]["ok"]
+        assert [jm.lookup(s)["ai"]["backend"] for s in ("NVDA", "AMD")] == ["cache", "cache"]
+        assert len(chats(night[1])) == 2 and all(r["messages"][-1]["content"] for r in chats(night[1]))  # no prime
+        day = chats(lm[1])
+        assert len(day) == 1 and day[0]["messages"][-1]["content"] == "" and day[0]["max_tokens"] == 1  # the prime
+        q = jm.inference.status()
+        assert q["since_start"] == {"cache": 2} and q["local_last_min"] == 0
+        assert jm.warm("MU", ai=False) == ("done", None)
+        assert jm.request_ai("MU")["backend"] == "local"  # a visitor at night: the online model
+        health = PortalApp(settings, jobs=jm, llm=jm.llm).health()
+        assert "cache_llm" in health["ai"] and "cache_llm" not in PortalApp._public_health(health)["ai"]
+    finally:
+        jm.shutdown()
+
+
+def test_cache_llm_down_falls_back_to_the_online_model(settings, rec, lm):
+    seed(rec, {"NVDA": 1})
+    settings.cache_llm_base_url = "http://127.0.0.1:9"  # nothing listens on the discard port
+    jm = make(settings, rec, cache=True)
+    try:
+        out = Precacher(jm, rec, count=100).run()
+        assert out["ai"] == 1 and jm.lookup("NVDA")["ai"]["backend"] == "local" and out["online_warm"]["ok"]
+    finally:
+        jm.shutdown()
+
+
+def test_no_cache_llm_no_extra_prime(settings, rec, lm):
+    seed(rec, {"NVDA": 1})
+    jm = make(settings, rec)
+    try:
+        out = Precacher(jm, rec, count=100).run()
+        assert out["ai"] == 1 and "online_warm" not in out
+        assert sum(r["messages"][-1]["content"] == "" for r in chats(lm[1])) == 1  # just the overview's own prime
     finally:
         jm.shutdown()
 

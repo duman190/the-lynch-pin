@@ -17,6 +17,7 @@ arrives separately; inline and prefilled ``<think>`` blocks are handled too, jus
 Degrades quietly: when LM Studio is not running or no model is loaded, ``status()`` reports
 ``available: False`` with a reason and the portal shows "AI offline" instead of an error.
 """
+import dataclasses
 import json
 import math
 import re
@@ -412,25 +413,54 @@ class LocalLLMClient:
             raise LLMUnavailable(f"model '{model}' is not loaded in LM Studio")
         raise LLMError(f"LM Studio HTTP {status}: {body_text}")
 
-    def _prime(self, model, system):
+    def _prime(self, model, system, force=False, timeout=60):
         """Sends the system prompt alone (empty user message, one token) once per prompt, and again after the
         server reports a miss (at most once a minute). Splash keeps a request's reusable state at the end of its
         prompt, so only a request that *ends* with the shared instructions leaves a state every ticker can resume
         from: after it each overview prefills just its data ("cached 224"). Harmless elsewhere (LM Studio caches a
-        prefix seen twice anyway). Best effort: errors are ignored."""
+        prefix seen twice anyway). Best effort: errors are ignored. ``force``: prime even if primed before.
+
+        Returns the reply's ``(HTTP status, usage)``, or None when nothing was sent or nothing came back."""
         key = (model, system["content"])
         with self._lock:
-            if self._primed == key or self._clock() - self._primed_at < self.PRIME_EVERY:
-                return
+            if not force and (self._primed == key or self._clock() - self._primed_at < self.PRIME_EVERY):
+                return None
             self._primed, self._primed_at = key, self._clock()
         payload = {"model": model, "messages": [system, {"role": "user", "content": ""}], "max_tokens": 1,
                    "temperature": 0, "stream": False}
         if self.reasoning_mode() == "off":
             payload["reasoning_effort"] = "none"
         try:
-            self.http.post(f"{self.base}/v1/chat/completions", json=payload, timeout=(3, 60)).close()
+            r = self.http.post(f"{self.base}/v1/chat/completions", json=payload, timeout=(3, timeout))
         except requests.RequestException:
-            pass
+            return None
+        try:
+            usage = r.json().get("usage") if r.status_code == 200 else None
+        except (ValueError, AttributeError):
+            usage = None
+        finally:
+            r.close()
+        return r.status_code, usage or {}
+
+    def warm_up(self, system=None):
+        """Primes the portal's system prompt now, even if it was primed before. After the nightly pre-cache ran on
+        another model behind the switchboard, this one was swapped out and its prefix cache went with it: this
+        request swaps it back in (13-23 s on the M6) and leaves the prompt cached, so the morning's first visitor
+        waits for neither. Returns ``{"ok", "seconds", "prompt_tokens" | "error"}`` for the log and /api/health."""
+        t0 = self._clock()
+        st = self.status(force=True)
+        if not st.get("available"):
+            return {"ok": False, "seconds": round(self._clock() - t0, 1), "error": st.get("reason") or "unavailable"}
+        sent = self._prime(st["model"], {"role": "system", "content": system or PORTAL_SYSTEM}, force=True,
+                           timeout=self.settings.llm_timeout)  # a swap waits for the model to load
+        out = {"ok": bool(sent and sent[0] == 200), "seconds": round(self._clock() - t0, 1)}
+        if out["ok"]:
+            out["prompt_tokens"] = sent[1].get("prompt_tokens")
+        else:
+            out["error"] = f"HTTP {sent[0]}" if sent else f"{self.base} did not answer"
+            with self._lock:
+                self._primed = None  # the first overview primes it instead
+        return out
 
     def _post_chat(self, payload):
         try:
@@ -509,6 +539,21 @@ class LocalLLMClient:
                     finish = choice["finish_reason"]
         emit(*splitter.flush())
         return "".join(parts), finish, usage, served
+
+
+class CacheLLMClient(LocalLLMClient):
+    """The nightly pre-cache's model (``--cache-llm-url``): ``LocalLLMClient`` on a second endpoint, by default
+    Qwen3.8-Flash-Next on Strata behind the switchboard (one request at a time, ~30 s an overview on the M6). Same
+    context, token budget, reasoning switch and timeout as the online model. No system-prompt priming: Strata's prefix
+    cache never hit (``cached_tokens: 0`` even after priming), so a prime would only add ~6 s of prefill now and then."""
+
+    def __init__(self, settings, session=None, clock=time.monotonic):
+        s = dataclasses.replace(settings, llm_base_url=settings.cache_llm_base_url.rstrip("/"),
+                                llm_model=settings.cache_llm_model, llm_parallel=1, llm_autoload=False)
+        super().__init__(s, session=session, clock=clock)
+
+    def _prime(self, model, system, force=False, timeout=60):
+        return None
 
 
 # ── portal prompt ───────────────────────────────────────────────────────────

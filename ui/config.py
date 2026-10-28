@@ -1,9 +1,51 @@
 """Runtime settings for the Lynch Pin web UI (env vars, overridable from the CLI)."""
 import os
+import re
+import shlex
 from dataclasses import dataclass, field
 
 UI_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(UI_DIR)
+
+# Git-ignored activate scripts whose `export NAME=value` lines hold this machine's keys and addresses (portal's venv first)
+LOCAL_ENV_FILES = (os.path.join(REPO_ROOT, "venv-portal", "bin", "activate"),
+                   os.path.join(REPO_ROOT, "venv", "bin", "activate"))
+
+
+def local_env(name, files=None):
+    """``name`` from the environment (even empty), else from the first ``export name=value`` line of ``files``
+    (default LOCAL_ENV_FILES), else ""."""
+    if name in os.environ:
+        return os.environ[name].strip()
+    for path in LOCAL_ENV_FILES if files is None else files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    m = re.match(r"^\s*export\s+" + re.escape(name) + r"=(.*)$", line)
+                    if m:
+                        try:
+                            val = shlex.split(m.group(1))
+                        except ValueError:
+                            continue
+                        return val[0].strip() if val else ""
+        except OSError:
+            pass
+    return ""
+
+
+def switchboard():
+    """The Mac mini M6's inference switchboard (github.com/duman190/inference-switchboard), e.g. ``http://<its Tailscale
+    IP>``: one model in memory at a time, picked by port. 8000: Qwen3.8-27B on Splash (4 streams), the online model;
+    8002: Qwen3.8-Flash-Next on Strata (one request at a time), the nightly pre-cache's. Set ``LYNCH_SWITCHBOARD`` in
+    the environment or a git-ignored activate script, never in the repo. Unset: LM Studio on this machine, as before."""
+    return local_env("LYNCH_SWITCHBOARD").rstrip("/")
+
+
+def _llm_default(env, on_switchboard, otherwise):
+    if env in os.environ:
+        return os.environ[env]
+    sb = switchboard()
+    return on_switchboard.format(sb=sb) if sb else otherwise
 
 
 def _env_int(name, default):
@@ -79,9 +121,17 @@ class Settings:
     stats_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_DAYS", 30))
     stats_visitor_days: int = field(default_factory=lambda: _env_int("LYNCH_UI_STATS_VISITOR_DAYS", 365))
 
-    # Local LLM (LM Studio, OpenAI-compatible). Empty model = use the first model the server lists.
-    llm_base_url: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_BASE_URL", "http://127.0.0.1:1234"))
-    llm_model: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_MODEL", ""))
+    # Local LLM (OpenAI-compatible: the switchboard, LM Studio...). Empty model = use the first model the server lists.
+    # With LYNCH_SWITCHBOARD: Qwen3.8-27B on its port 8000; without: LM Studio on this machine, its first loaded model.
+    llm_base_url: str = field(default_factory=lambda: _llm_default(
+        "LYNCH_LLM_BASE_URL", "{sb}:8000", "http://127.0.0.1:1234"))
+    llm_model: str = field(default_factory=lambda: _llm_default(
+        "LYNCH_LLM_MODEL", "mlx-community/Qwen3.8-27B-4bit", ""))
+    # The nightly pre-cache's model (ui/precache.py): its AI overviews are written on this endpoint instead, one at a
+    # time; afterwards the online model above is primed again (the switchboard swapped it out). Empty = the online model.
+    # With LYNCH_SWITCHBOARD: Qwen3.8-Flash-Next on its port 8002, ~30 s an overview on the M6, too slow for visitors.
+    cache_llm_base_url: str = field(default_factory=lambda: _llm_default("LYNCH_CACHE_LLM_URL", "{sb}:8002", ""))
+    cache_llm_model: str = field(default_factory=lambda: os.environ.get("LYNCH_CACHE_LLM_MODEL", "Qwen3.8-Flash-Next"))
     llm_ctx: int = field(default_factory=lambda: _env_int("LYNCH_LLM_CTX", 65536))
     # Output budget incl. reasoning tokens of thinking models (the model stops as soon as it is done)
     llm_max_tokens: int = field(default_factory=lambda: _env_int("LYNCH_LLM_MAX_TOKENS", 8192))
@@ -90,16 +140,17 @@ class Settings:
     # OpenAI-style servers; retried without it if the server rejects the field), "on" leaves the
     # server default.
     llm_reasoning: str = field(default_factory=lambda: os.environ.get("LYNCH_LLM_REASONING", "off").strip().lower())
-    # AI overviews streamed at once (one AI worker each). LM Studio batches parallel requests: more streams
-    # raise total tokens/s but slow each stream down (see "Local AI tuning" in ui/README.md).
-    llm_parallel: int = field(default_factory=lambda: _env_int("LYNCH_LLM_PARALLEL", 1))
+    # AI overviews streamed at once (one AI worker each). Splash and LM Studio batch parallel requests: more streams
+    # raise total tokens/s but slow each stream down (see "Local AI tuning" in ui/README.md). 4: the switchboard
+    # admits 4 requests per Splash model.
+    llm_parallel: int = field(default_factory=lambda: _env_int("LYNCH_LLM_PARALLEL", 4))
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
-    # Inference queue (ui/inference_queue.py). Low watermark: AI overviews per minute the local model is given. 24 is
-    # Qwen3.6-35B-A3B on standalone Splash with --llm-parallel 4 (M3 Pro, batch width 4): at 50 requests a minute every
-    # overview it took finished in at most 61 s (ui/README.md, "AI inference queue"). The 27B: 4. Above it, overviews
-    # go to Gemini up to gemini_rpm (high watermark = llm_rpm + gemini_rpm); above that, the Quick overview.
-    llm_rpm: int = field(default_factory=lambda: _env_int("LYNCH_LLM_RPM", 24))
+    # Inference queue (ui/inference_queue.py). Low watermark: AI overviews per minute the local model is given. 12 is
+    # Qwen3.8-27B on the M6's Splash with --llm-parallel 4: a 1-minute burst of 12 all finished within 57 s (ui/README.md,
+    # "Benchmark: the M6 Mac mini"); 56 for Qwen3.6-35B-A3B. Above it, overviews go to Gemini up to gemini_rpm (high
+    # watermark = llm_rpm + gemini_rpm); above that, the Quick overview.
+    llm_rpm: int = field(default_factory=lambda: _env_int("LYNCH_LLM_RPM", 12))
     # Gemini offload (ui/gemini.py): on when GEMINI_API_KEY is set. Free tier: 15 requests a minute per model
     # (Google's 429 names the quota); 975 a day leaves room for the daily scans' backup tier.
     gemini: bool = field(default_factory=lambda: _env_bool("LYNCH_GEMINI", True))
@@ -115,7 +166,8 @@ class Settings:
     # FMP multi-source growth: auto = on when FMP_API_KEY is set, or on / off
     enrich: str = field(default_factory=lambda: _enrich_mode(os.environ.get("LYNCH_UI_ENRICH", "auto")))
     # Nightly pre-cache (ui/precache.py, needs the stats page: --lan / --public): right after midnight, analyse the
-    # N most looked-up tickers of the last 30 days, one at a time with their AI overviews (0 = off)
+    # N most looked-up tickers of the last 30 days, one at a time with their AI overviews, written by the
+    # cache_llm model when it is up (0 = off)
     precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 100))
     # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; the daily scans need up to 25)
     fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 225))
@@ -126,8 +178,8 @@ class Settings:
     # the workers manage (2026-10-24) still leaves room for dozens of visitors at once
     visitor_analyses: int = field(default_factory=lambda: _env_int("LYNCH_UI_VISITOR_ANALYSES", 2))
     # Tickers cached per day: 2500 is about what the AI writes in a day at full load before Gemini's daily cap runs
-    # out (39 overviews a minute, 24 local + 15 Gemini, for 975 / 15 = 65 minutes). An entry is ~35 KB of RAM with
-    # its AI overview (~21 KB without), so 2500 cost ~85 MB (measured: server RSS +80 MB over 500, and cold lookups
+    # out (39 overviews a minute, 24 local at the old default watermark + 15 Gemini, for 975 / 15 = 65 minutes). An
+    # entry is ~35 KB of RAM with its AI overview (~21 KB without), so 2500 cost ~85 MB (measured: server RSS +80 MB over 500, and cold lookups
     # with AI off were not slower with a full 2500 cache, see ui/README.md). Charts on disk (~560 KB per ticker, swept
     # at midnight) grow with the distinct tickers analysed that day, not with the capacity: an evicted ticker's
     # chart stays until midnight. FMP is only called on a miss (free plan: 250 calls/day), so a bigger cache never

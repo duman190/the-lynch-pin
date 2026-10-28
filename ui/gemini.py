@@ -186,8 +186,8 @@ class GeminiClient(LocalLLMClient):
         return {"available": True, "model": self.model_id, "model_short": self.model_id, "ctx": ctx,
                 "ctx_configured": ctx, "ctx_loaded": ctx, "base_url": self.base}
 
-    def _prime(self, model, system):
-        pass  # a priming request would cost one of the 15 a minute
+    def _prime(self, model, system, force=False, timeout=60):
+        return None  # a priming request would cost one of the 15 a minute
 
     def _post_chat(self, payload):
         try:

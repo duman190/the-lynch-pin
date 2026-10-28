@@ -226,14 +226,15 @@ class AIJob:
         self.created, self.started, self.finished, self.gen = now, None, None, None
         self.stream = AIStream()
         self.warm = False  # started by the nightly pre-cache, not a visitor: left off the stats page
-        self.backend = backend  # "local" (LM Studio / Splash) or "gemini" (ui/inference_queue.py routed it there)
+        # "local" (--llm-url), "gemini" or "cache" (the pre-cache's --cache-llm-url): ui/inference_queue.py routed it
+        self.backend = backend
 
 
 class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
                  backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None,
-                 refresh_cooldown=0.0):
+                 refresh_cooldown=0.0, cache_llm=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -296,7 +297,12 @@ class JobManager:
         self.gemini_workers = 0 if gemini is None else max(1, int(budget.rpm if budget is not None
                                                                   else getattr(settings, "gemini_rpm", 15)))
         self.gemini_deadline = float(getattr(settings, "gemini_timeout", 120)) + 30  # one attempt (+connect) + slack
-        self._ai_pool = {}  # ai worker token → "local" | "gemini"
+        # The nightly pre-cache's model (ui.llm.CacheLLMClient, --cache-llm-url): one worker, as the pre-cache writes one
+        # overview at a time (and Strata takes one request at a time)
+        self.cache_llm = cache_llm
+        self._cache_queue = collections.deque()
+        self.cache_workers = 0 if cache_llm is None else 1
+        self._ai_pool = {}  # ai worker token → "local" | "gemini" | "cache"
         # Today's complete overviews by ticker: never generated twice a day, even after a ↻ Refresh or an eviction
         self._ai_final, self._ai_final_day = {}, None
         self._stop = False
@@ -309,6 +315,8 @@ class JobManager:
                     self._spawn_ai_worker()
             for _ in range(self.gemini_workers):
                 self._spawn_ai_worker("gemini")
+            for _ in range(self.cache_workers):
+                self._spawn_ai_worker("cache")
             wd = threading.Thread(target=self._watchdog, name="lynch-watchdog", daemon=True)
             wd.start()
             self._threads.append(wd)
@@ -410,7 +418,8 @@ class JobManager:
         inference queue (ui/inference_queue.py): the local model, Gemini, or — above the high watermark, or with no model up — none
         for now: ``status: unavailable`` with ``fallback: quick`` (the page shows the Quick overview and ↻ Retry AI)
         and ``retry_after``. A complete overview is kept until the cache resets and never generated again that
-        day; a partial one can be retried (``refresh``). ``warm``: the nightly pre-cache (local model only)."""
+        day; a partial one can be retried (``refresh``). ``warm``: the nightly pre-cache (its own model while that
+        one answers, else the local model; never Gemini)."""
         if self.llm is None and self.gemini is None:
             return {"ticker": sym, "status": "unavailable", "error": "AI overview disabled"}
         with self._cv:
@@ -439,21 +448,32 @@ class JobManager:
                 del self._recent_ai[k]
             if not refresh and sym in self._recent_ai:
                 return self._ai_snapshot(self._recent_ai[sym])
-        # local model status: a network probe (cached 15 s) — outside the lock
+        # local model status: a network probe (cached 15 s) — outside the lock. The switchboard answers it without
+        # swapping models, so probing the pre-cache's model never unloads the online one.
         st = self.llm.status() if self.llm is not None else {"available": False, "reason": "no local model"}
+        cache_ok = warm and self.cache_llm is not None and bool(self.cache_llm.status().get("available"))
         with self._cv:
             job = self._ai_inflight.get(sym)
             if job is None:
                 local_pending = len(self._ai_queue) + sum(j.backend == "local" for j in self._ai_running.values())
-                route, wait = self.inference.admit(sym, bool(st.get("available")), local_pending, warm=warm)
+                route, wait = self.inference.admit(sym, bool(st.get("available")), local_pending, warm=warm,
+                                                   cache_ok=cache_ok)
                 if route is None:
                     return self._ai_paused(sym, st, wait, warm)
                 job = AIJob(sym, entry, self._clock(), backend=route)
                 job.warm = warm
                 self._ai_inflight[sym] = job
-                (self._ai_queue if route == "local" else self._gemini_queue).append(job)
+                self._pool(route)[0].append(job)
                 self._cv.notify_all()
             return self._ai_snapshot(job)
+
+    def _pool(self, backend):
+        """``(queue, workers, client)`` of an AI backend: "local" (--llm-url), "gemini" or "cache" (--cache-llm-url)."""
+        if backend == "gemini":
+            return self._gemini_queue, self.gemini_workers, self.gemini
+        if backend == "cache":
+            return self._cache_queue, self.cache_workers, self.cache_llm
+        return self._ai_queue, self.ai_workers, self.llm
 
     def _ai_paused(self, sym, st, wait, warm=False):
         """Lock held: no AI for this request now → the page shows the Quick overview with ↻ Retry AI. On the stats
@@ -549,8 +569,7 @@ class JobManager:
         now = self._clock()
         pos = 0
         if job.status == "queued":
-            queue, workers = ((self._ai_queue, self.ai_workers) if job.backend == "local"
-                              else (self._gemini_queue, self.gemini_workers))
+            queue, workers, _ = self._pool(job.backend)
             busy = sum(j.backend == job.backend for j in self._ai_running.values()) >= workers
             try:
                 pos = queue.index(job) + 1 + (1 if busy else 0)
@@ -672,8 +691,8 @@ class JobManager:
 
     def _ai_worker(self, token, backend="local"):
         from ui.llm import LLMCancelled, LLMError, LLMUnavailable, public_error, ticker_narrative
-        queue, client = (self._ai_queue, self.llm) if backend == "local" else (self._gemini_queue, self.gemini)
-        attempts = 2 if backend == "local" else 1  # Gemini: one request per overview admitted against its quota
+        queue, _, client = self._pool(backend)
+        attempts = 1 if backend == "gemini" else 2  # Gemini: one request per overview admitted against its quota
         while True:
             with self._cv:
                 while not queue and not self._stop and token in self._ai_live:
@@ -746,6 +765,8 @@ class JobManager:
             st["ai_queue"] = len(self._ai_queue)
             st["ai_running"] = ", ".join(sorted(j.sym for j in self._ai_running.values())) or None
             st["ai_workers"] = self.ai_workers
+            if self.cache_llm is not None:
+                st["cache_llm_queue"] = len(self._cache_queue)
             if self.gemini is not None:
                 st["gemini_queue"] = len(self._gemini_queue)
                 st["gemini_workers"] = self.gemini_workers
@@ -943,22 +964,22 @@ class JobManager:
                     if job.started is not None and self._clock() - job.started > self.deadline:
                         self._expire(job)
                 for aj in list(self._ai_running.values()):
-                    limit = self.ai_deadline if aj.backend == "local" else self.gemini_deadline
+                    limit = self.gemini_deadline if aj.backend == "gemini" else self.ai_deadline
                     if aj.started is None or self._clock() - aj.started <= limit:
                         continue
                     print(f"⏱️  {aj.sym}: AI overview exceeded {int(limit)}s — abandoning {aj.backend} ai worker "
                           f"{aj.gen}, starting a fresh one")
                     aj.status, aj.finished = "error", self._clock()
-                    aj.error = ("local model timed out; LM Studio may still be busy — retry in a minute"
-                                if aj.backend == "local" else "Gemini timed out — retry in a minute")
+                    aj.error = {"local": "local model timed out; LM Studio may still be busy — retry in a minute",
+                                "cache": "overnight model timed out — retry in a minute"}.get(
+                        aj.backend, "Gemini timed out — retry in a minute")
                     self._ai_live.discard(aj.gen)
                     self._ai_pool.pop(aj.gen, None)
                     self._finish_ai(aj)
-                    if self.stats is not None:
+                    if self.stats is not None and not aj.warm:  # the pre-cache stays off the stats page
                         self.stats.ai(aj.sym, "timeout", total_s=aj.finished - aj.started,
                                       wait_s=aj.started - aj.created, backend=aj.backend)
-                        if not aj.warm:
-                            self.stats.ai_route(aj.sym, "quick", "timeout")
+                        self.stats.ai_route(aj.sym, "quick", "timeout")
                     self._spawn(self._spawn_ai_worker, aj.backend)
                 self._cv.wait(1.0)
 

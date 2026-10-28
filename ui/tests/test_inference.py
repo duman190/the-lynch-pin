@@ -91,6 +91,15 @@ def test_local_then_gemini_then_paused_until_the_minute_frees_up(tmp_path):
     assert st["since_start"] == {"local": 3, "gemini": 3, "paused": 2}
 
 
+def test_the_precache_goes_to_its_own_model_outside_the_minute(tmp_path):
+    q = InferenceQueue(1, GeminiBudget(str(tmp_path / "g.sqlite3"), rpm=3), clock=Clock(0.0))
+    assert q.admit("A", True, 0, warm=True, cache_ok=True) == ("cache", 0)
+    assert q.admit("B", True, 0, cache_ok=True)[0] == "local"   # a visitor never gets the overnight model
+    assert q.admit("C", True, 0, warm=True)[0] == "local"       # overnight model down: the online one, as before
+    assert q.status()["since_start"] == {"cache": 1, "local": 2}
+    assert q.status()["local_last_min"] == 2                    # the cache route took none of the local minute
+
+
 def test_a_slow_local_model_never_builds_more_than_its_share_of_backlog(tmp_path):
     q = InferenceQueue(3, GeminiBudget(str(tmp_path / "g.sqlite3"), rpm=15), clock=Clock(0.0))
     assert q.admit("A", local_ok=True, local_pending=3)[0] == "gemini"  # its minute isn't full, its queue is
@@ -204,7 +213,7 @@ def test_cli_sets_the_watermarks():
     s, _ = parse_args(["--llm-rpm", "12", "--gemini-rpm", "10", "--gemini-rpd", "500", "--gemini-model", "m"])
     assert (s.llm_rpm, s.gemini_rpm, s.gemini_rpd, s.gemini_model, s.gemini) == (12, 10, 500, "m", True)
     assert parse_args(["--no-gemini"])[0].gemini is False
-    assert Settings().llm_rpm == 24 and Settings().gemini_model == "gemini-flash-lite-latest"
+    assert Settings().llm_rpm == 12 and Settings().gemini_model == "gemini-flash-lite-latest"  # the 27B's minute
 
 
 # ── the job manager ──────────────────────────────────────────────────────────

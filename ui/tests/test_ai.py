@@ -41,12 +41,40 @@ def test_defaults_are_configurable(monkeypatch):
     assert s.llm_model == "google/gemma-3-27b" and s.llm_ctx == 32768
 
 
+def test_switchboard_defaults(monkeypatch, tmp_path):
+    """With LYNCH_SWITCHBOARD (the Mac mini's address, kept out of the repo) the online model is Qwen3.8-27B on port
+    8000 and the pre-cache's Qwen3.8-Flash-Next on port 8002; outside the environment it is read from a git-ignored
+    activate script. conftest sets it empty: LM Studio's defaults, no pre-cache model."""
+    from ui import config
+    assert (Settings().llm_base_url, Settings().cache_llm_base_url) == ("http://127.0.0.1:1234", "")
+    monkeypatch.setenv("LYNCH_SWITCHBOARD", "http://100.64.0.1/")
+    s = Settings()
+    assert (s.llm_base_url, s.llm_model) == ("http://100.64.0.1:8000", "mlx-community/Qwen3.8-27B-4bit")
+    assert (s.cache_llm_base_url, s.cache_llm_model) == ("http://100.64.0.1:8002", "Qwen3.8-Flash-Next")
+    assert (s.llm_rpm, s.llm_parallel) == (12, 4)  # the 27B's 1-minute point with the switchboard's 4 streams
+    monkeypatch.setenv("LYNCH_LLM_BASE_URL", "http://10.0.0.5:1234")  # an explicit setting wins
+    monkeypatch.setenv("LYNCH_CACHE_LLM_URL", "")                     # "" = the online model pre-caches
+    s = Settings()
+    assert (s.llm_base_url, s.llm_model, s.cache_llm_base_url) == ("http://10.0.0.5:1234", "mlx-community/Qwen3.8-27B-4bit", "")
+    for k in ("LYNCH_SWITCHBOARD", "LYNCH_LLM_BASE_URL", "LYNCH_CACHE_LLM_URL"):
+        monkeypatch.delenv(k)
+    env = tmp_path / "activate"
+    env.write_text('export GEMINI_API_KEY=x\nexport LYNCH_SWITCHBOARD="http://100.64.0.1"  # the mini\n')
+    monkeypatch.setattr(config, "LOCAL_ENV_FILES", (str(tmp_path / "missing"), str(env)))
+    assert config.switchboard() == "http://100.64.0.1" and Settings().cache_llm_base_url == "http://100.64.0.1:8002"
+    monkeypatch.setattr(config, "LOCAL_ENV_FILES", (str(tmp_path / "missing"),))
+    assert (Settings().llm_base_url, Settings().llm_model) == ("http://127.0.0.1:1234", "")
+
+
 def test_cli_overrides():
     from ui.server import parse_args
     s, _ = parse_args(["--llm-model", "qwen3-8b", "--llm-ctx", "16384", "--llm-url", "http://10.0.0.5:8080/",
                        "--llm-reasoning", "on"])
     assert (s.llm_model, s.llm_ctx, s.llm_base_url, s.llm_reasoning) == ("qwen3-8b", 16384, "http://10.0.0.5:8080", "on")
     assert parse_args([])[0].llm_reasoning == "off"
+    s, _ = parse_args(["--cache-llm-url", " http://10.0.0.5:8002/ ", "--cache-llm-model", ""])
+    assert (s.cache_llm_base_url, s.cache_llm_model) == ("http://10.0.0.5:8002", "")
+    assert parse_args(["--cache-llm-url", "http://10.0.0.5:8002", "--no-cache-llm"])[0].cache_llm_base_url == ""
 
 
 def test_verbose_flag_reaches_health(tmp_path):
@@ -606,6 +634,37 @@ def test_system_prompt_is_primed_once_then_again_after_a_reported_miss(settings,
     lm[1]["requests"].clear()
     c.generate("- MSFT: x")  # a bare user prompt has nothing to prime
     assert all(r["messages"][-1]["content"] for _, r in lm[1]["requests"])
+
+
+def test_warm_up_primes_again_after_the_night(settings, lm):
+    """After the pre-cache ran on another model, the switchboard had swapped the online model out: warm_up primes the
+    system prompt although it was primed before, and says how it went."""
+    c = L.LocalLLMClient(settings)
+    c.generate(L.build_portal_messages(_analysed(settings)))  # primed once already
+    lm[1]["requests"].clear()
+    out = c.warm_up()
+    chats = [r for path, r in lm[1]["requests"] if path == "/v1/chat/completions"]
+    assert len(chats) == 1 and chats[0]["max_tokens"] == 1 and not chats[0]["stream"]
+    assert chats[0]["messages"] == [{"role": "system", "content": L.PORTAL_SYSTEM}, {"role": "user", "content": ""}]
+    assert out["ok"] and "prompt_tokens" in out and out["seconds"] >= 0
+    lm[1]["http_errors"] = [(503, {"error": {"message": "failed to load"}})]  # the switchboard's failed swap
+    out = c.warm_up()
+    assert not out["ok"] and out["error"] == "HTTP 503" and c._primed is None  # the first overview primes it instead
+    settings.llm_base_url = "http://127.0.0.1:9"
+    out = L.LocalLLMClient(settings).warm_up()
+    assert not out["ok"] and "not reachable" in out["error"]
+
+
+def test_cache_llm_client_has_its_own_endpoint_and_never_primes(settings, lm):
+    """The pre-cache's model (--cache-llm-url): Strata's prefix cache never hit, so no priming request."""
+    settings.cache_llm_base_url, settings.cache_llm_model = lm[0] + "/", ""
+    settings.llm_base_url = "http://127.0.0.1:9"  # the online model is not asked
+    c = L.CacheLLMClient(settings)
+    assert c.base == lm[0] and c.settings.llm_parallel == 1 and c.settings.llm_reasoning == settings.llm_reasoning
+    text, _ = c.generate(L.build_portal_messages(_analysed(settings)))
+    chats = [r for path, r in lm[1]["requests"] if path == "/v1/chat/completions"]
+    assert text and len(chats) == 1 and chats[0]["messages"][-1]["content"]
+    assert settings.llm_base_url == "http://127.0.0.1:9"  # the portal's own settings untouched
 
 
 def test_jit_warning_when_not_loaded(settings, lm):

@@ -1,6 +1,6 @@
 """Minimal LM Studio impersonator for tests and offline demos (no model required).
 
-    python -m ui.tests.fake_lmstudio --port 18080 --delay 0.04   # then: python -m ui.server --llm-url http://127.0.0.1:18080
+    python -m ui.tests.fake_lmstudio --port 18080 --delay 0.04   # then: python -m ui.server --llm-url http://127.0.0.1:18080 --llm-model ''
 
 Implements GET /v1/models, GET /api/v0/models, POST /api/v1/models/load and POST /v1/chat/completions
 (streaming SSE like LM Studio, or plain JSON when ``stream`` is false). The reply is a Lynch-style
