@@ -11,8 +11,9 @@ overview). Reports where each request went, time to first token and total time p
 
 Tickers come from database/*.txt (372 unique), are analysed once a day with live Yahoo data (FMP enrichment off,
 so the free plan's quota is left alone) in a few processes, and cached in ui/.cache/inference_bench/analyses.pkl.
-No two requests share a ticker, so no overview is cached or joined, and no ticker is used twice in a day across
-runs (warm-up included; the list is ui/.cache/inference_bench/used.json): a prompt the server has seen before comes
+No two requests share a ticker, so no overview is cached or joined, and no ticker the local model wrote (warm-up
+included) is used again that day (the list is ui/.cache/inference_bench/used.json; tickers that went to Gemini or
+the Quick overview stay available, so a day has room for ~10 runs): a prompt the server has seen before comes
 almost entirely from its prefix cache (Splash: ~610 of ~630 tokens instead of the ~256 of the shared system prompt),
 which flatters the local model's time to first token. --reuse allows repeats.
 
@@ -237,8 +238,8 @@ def run(a):
         sys.exit(f"only {len(data)} analysed tickers not used yet today: analyse more with --prepare N")
     tickers = list(data)[:n]
     spare = list(data)[n:n + 2]
-    if not a.fake:
-        mark_used(tickers + ([] if a.no_warmup else spare))
+    if not a.fake and not a.no_warmup:
+        mark_used(spare)
     if not a.fake and not a.no_warmup and st.get("available") and spare:
         warmup(llm, data, spare)
     store = DayStore()
@@ -272,6 +273,8 @@ def run(a):
         for t in threads:
             t.join(max(0.0, limit - time.monotonic()))
     finally:
+        if not a.fake:  # only prompts the local server saw can hit its prefix cache in a later run
+            mark_used([sym for sym, route in routed.items() if route == "local"])
         jm.shutdown()
         for h in servers:
             h.shutdown()
@@ -420,47 +423,64 @@ def cdf_chart(results, a, path, n, delivered, started=None):
     return path
 
 
-# Local runs side by side: one blue ramp, darker = lower low watermark (validated as an ordinal ramp on #1A1A1A)
-RAMP = ("#1c5cab", "#3987e5", "#6da7ec", "#b7d3f6")
+# Local runs side by side: one hue per model, darker = lower low watermark. The hues and each ramp were validated
+# on #1A1A1A (categorical across models, ordinal within one); the blue is the single-model ramp of earlier charts.
+RAMPS = (("#1c5cab", "#3987e5", "#6da7ec", "#b7d3f6"),   # blue
+         ("#147a57", "#25b383", "#8fdcbd"),              # aqua
+         ("#6a5bd3", "#9a8fec", "#cbc5f7"))              # violet
 
 
-def compare_chart(paths, path):
-    """Several runs on the same two CDFs: a local line per low watermark, Gemini pooled over the runs."""
+def model_name(args):
+    name = (args.get("llm_model") or args.get("llm_url") or "local").rstrip("/").split("/")[-1]
+    return name.removesuffix("-4bit") if hasattr(name, "removesuffix") else name
+
+
+def compare_chart(paths, path, gemini_paths=None):
+    """Several runs on the same two CDFs: a local line per run (one hue per model, a step per low watermark),
+    Gemini pooled over the runs (or over ``gemini_paths``: earlier runs, to compare without spending Gemini
+    requests), and one legend under both panels with a column per model."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
     from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 
-    runs = sorted((json.load(open(p)) for p in paths), key=lambda d: d["args"]["llm_rpm"])
-    if len(runs) > len(RAMP):
-        sys.exit(f"at most {len(RAMP)} runs per chart")
-    secs = FuncFormatter(lambda x, _: f"{x:g}s" if x < 60 else f"{x / 60:g}m")
-    fig, axes = plt.subplots(1, 2, figsize=(13, 6.6), dpi=150, facecolor=SURFACE)
+    runs = [json.load(open(p)) for p in paths]
+    models = list(dict.fromkeys(model_name(d["args"]) for d in runs))  # in the order given
+    if len(models) > len(RAMPS):
+        sys.exit(f"at most {len(RAMPS)} models per chart")
+    groups = {m: sorted((d for d in runs if model_name(d["args"]) == m), key=lambda d: d["args"]["llm_rpm"])
+              for m in models}
+    for m, ramp in zip(models, RAMPS):
+        if len(groups[m]) > len(ramp):
+            sys.exit(f"at most {len(ramp)} runs of {m} per chart")
     ok = lambda r: r["outcome"] in ("complete", "partial")  # noqa: E731
-    summary = []
-    for d in runs:
-        res, n = d["results"], d["requests"]
-        window = d["args"]["minutes"] * 60
-        got = [r for r in res if ok(r)]
-        started = [r for r in got if r.get("ttft_s") is not None and r["t"] + r["ttft_s"] <= window]
-        summary.append(f"{d['args']['llm_rpm']}/min → {len(got)}/{n} ({100 * len(got) / n:.0f}%)")
-        d["_started"] = len(started)
+    vals = lambda rows, key: sorted(r[key] for r in rows if ok(r) and r.get(key) is not None)  # noqa: E731
+    series, summary = [], []  # (label, color, rows)
+    for m, ramp in zip(models, RAMPS):
+        got = []
+        for d, color in zip(groups[m], ramp):
+            local = [r for r in d["results"] if r["route"] == "local"]
+            series.append((f"{d['args']['llm_rpm']}/min", color, local))
+            got.append(f"{d['args']['llm_rpm']}/min → {sum(ok(r) for r in d['results'])}/{d['requests']}")
+        summary.append(f"{m}: " + " · ".join(got))
+    gruns = [json.load(open(p)) for p in gemini_paths] if gemini_paths else runs
+    gem = [r for d in gruns for r in d["results"] if r["route"] == "gemini"]
+    if gem:
+        label = "all runs" if not gemini_paths else f"{len(gruns)} earlier runs"
+        series.append((f"{gruns[0]['args']['gemini_rpm']}/min, {label}", COLORS["gemini"], gem))
+
+    secs = FuncFormatter(lambda x, _: f"{x:g}s" if x < 1000 else f"{x / 60:.0f}m")  # 100s, not 1.66667m
+    fig, axes = plt.subplots(1, 2, figsize=(19.5, 9), dpi=150, facecolor=SURFACE)
     for ax, (key, title, sub) in zip(axes, (("ttft_s", "Time to first token", "from the request, queue wait included"),
                                             ("total_s", "Total time", "from the request to the finished overview"))):
         ax.set_facecolor(SURFACE)
-        series = [(f"Local, low watermark {d['args']['llm_rpm']}/min", RAMP[i],
-                   [r[key] for r in d["results"] if r["route"] == "local" and ok(r) and r.get(key) is not None])
-                  for i, d in enumerate(runs)]
-        series.append((f"Gemini, {runs[0]['args']['gemini_rpm']}/min (all runs)", COLORS["gemini"],
-                       [r[key] for d in runs for r in d["results"] if r["route"] == "gemini" and ok(r)
-                        and r.get(key) is not None]))
-        for name, color, v in series:
-            v = sorted(v)
+        for _, color, rows in series:
+            v = vals(rows, key)
             if not v:
                 continue
             ys = [(i + 1) / len(v) for i in range(len(v))]
-            ax.step([v[0]] + v, [0] + ys, where="post", color=color, lw=2,
-                    label=f"{name}: n={len(v)}, p50 {fmt(q(v, .5))}, p90 {fmt(q(v, .9))}, p100 {fmt(v[-1])}")
+            ax.step([v[0]] + v, [0] + ys, where="post", color=color, lw=2)
             ax.plot([v[-1]], [1.0], "D", ms=6, color=color, mec=SURFACE, mew=1.5, zorder=3)  # p100
         ax.axvline(60, color=MUTED, lw=1, ls=(0, (4, 3)), zorder=1)
         ax.text(60, 0.02, " 1 min", color=MUTED, fontsize=8.5, va="bottom")
@@ -481,14 +501,43 @@ def compare_chart(paths, path):
         ax.set_xlabel("log scale", color=MUTED, fontsize=8.5)
         ax.set_title(f"{title}\n", color=INK, fontsize=12, fontweight="bold", loc="left")
         ax.text(0, 1.02, sub, transform=ax.transAxes, color=MUTED, fontsize=9, va="bottom")
-        leg = ax.legend(loc="upper left", bbox_to_anchor=(0, -0.13), fontsize=8.3, frameon=False, labelcolor=INK)
-        for h in leg.legend_handles if hasattr(leg, "legend_handles") else leg.legendHandles:
-            h.set_linewidth(3)
-    a0 = runs[0]["args"]
-    fig.suptitle(f"AI overview at {a0['rate']:g} requests/min for {a0['minutes']:g} min, every request a different "
-                 f"ticker, by the local model's low watermark\nGot an AI overview: " + " · ".join(summary),
-                 color=INK, fontsize=11, x=0.01, ha="left", linespacing=1.5)
-    fig.tight_layout(rect=(0, 0, 1, 0.91))
+
+    # One legend for both panels: a column per model (header row, then its runs), Gemini last.
+    def entry(label, color, rows):
+        t, tot = vals(rows, "ttft_s"), vals(rows, "total_s")
+        stats = (f"n={len(tot)} · TTFT p50 {fmt(q(t, .5))} p90 {fmt(q(t, .9))} · total p50 {fmt(q(tot, .5))} "
+                 f"p100 {fmt(tot[-1] if tot else None)}")
+        return Line2D([], [], color=color, lw=3), f"{label}  {stats}"
+
+    blank = Line2D([], [], lw=0)
+    columns, i = [], 0
+    for m in models:
+        col = [(blank, m)] + [entry(*s) for s in series[i:i + len(groups[m])]]
+        i += len(groups[m])
+        columns.append(col)
+    if gem:
+        columns.append([(blank, "Gemini Flash-Lite"), entry(*series[-1])])
+    rows_n = max(len(c) for c in columns)
+    handles, labels = [], []
+    for col in columns:
+        col = col + [(blank, "")] * (rows_n - len(col))
+        handles += [h for h, _ in col]
+        labels += [lab for _, lab in col]
+    leg = fig.legend(handles, labels, loc="lower left", bbox_to_anchor=(0.01, 0.01), ncol=len(columns),
+                     fontsize=8.3, frameon=False, labelcolor=INK, handlelength=2, columnspacing=2.2)
+    for t, lab in zip(leg.get_texts(), labels):
+        if lab in models or lab == "Gemini Flash-Lite":
+            t.set_fontweight("bold")
+    legend_h = 0.027 * rows_n + 0.02
+    a0, rates = runs[0]["args"], sorted({d["args"]["rate"] for d in runs})
+    rate = f"{rates[0]:g}" if len(rates) == 1 else f"{rates[0]:g}-{rates[-1]:g}"
+    fig.suptitle(f"AI overview at {rate} requests/min for {a0['minutes']:g} min, every request a different "
+                 f"ticker, by model and low watermark (darker = lower). Got an AI overview"
+                 + (" (local model only; Gemini's line is from earlier runs)" if gemini_paths else "")
+                 + ":\n" + "\n".join(summary),
+                 color=INK, fontsize=10.5, x=0.01, ha="left", linespacing=1.5)
+    fig.subplots_adjust(left=0.04, right=0.99, wspace=0.12, bottom=legend_h + 0.075,
+                        top=0.94 - 0.026 * (len(summary) + 1))
     fig.savefig(path, facecolor=SURFACE)
     plt.close(fig)
     return path
@@ -506,6 +555,7 @@ def main(argv=None):
     ap.add_argument("--no-warmup", action="store_true", help="skip the two warm-up overviews")
     ap.add_argument("--reuse", action="store_true", help="allow tickers already used today (prefix-cache hits)")
     ap.add_argument("--compare", nargs="+", metavar="JSON", help="draw these runs' CDFs on one chart, then exit")
+    ap.add_argument("--gemini-from", nargs="+", metavar="JSON", help="with --compare: Gemini's line from these runs")
     ap.add_argument("--gemini-rpm", type=int, default=s.gemini_rpm)
     ap.add_argument("--gemini-rpd", type=int, default=s.gemini_rpd)
     ap.add_argument("--gemini-model", default=s.gemini_model)
@@ -524,7 +574,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.compare:
         os.makedirs(a.out, exist_ok=True)
-        print(compare_chart(a.compare, os.path.join(a.out, "inference_bench-compare.png")))
+        print(compare_chart(a.compare, os.path.join(a.out, "inference_bench-compare.png"), a.gemini_from))
         return
     if a.prepare:
         got = analyses(a.prepare, a.prepare_workers)
