@@ -936,9 +936,11 @@ def main(argv=None):
     if app.jobs is not None:
         print(f"📈 Growth enrichment: {'on, up to ' + str(settings.fmp_limit) + ' FMP requests per 24 h' if settings.enrich_enabled else 'off'}", flush=True)
         print(f"📈 Analysis workers: {app.jobs.workers}"
-              f"{' (one process each)' if app.jobs.processes else ''}", flush=True)
+              f"{' (one process each)' if app.jobs.processes else ''}"
+              f"{' (the AI model runs on this machine; --workers to change)' if settings.workers == 0 and app.jobs.workers == 1 and app.llm is not None else ''}",
+              flush=True)
         free = available_mb()
-        if settings.workers == 0 and app.llm is None and free is not None and app.jobs.workers < CPU_WORKERS:
+        if settings.workers == 0 and 1 < app.jobs.workers < CPU_WORKERS and free is not None:
             print(f"⚠️  only {free} MB of RAM free: {app.jobs.workers} workers instead of {CPU_WORKERS} "
                   f"(~{WORKER_MB} MB each). Free memory (e.g. unload the LM Studio model) or set --workers.",
                   flush=True)

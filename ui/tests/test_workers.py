@@ -49,8 +49,15 @@ def test_worker_count_defaults(monkeypatch):
     monkeypatch.setattr(config, "available_mb", lambda: 64 * 1024)
     s = Settings()
     assert s.workers == 0
-    assert s.analysis_workers(with_ai=True) == 1  # the local model is the bottleneck: one at a time
+    s.llm_base_url = "http://127.0.0.1:1234"  # LM Studio here: it needs the cores and RAM, one analysis at a time
+    assert s.llm_on_this_machine and s.analysis_workers(with_ai=True) == 1
     assert s.analysis_workers(with_ai=False) == CPU_WORKERS
+    for remote in ("http://100.64.0.1:8000", "http://mini.tailnet.ts.net:8000"):  # the switchboard / --llm-url
+        s.llm_base_url = remote
+        assert not s.llm_on_this_machine and s.analysis_workers(with_ai=True) == CPU_WORKERS
+    for local in ("http://localhost:1234", "http://[::1]:1234"):
+        s.llm_base_url = local
+        assert s.llm_on_this_machine
     s.workers = 3
     assert s.analysis_workers(with_ai=True) == s.analysis_workers(with_ai=False) == 3
 

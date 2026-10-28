@@ -1,7 +1,9 @@
 """Runtime settings for the Lynch Pin web UI (env vars, overridable from the CLI)."""
+import ipaddress
 import os
 import re
 import shlex
+import urllib.parse
 from dataclasses import dataclass, field
 
 UI_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -82,7 +84,7 @@ def available_mb():
 
 
 def auto_workers(free_mb=None):
-    """Workers for --no-ai: CPU_WORKERS, fewer when free RAM can't hold them (never below 2)."""
+    """Default workers: CPU_WORKERS, fewer when free RAM can't hold them (never below 2)."""
     free_mb = available_mb() if free_mb is None else free_mb
     if free_mb is None:
         return CPU_WORKERS
@@ -229,7 +231,20 @@ class Settings:
     def analysis_workers(self, with_ai):
         if self.workers > 0:
             return self.workers
-        return 1 if with_ai else auto_workers()
+        return 1 if with_ai and self.llm_on_this_machine else auto_workers()
+
+    @property
+    def llm_on_this_machine(self):
+        """The online model's URL is loopback (LM Studio here): its cores and RAM are the analyses' too, so with the
+        AI overview on they run one at a time. A model elsewhere (LYNCH_SWITCHBOARD, --llm-url) leaves this machine to
+        the analyses, and the inference queue sends what it can't take to Gemini or the Quick overview."""
+        host = urllib.parse.urlsplit(self.llm_base_url or "").hostname or ""
+        if host == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
 
     @property
     def bind_host(self):
