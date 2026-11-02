@@ -170,29 +170,17 @@ def test_errors_are_not_cached_but_visible_to_pollers(settings):
     jm.shutdown()
 
 
-def test_refresh_waits_out_its_cooldown(settings):
-    """↻ Refresh re-runs a ticker at most once per cooldown: a loop on one ticker must not spend Yahoo and the
-    shared FMP budget (one request per GARP analysis) for everyone."""
-    t = [1000.0]
-    jm = make_jm(settings, clock=lambda: t[0], refresh_cooldown=300)
+def test_refresh_right_after_an_analysis_re_runs_it(settings):
+    """No cooldown: ↻ Refresh re-runs a ticker even moments after its last analysis (--public limits it to once a
+    day per visitor and ticker instead, ui/tests/test_public.py)."""
+    jm = make_jm(settings)
     assert wait_final(jm, "MSFT")["status"] == "done"
     n = fakes.FakeEngine.calls.count("MSFT")
-    for _ in range(5):
-        snap = jm.request("MSFT", refresh=True)  # analysed moments ago: answered like a lookup
-        assert snap["status"] == "done" and snap["cached"] is True
-    assert fakes.FakeEngine.calls.count("MSFT") == n
-    t[0] += 301
-    assert jm.request("MSFT", refresh=True)["status"] in ("queued", "running", "done")
-    wait_final(jm, "MSFT")
-    assert fakes.FakeEngine.calls.count("MSFT") == n + 1  # one re-run after the cooldown
-    assert jm.request("MSFT", refresh=True)["cached"] is True  # and the cooldown starts again
-    assert fakes.FakeEngine.calls.count("MSFT") == n + 1
+    for i in range(1, 3):
+        assert jm.request("MSFT", refresh=True)["cached"] is False
+        wait_final(jm, "MSFT")
+        assert fakes.FakeEngine.calls.count("MSFT") == n + i
     jm.shutdown()
-
-
-def test_refresh_cooldown_is_on_by_default_in_the_portal():
-    assert Settings().refresh_cooldown == 300
-    assert JobManager(Settings(), store=DayStore(), start=False).refresh_cooldown == 0  # off unless asked for
 
 
 def test_nodata_is_cached(settings):

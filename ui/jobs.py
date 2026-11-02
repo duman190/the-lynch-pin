@@ -234,7 +234,7 @@ class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
                  backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None,
-                 refresh_cooldown=0.0, cache_llm=None, refresh_once_per_client=False, fmp_budget=None):
+                 cache_llm=None, refresh_once_per_client=False, fmp_budget=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -252,11 +252,6 @@ class JobManager:
         # ↻ Refresh re-runs a cached ticker. Off (--no-ai): a cached ticker stays until the cache clears at
         # midnight (or is evicted), so lookups never re-spend Yahoo calls on what is already known.
         self.allow_refresh = allow_refresh
-        # Seconds after a ticker's last analysis started before a ↻ Refresh re-runs it (earlier ones get the cached
-        # result): a refresh costs Yahoo calls and, for a GARP ticker, one of the FMP budget's daily requests, so a
-        # loop on one ticker must not be able to spend them for everyone.
-        self.refresh_cooldown = float(refresh_cooldown or 0)
-        self._analysed = {}   # sym → clock its last analysis was queued (refresh cooldown)
         # --public: each visitor may refresh a given ticker once a day, and only while the FMP budget
         # (ui.fmp_budget.FmpBudget, None = enrichment off) has requests left, so visitors can't spend it for everyone
         self.refresh_once_per_client = refresh_once_per_client
@@ -384,10 +379,6 @@ class JobManager:
             for k in [k for k, j in self._recent.items()
                       if now - j.finished > self.recent_ttl or j.day != today]:
                 del self._recent[k]
-            for k in [k for k, t in self._analysed.items() if now - t >= self.refresh_cooldown]:
-                del self._analysed[k]
-            if refresh and sym in self._analysed:
-                refresh = False  # analysed moments ago: answered like a lookup (the cached result, stale by seconds)
             if not refresh:
                 hit = self.lookup(sym) if poll else self.store.get(sym)
                 if hit is not None:
@@ -417,8 +408,6 @@ class JobManager:
             job = Job(sym, self._clock(), self._today())
             job.owner = client
             self._wait(job, "refresh" if refresh else "fresh")
-            if self.refresh_cooldown:
-                self._analysed[sym] = now
             if refresh and self.refresh_once_per_client and client is not None:
                 self._refreshed.add((client, sym))  # spent only by a refresh that runs
             self._inflight[sym] = job

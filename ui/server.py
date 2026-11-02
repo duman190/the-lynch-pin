@@ -735,8 +735,7 @@ def build_app(settings, with_search=True, with_ai=True):
                               # ignored), so lookups can't re-spend Yahoo / FMP on it
                               allow_refresh=llm is not None,
                               max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
-                              stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown,
-                              cache_llm=cache_llm,
+                              stats=stats, gemini=gemini, cache_llm=cache_llm,
                               # --public: ↻ Refresh once a day per visitor and ticker, while the FMP budget lasts
                               refresh_once_per_client=settings.public, fmp_budget=fmp)
         except ImportError:
