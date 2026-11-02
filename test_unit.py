@@ -71,6 +71,80 @@ class TestIncomeStatementGrader(unittest.TestCase):
         from engine.income_statement_grader import _assign_grade
         self.assertEqual(_assign_grade(['⚪'] * 9, {}), 'N/A')
 
+    @staticmethod
+    def _qinc(stub=True):
+        """Quarterly statement, newest first. With ``stub`` the newest quarter carries
+        EPS only, as Yahoo lists a just-reported quarter."""
+        cols = pd.to_datetime(['2026-09-30', '2026-06-30', '2026-03-31', '2025-12-31',
+                               '2025-09-30', '2025-06-30'])
+        rev = [np.nan if stub else 130.0, 120.0, 115.0, 110.0, 105.0, 100.0]
+        op = [np.nan if stub else 39.0, 36.0, 30.0, 28.0, 25.0, 24.0]
+        eps = [1.6, 1.5, 1.3, 1.2, 1.1, 1.0]
+        return pd.DataFrame([rev, op, eps], columns=cols,
+                            index=['Total Revenue', 'Operating Income', 'Diluted EPS'])
+
+    @staticmethod
+    def _gaap():
+        """SEC companyfacts us-gaap: the Sep'26 10-Q with its year-ago comparatives and
+        the 9-month YTD values that must be ignored. No GrossProfit tag."""
+        def fact(start, end, val):
+            return {'start': start, 'end': end, 'val': val, 'form': '10-Q', 'filed': '2026-10-30'}
+
+        def tag(cur, prev, ytd, unit='USD'):
+            return {'units': {unit: [fact('2026-07-01', '2026-09-30', cur),
+                                     fact('2025-07-01', '2025-09-30', prev),
+                                     fact('2026-01-01', '2026-09-30', ytd)]}}
+        return {'RevenueFromContractWithCustomerExcludingAssessedTax': tag(140.0, 105.0, 400.0),
+                'CostOfGoodsAndServicesSold': tag(40.0, 35.0, 110.0),
+                'OperatingIncomeLoss': tag(42.0, 25.0, 110.0),
+                'NetIncomeLoss': tag(-5.0, 10.0, 20.0),
+                'EarningsPerShareDiluted': tag(1.6, 1.1, 4.4, unit='USD/shares')}
+
+    def test_yahoo_growths_skips_eps_only_quarter(self):
+        from engine.income_statement_grader import _yahoo_growths
+        quarter, growths = _yahoo_growths(self._qinc())
+        self.assertEqual(quarter, pd.Timestamp('2026-06-30'))  # vs 2025-06-30, by date
+        self.assertAlmostEqual(growths['Revenue'], 0.20)
+        self.assertAlmostEqual(growths['OpIncome'], 0.50)
+
+    def test_yahoo_growths_needs_year_ago_quarter(self):
+        from engine.income_statement_grader import _yahoo_growths
+        self.assertIsNone(_yahoo_growths(self._qinc().iloc[:, :5]))  # no full quarter has one
+
+    def test_sec_quarters_keeps_losses_drops_ytd(self):
+        from engine.income_statement_grader import _sec_quarters
+        q = _sec_quarters(self._gaap(), 'NetIncomeLoss')
+        self.assertEqual(q, {pd.Timestamp('2026-09-30'): -5.0, pd.Timestamp('2025-09-30'): 10.0})
+
+    def test_grade_ticker_grades_stub_quarter_from_sec(self):
+        from engine import income_statement_grader as isg
+        t = MagicMock(quarterly_income_stmt=self._qinc())
+        with patch.object(isg, '_sec_facts', return_value=self._gaap()):
+            g = isg.grade_ticker(t)
+        self.assertEqual((g['quarter'], g['source']), ('2026-09-30', 'SEC'))
+        items = {label: growth for label, growth, _ in g['items']}
+        self.assertAlmostEqual(items['Revenue'], 1 / 3)
+        self.assertAlmostEqual(items['Gross'], 100 / 70 - 1)  # Revenue - COGS
+        self.assertAlmostEqual(items['NetIncome'], -1.5)
+        self.assertIsNone(items['R&D'])
+
+    def test_grade_ticker_rejects_sec_revenue_off_from_yahoo(self):
+        from engine import income_statement_grader as isg
+        qinc = self._qinc()
+        qinc.loc['Total Revenue', pd.Timestamp('2025-09-30')] = 50.0  # SEC says 105
+        t = MagicMock(quarterly_income_stmt=qinc)
+        with patch.object(isg, '_sec_facts', return_value=self._gaap()):
+            g = isg.grade_ticker(t)
+        self.assertEqual((g['quarter'], g['source']), ('2026-06-30', 'Yahoo'))
+
+    def test_grade_ticker_skips_sec_when_yahoo_is_current(self):
+        from engine import income_statement_grader as isg
+        t = MagicMock(quarterly_income_stmt=self._qinc(stub=False))
+        with patch.object(isg, '_sec_facts') as sec:
+            g = isg.grade_ticker(t)
+        sec.assert_not_called()
+        self.assertEqual((g['quarter'], g['source']), ('2026-09-30', 'Yahoo'))
+
 
 # ─── engine/balance_sheet_grader.py ───
 

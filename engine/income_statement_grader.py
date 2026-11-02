@@ -1,3 +1,5 @@
+import time
+
 import yfinance as yf
 import pandas as pd
 
@@ -14,11 +16,139 @@ WATERFALL = [
     ('EPS',        'Diluted EPS'),
 ]
 
+# SEC XBRL us-gaap tags per waterfall item (priority order), for a quarter Yahoo lists only
+# EPS of. 'Revenues' first: where both are tagged (lenders, fintech) it is the total and the
+# contract revenue a part of it. Gross falls back to Revenue - COGS, as Yahoo derives it.
+_SEC_TAGS = {
+    'Revenue':   ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax',
+                  'SalesRevenueNet', 'RevenueFromContractWithCustomerIncludingAssessedTax'],
+    'COGS':      ['CostOfRevenue', 'CostOfGoodsAndServicesSold'],
+    'Gross':     ['GrossProfit'],
+    'R&D':       ['ResearchAndDevelopmentExpense',
+                  'ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost'],
+    'S&M':       ['SellingAndMarketingExpense', 'MarketingExpense'],
+    'G&A':       ['GeneralAndAdministrativeExpense'],
+    'OpIncome':  ['OperatingIncomeLoss'],
+    'NetIncome': ['NetIncomeLoss'],
+    'EPS':       ['EarningsPerShareDiluted'],
+}
+
 
 def _yoy_growth(curr, prev):
     if prev and prev != 0:
         return (curr - prev) / abs(prev)
     return None
+
+
+def _year_ago(dates, d):
+    """The date in ``dates`` closest to one year before ``d`` (52/53-week fiscal
+    quarters end a few days apart year to year), or None."""
+    cands = [x for x in dates if 350 <= (d - x).days <= 380]
+    return min(cands, key=lambda x: abs((d - x).days - 365)) if cands else None
+
+
+def _yahoo_growths(qinc):
+    """(quarter, growths) for the newest quarter in ``qinc`` that has a full statement
+    and a year-ago quarter to compare with, or None.
+
+    Yahoo lists a just-reported quarter with only EPS and share counts for days to
+    weeks before it fills in the statement; those columns are skipped, not graded.
+    """
+    if qinc is None or qinc.empty or 'Total Revenue' not in qinc.index:
+        return None
+    full = [c for c in qinc.columns if pd.notna(qinc.loc['Total Revenue', c])]
+    for latest in sorted(full, reverse=True):
+        yoy_col = _year_ago(full, latest)
+        if yoy_col is None:
+            continue
+        growths = {}
+        for label, field in WATERFALL:
+            if field not in qinc.index:
+                growths[label] = None
+                continue
+            curr = qinc.loc[field, latest]
+            prev = qinc.loc[field, yoy_col]
+            if pd.isna(curr) or pd.isna(prev):
+                growths[label] = None
+            else:
+                growths[label] = _yoy_growth(float(curr), float(prev))
+        return latest, growths
+    return None
+
+
+def _sec_facts(ticker_obj):
+    """us-gaap facts from the ticker's SEC filings ({} for a non-SEC filer or on
+    error), fetched once per Ticker object."""
+    gaap = getattr(ticker_obj, '_lynch_sec_gaap', None)
+    if gaap is None:
+        from engine.lynch_pin_core import LynchPinEngine, _SEC_HEADERS, _SEC_SESSION
+        gaap = {}
+        try:
+            cik = LynchPinEngine._get_cik(ticker_obj.ticker)
+            if cik:
+                time.sleep(0.12)  # SEC fair-access limit
+                resp = _SEC_SESSION.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json',
+                                        headers=_SEC_HEADERS)
+                gaap = resp.json()['facts']['us-gaap']
+        except Exception:
+            pass
+        ticker_obj._lynch_sec_gaap = gaap
+    return gaap
+
+
+def _sec_quarters(gaap, tag):
+    """{quarter end: value} of a tag's single-quarter facts in 10-Q/10-K filings, the
+    latest filing winning per quarter (restatements). Keeps the sign, unlike
+    LynchPinEngine._parse_sec_quarterly: losses are graded too."""
+    units = gaap.get(tag, {}).get('units', {})
+    seen = {}
+    for e in units.get('USD') or units.get('USD/shares') or []:
+        if e.get('form') not in ('10-Q', '10-K') or not e.get('start') or not e.get('filed'):
+            continue
+        end = pd.Timestamp(e['end'])
+        if 80 <= (end - pd.Timestamp(e['start'])).days < 120:
+            if end not in seen or e['filed'] > seen[end][1]:
+                seen[end] = (e['val'], e['filed'])
+    return {d: v for d, (v, _) in seen.items()}
+
+
+def _sec_growths(gaap, after, yahoo_revenue):
+    """(quarter, growths) from SEC filings for the newest quarter with revenue, when it
+    is newer than ``after``, or None.
+
+    ``yahoo_revenue`` (quarter end -> Yahoo's Total Revenue) vets the revenue tag: the
+    year-ago SEC revenue must match Yahoo's within 5% where Yahoo has that quarter.
+    """
+    rev_quarters = set().union(*(_sec_quarters(gaap, t) for t in _SEC_TAGS['Revenue']))
+    if not rev_quarters:
+        return None
+    quarter = max(rev_quarters)
+    if after is not None and quarter <= after:
+        return None
+
+    pairs = {}  # label -> (current, year-ago, year-ago quarter end)
+    for label, tags in _SEC_TAGS.items():
+        for tag in tags:
+            q = _sec_quarters(gaap, tag)
+            if quarter in q:
+                prev = _year_ago(q, quarter)
+                if prev is not None:
+                    pairs[label] = (q[quarter], q[prev], prev)
+                break
+    if 'Gross' not in pairs and 'Revenue' in pairs and 'COGS' in pairs:
+        (rc, rp, d), (cc, cp, _) = pairs['Revenue'], pairs['COGS']
+        pairs['Gross'] = (rc - cc, rp - cp, d)
+
+    if 'Revenue' not in pairs:
+        return None
+    _, rev_prev, prev_q = pairs['Revenue']
+    y = yahoo_revenue.get(prev_q)
+    if y is not None and pd.notna(y) and y and abs(rev_prev / float(y) - 1) > 0.05:
+        return None
+
+    growths = {label: _yoy_growth(pairs[label][0], pairs[label][1]) if label in pairs else None
+               for label, _ in WATERFALL}
+    return quarter, growths
 
 
 def _grade_item(label, item_g, rev_g):
@@ -145,35 +275,34 @@ def _assign_grade(signals, growths):
 def grade_ticker(ticker_obj):
     """Grades a single ticker's income statement efficiency.
 
-    Compares latest quarter vs same quarter last year (YoY).
-    Every line item is graded relative to revenue growth.
+    Compares the latest reported quarter vs the same quarter last year (YoY).
+    Every line item is graded relative to revenue growth. While Yahoo lists the
+    newest quarter with EPS only, that quarter comes from the company's SEC 10-Q
+    if it has been filed; otherwise the newest quarter Yahoo has in full is graded.
 
     Args:
         ticker_obj: yfinance Ticker object (with session)
 
     Returns:
-        dict with 'grade', 'items' list, or None if insufficient data
+        dict with 'grade', 'items' list, 'quarter' (end date, YYYY-MM-DD) and
+        'source' ('Yahoo' or 'SEC'), or None if insufficient data
     """
     try:
         qinc = ticker_obj.quarterly_income_stmt
-        if qinc is None or qinc.empty or len(qinc.columns) < 5:
+        if qinc is None or qinc.empty:
             return None
 
-        latest = qinc.columns[0]
-        yoy_col = qinc.columns[4]
-
-        # Compute all YoY growths
-        growths = {}
-        for label, field in WATERFALL:
-            if field not in qinc.index:
-                growths[label] = None
-                continue
-            curr = qinc.loc[field, latest]
-            prev = qinc.loc[field, yoy_col]
-            if pd.isna(curr) or pd.isna(prev):
-                growths[label] = None
-            else:
-                growths[label] = _yoy_growth(float(curr), float(prev))
+        found, source = _yahoo_growths(qinc), 'Yahoo'
+        graded = found[0] if found else None
+        if graded is None or max(qinc.columns) > graded:
+            yahoo_revenue = (qinc.loc['Total Revenue'].to_dict()
+                             if 'Total Revenue' in qinc.index else {})
+            sec = _sec_growths(_sec_facts(ticker_obj), graded, yahoo_revenue)
+            if sec:
+                found, source = sec, 'SEC'
+        if not found:
+            return None
+        quarter, growths = found
 
         rev_g = growths.get('Revenue')
 
@@ -191,7 +320,8 @@ def grade_ticker(ticker_obj):
                 signals.append(sig)
 
         grade = _assign_grade(signals, growths)
-        return {'grade': grade, 'items': items}
+        return {'grade': grade, 'items': items,
+                'quarter': pd.Timestamp(quarter).strftime('%Y-%m-%d'), 'source': source}
 
     except Exception:
         return None
@@ -228,6 +358,15 @@ def print_grader_table(tickers_data, engine_map):
     print(f"{'Grade':>{lbl_w}}", end='')
     for sym, g in results.items():
         print(f" | {g['grade']:^{col_w}}", end='')
+    print()
+
+    # Quarter graded (e.g. Sep'26), marked when it came from the SEC 10-Q
+    print(f"{'Quarter':>{lbl_w}}", end='')
+    for sym, g in results.items():
+        q = pd.Timestamp(g['quarter']).strftime("%b'%y")
+        if g['source'] == 'SEC':
+            q += ' SEC'
+        print(f" | {q:^{col_w}}", end='')
     print()
 
     # Each waterfall item
