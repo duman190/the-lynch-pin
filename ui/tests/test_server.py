@@ -184,6 +184,23 @@ def test_to_json_arrays_series_keys_dates():
     assert out["nested"] == [{"v": 2.5}]
 
 
+def test_index_names_scripts_and_styles_by_version(server):
+    """Cloudflare hands browsers max-age=14400 for .js / .css: the page names the current file of each."""
+    import re
+    r, body = get(server, "/")
+    refs = re.findall(rb'"/static/([A-Za-z0-9_\-]+\.(?:js|css))(\?v=[0-9a-f]+)?"', body)
+    assert len(refs) >= 7 and all(v for _, v in refs), refs
+    name, v = refs[0]
+    assert get(server, f"/static/{name.decode()}{v.decode()}")[0].status == 200
+    etag = r.getheader("ETag")
+    assert etag and r.getheader("Cache-Control") == "no-cache"
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+    conn.request("GET", "/", headers={"If-None-Match": etag})
+    r2 = conn.getresponse()
+    assert r2.status == 304 and r2.read() == b""
+    conn.close()
+
+
 def test_etag_revalidation_returns_304(server):
     r, body = get(server, "/static/app.js")
     etag = r.getheader("ETag")

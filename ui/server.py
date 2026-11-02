@@ -12,6 +12,7 @@ Host-header checks refuse anything outside loopback / private / link-local range
 import argparse
 import datetime
 import email.utils
+import hashlib
 import json
 import math
 import mimetypes
@@ -49,6 +50,8 @@ if REPO_ROOT not in sys.path:
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 STATIC_FILE_RE = re.compile(r"^(?:[a-z0-9_\-]+/)?[A-Za-z0-9_\-]+\.(?:html|css|js|png|jpg|jpeg|webp|svg|webmanifest|ico)$")
+# A page's "/static/NAME.js" / ".css" references, versioned as the page is served (see send_page)
+ASSET_REF_RE = re.compile(r'(["\'])/static/([A-Za-z0-9_\-]+\.(?:js|css))\1')
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -325,15 +328,7 @@ def make_handler(app):
                 except (TypeError, ValueError, IndexError, OverflowError):
                     fresh = False
             if fresh:
-                self.send_response(HTTPStatus.NOT_MODIFIED)
-                self.send_header("Content-Length", "0")
-                self.send_header("Cache-Control", cache)
-                for k, v in validators.items():
-                    self.send_header(k, v)
-                for k, v in security_headers.items():
-                    self.send_header(k, v)
-                self.end_headers()
-                return
+                return self._send_not_modified(cache, validators)
             try:
                 with open(path, "rb") as f:
                     body = f.read()
@@ -343,6 +338,41 @@ def make_handler(app):
             if ctype.startswith("text/") or ctype.endswith(("javascript", "json")):
                 ctype += "; charset=utf-8"
             self._send(HTTPStatus.OK, body, ctype, cache=cache, extra=validators)
+
+        def _send_not_modified(self, cache, validators):
+            self.send_response(HTTPStatus.NOT_MODIFIED)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", cache)
+            for k, v in validators.items():
+                self.send_header(k, v)
+            for k, v in security_headers.items():
+                self.send_header(k, v)
+            self.end_headers()
+
+        def send_page(self, name):
+            """An HTML page of static_dir whose /static/*.js and *.css references carry ?v=<that file's version>.
+            Through the tunnel, Cloudflare's Browser Cache TTL turns the scripts' no-cache into max-age=14400,
+            so a browser could run a script 4 hours old; the page itself passes through uncached (no-cache)
+            and names the current file. Its ETag is the served bytes', so a 304 still means the same page."""
+            try:
+                with open(os.path.join(settings.static_dir, name), encoding="utf-8") as f:
+                    html = f.read()
+            except OSError:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+
+            def versioned(m):
+                try:
+                    v = os.stat(os.path.join(settings.static_dir, m.group(2))).st_mtime_ns
+                except OSError:
+                    return m.group(0)
+                return f"{m.group(1)}/static/{m.group(2)}?v={v:x}{m.group(1)}"
+
+            body = ASSET_REF_RE.sub(versioned, html).encode("utf-8")
+            validators = {"ETag": f'"{hashlib.sha1(body).hexdigest()[:20]}"'}
+            inm = self.headers.get("If-None-Match")
+            if inm is not None and (validators["ETag"] in [t.strip() for t in inm.split(",")] or inm.strip() == "*"):
+                return self._send_not_modified("no-cache", validators)
+            self._send(HTTPStatus.OK, body, "text/html; charset=utf-8", cache="no-cache", extra=validators)
 
         def _refuse(self, message, hint, reason=None):
             self._reason = reason
@@ -428,7 +458,7 @@ def make_handler(app):
         # ── routes ───────────────────────────────────────────────────────────────
         def route(self, path, query):
             if path in ("/", "/index.html"):
-                return self.send_file(os.path.join(settings.static_dir, "index.html"), "no-cache")
+                return self.send_page("index.html")
             if path == "/api/health":
                 return self.send_json(app.health())
             if path.startswith("/api/ticker/"):
@@ -658,7 +688,7 @@ def make_stats_handler(app):
 
         def route(self, path, query):
             if path in ("/", "/index.html"):
-                return self.send_file(os.path.join(settings.static_dir, "stats.html"), "no-cache")
+                return self.send_page("stats.html")
             if path == "/api/stats":
                 try:
                     days = int(query.get("days", [app.recorder.retention_days])[0])
