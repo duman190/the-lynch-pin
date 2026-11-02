@@ -170,7 +170,7 @@ class Settings:
     # Nightly pre-cache (ui/precache.py, needs the stats page: --lan / --public): right after midnight, analyse the
     # N most looked-up tickers of the last 30 days, one at a time with their AI overviews, written by the
     # cache_llm model when it is up (0 = off)
-    precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 100))
+    precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 50))
     # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; 10 left for the daily scans)
     fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 240))
     # Seconds after a ticker's last analysis before ↻ Refresh re-runs it (0 = any time): one visitor looping on a

@@ -180,5 +180,5 @@ def test_runs_right_after_midnight():
 
 def test_flag(monkeypatch):
     from ui.server import parse_args
-    assert Settings().precache == 100
+    assert Settings().precache == 50
     assert parse_args(["--precache", "0"])[0].precache == 0 and parse_args(["--precache", "40"])[0].precache == 40

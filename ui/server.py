@@ -802,7 +802,7 @@ def parse_args(argv=None):
                         "day minus 10 for the daily scans); past it lookups are not enriched")
     p.add_argument("--precache", type=int, default=s.precache, metavar="N",
                    help="right after the cache resets at midnight, analyse the N most looked-up tickers of the "
-                        "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 100: ~50 "
+                        "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 50: ~25 "
                         "min on Flash-Next; 0 = off; needs the stats page, i.e. --lan or --public)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--edge", action="store_true", default=s.edge,

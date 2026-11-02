@@ -1,7 +1,7 @@
 """Nightly pre-cache: right after the daily cache resets (local midnight), analyse the tickers visitors looked
 up most over the last month, so tomorrow's first lookups are answered from the cache.
 
-    python -m ui.server --lan              # pre-caches up to 100 tickers each night (--precache N, 0 = off)
+    python -m ui.server --lan              # pre-caches up to 50 tickers each night (--precache N, 0 = off)
 
 The list is the stats page's (ui/stats.py, so --lan or --public): the ``count`` most looked-up tickers in the
 last 30 days, errors left out; fewer when fewer were looked up. They run one at a time, and with the AI
@@ -11,7 +11,7 @@ don't count on the stats page or in the cache's hit rate. They do spend the usua
 enrichment on, FMP requests (within the portal's 24 h cap, ui/fmp_budget.py).
 
 The overviews are written by the pre-cache's own model (--cache-llm-url: Qwen3.8-Flash-Next on Strata behind the
-switchboard: ~31 s a ticker with its analysis on the M6, ~50 min for 100) while it answers, else by the online model.
+switchboard: ~31 s a ticker with its analysis on the M6, ~25 min for 50) while it answers, else by the online model.
 On the switchboard that swaps the online model out, so once the run is over the online model (--llm-url) is primed
 again: the swap back and the system prompt's prefill happen now, not on the first visitor's overview.
 """
@@ -24,7 +24,7 @@ TICKER_TIMEOUT = 1800.0  # a ticker (analysis + AI overview) that takes longer i
 
 
 class Precacher:
-    def __init__(self, jobs, stats, count=100, days=30, now=_dt.datetime.now):
+    def __init__(self, jobs, stats, count=50, days=30, now=_dt.datetime.now):
         self.jobs, self.stats, self.count, self.days = jobs, stats, max(0, int(count)), days
         self._now = now
         self._stop = threading.Event()
