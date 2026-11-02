@@ -111,13 +111,24 @@
     if (d.status === "nodata") badges.push(el("span", { class: "badge badge-dim", text: "no GARP data" }));
     if (snap.cached) badges.push(el("span", { class: "badge badge-dim", title: "Served from today's cache" }, "⚡ cached"));
     if (canRefresh()) badges.push(el("button", { type: "button", class: "btn-ghost", title: "Re-run the analysis", "aria-label": `Refresh ${d.ticker}`, onclick: () => go(d.ticker, true) }, "↻ Refresh"));
+    else if (refreshFeature() && snap.refresh && snap.refresh.reason) {
+      const why = snap.refresh.reason[0].toUpperCase() + snap.refresh.reason.slice(1);
+      badges.push(el("button", { type: "button", class: "btn-ghost", disabled: true, title: why, "aria-label": `Refresh ${d.ticker}: ${why}` }, "↻ Refresh"));
+    }
     put($("#rh-badges"), ...badges);
   }
 
-  /** ↻ Refresh is off with the AI overview off and in --public: a cached ticker stays cached until midnight. */
-  function canRefresh() {
+  /** ↻ Refresh is off with the AI overview off: a cached ticker stays cached until midnight. */
+  function refreshFeature() {
     const f = S.app.health && S.app.health.features;
     return !f || f.refresh !== false;
+  }
+
+  /** In --public a visitor may refresh a ticker once a day, while the server's data budget lasts: the final
+      snapshot says so under `refresh`. */
+  function canRefresh() {
+    const r = S.lastSnap && S.lastSnap.refresh;
+    return refreshFeature() && !(r && r.allowed === false);
   }
 
   function bellSVG(dev) {
@@ -720,7 +731,7 @@
     let msg;
     if (snap.status === "queued") msg = snap.note ? `${snap.note}…` : `Queued — position ${snap.queue_position || 1}…`;
     else if (snap.status === "running") msg = `Running ${STAGE_LABELS[snap.stage] || "analysis"}… ${Math.round(snap.elapsed_s || 0)}s`;
-    else if (snap.status === "done") msg = snap.cached ? "Loaded from today's cache ⚡" : `Analysis complete in ${Math.round(snap.elapsed_s || 0)}s`;
+    else if (snap.status === "done") msg = snap.cached ? (snap.note ? `${snap.note} — loaded from today's cache ⚡` : "Loaded from today's cache ⚡") : `Analysis complete in ${Math.round(snap.elapsed_s || 0)}s`;
     else if (snap.status === "nodata") msg = `No GARP valuation for ${snap.ticker}: ${d.reason || "insufficient data"}`;
     else msg = `Analysis failed: ${snap.error || d.reason || "unknown error"}`;
     if (line.textContent !== msg) line.textContent = msg;

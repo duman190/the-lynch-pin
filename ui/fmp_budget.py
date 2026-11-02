@@ -1,12 +1,12 @@
 """FMP request budget for the portal's growth enrichment.
 
-FMP's free plan allows 250 requests a day; the daily scans (main.py) need up to 25, so the portal keeps to
-``limit`` (225) in any rolling 24 hours. FMP counts every request it answers, errors included: measured on the
+FMP's free plan allows 250 requests a day; the portal keeps to ``limit`` (240) in any rolling 24 hours, leaving 10
+for the daily scans (main.py). FMP counts every request it answers, errors included: measured on the
 dashboard (2026-10-07), one request with data plus six HTTP 402 "Premium Query Parameter" answers (symbols
 outside the free plan) raised it by 7. So every answered request counts, 4xx included; one that FMP didn't
 answer (a network error, a timeout, a 5xx server failure) is handed back, and lookups that never call FMP (enrichment off, no forward
 earnings, the budget spent) cost nothing. A rolling window
-rather than a calendar day: FMP's reset time is not documented, and 225 per local day could put up to 450 inside
+rather than a calendar day: FMP's reset time is not documented, and 240 per local day could put up to 480 inside
 one of FMP's days.
 
 The engine asks before every request (``engine.growth_estimator.FMP_GATE``, a 429 retry included): the request
@@ -18,7 +18,7 @@ import os
 import sqlite3
 import time
 
-LIMIT = 225          # requests per rolling 24 h (FMP free plan: 250 a day, the daily scans use up to 25)
+LIMIT = 240          # requests per rolling 24 h (FMP free plan: 250 a day, 10 left for the daily scans)
 WINDOW = 86400.0
 
 

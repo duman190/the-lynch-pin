@@ -726,13 +726,19 @@ def build_app(settings, with_search=True, with_ai=True):
         try:
             from ui.jobs import JobManager
             workers = settings.analysis_workers(with_ai=llm is not None)
+            fmp = None
+            if settings.public and settings.enrich_enabled:
+                from ui.fmp_budget import FmpBudget
+                fmp = FmpBudget(settings.fmp_budget_path, settings.fmp_limit)
             jobs = JobManager(settings, llm=llm, workers=workers, processes=workers > 1,
-                              # --no-ai and --public: a cached ticker stays cached for the day (no ↻ Refresh, and
-                              # ?refresh=1 is ignored), so visitors can't re-spend Yahoo / FMP on it
-                              allow_refresh=llm is not None and not settings.public,
+                              # --no-ai: a cached ticker stays cached for the day (no ↻ Refresh, and ?refresh=1 is
+                              # ignored), so lookups can't re-spend Yahoo / FMP on it
+                              allow_refresh=llm is not None,
                               max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
                               stats=stats, gemini=gemini, refresh_cooldown=settings.refresh_cooldown,
-                              cache_llm=cache_llm)
+                              cache_llm=cache_llm,
+                              # --public: ↻ Refresh once a day per visitor and ticker, while the FMP budget lasts
+                              refresh_once_per_client=settings.public, fmp_budget=fmp)
         except ImportError:
             jobs = None
     if jobs is None:
@@ -792,8 +798,8 @@ def parse_args(argv=None):
     p.add_argument("--enrich", choices=("auto", "on", "off"), default=s.enrich,
                    help="FMP growth enrichment: auto = on when FMP_API_KEY is set (default auto)")
     p.add_argument("--fmp-limit", type=int, default=s.fmp_limit, metavar="N",
-                   help="FMP requests the portal may make in any rolling 24 h (default 225: the free plan's 250 a "
-                        "day minus 25 for the daily scans); past it lookups are not enriched")
+                   help="FMP requests the portal may make in any rolling 24 h (default 240: the free plan's 250 a "
+                        "day minus 10 for the daily scans); past it lookups are not enriched")
     p.add_argument("--precache", type=int, default=s.precache, metavar="N",
                    help="right after the cache resets at midnight, analyse the N most looked-up tickers of the "
                         "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 100: ~50 "

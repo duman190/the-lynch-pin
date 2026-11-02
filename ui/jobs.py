@@ -234,7 +234,7 @@ class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
                  backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None,
-                 refresh_cooldown=0.0, cache_llm=None):
+                 refresh_cooldown=0.0, cache_llm=None, refresh_once_per_client=False, fmp_budget=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -257,6 +257,11 @@ class JobManager:
         # loop on one ticker must not be able to spend them for everyone.
         self.refresh_cooldown = float(refresh_cooldown or 0)
         self._analysed = {}   # sym → clock its last analysis was queued (refresh cooldown)
+        # --public: each visitor may refresh a given ticker once a day, and only while the FMP budget
+        # (ui.fmp_budget.FmpBudget, None = enrichment off) has requests left, so visitors can't spend it for everyone
+        self.refresh_once_per_client = refresh_once_per_client
+        self.fmp_budget = fmp_budget
+        self._refreshed, self._refreshed_day = set(), None  # today's (visitor, sym) refreshes
         # --public: analyses one client may have queued or running at once (None = no limit). Cached
         # tickers, polls and joining a ticker someone else is already analysing are never limited.
         self.max_per_client = max_per_client
@@ -339,8 +344,36 @@ class JobManager:
 
         A *lookup* (``poll=False``) counts as a cache use (LFU frequency, hit/miss); follow-up
         polls of the same lookup (``poll=True``) only peek, so polling never inflates frequencies.
-        ``client`` identifies the visitor for ``max_per_client``."""
-        refresh = refresh and self.allow_refresh
+        ``client`` identifies the visitor for ``max_per_client`` and, with ``refresh_once_per_client``, for
+        its daily refreshes: a final snapshot then says under ``refresh`` whether this visitor may refresh ``sym``."""
+        snap = self._request(sym, refresh and self.allow_refresh, poll, client)
+        if self.refresh_once_per_client and client is not None and snap.get("status") in ("done", "nodata", "error"):
+            reason = self._refresh_denied(sym, client)
+            snap["refresh"] = {"allowed": reason is None, "reason": reason}
+        return snap
+
+    def _refresh_denied(self, sym, client):
+        """--public: why ``client`` may not refresh ``sym`` now (None = it may): its refresh of the day is spent, or
+        the FMP budget is."""
+        with self._cv:
+            if self._refreshed_day != self._today():
+                self._refreshed, self._refreshed_day = set(), self._today()
+            if (client, sym) in self._refreshed:
+                return f"you have refreshed {sym} today — once a day per ticker"
+        if self.fmp_budget is not None:
+            try:
+                left = self.fmp_budget.status()["remaining"]
+            except Exception:  # noqa: BLE001 — can't count it: don't spend it
+                left = 0
+            if left <= 0:
+                return "refresh is paused until the daily data budget frees up"
+        return None
+
+    def _request(self, sym, refresh, poll, client):
+        denied = None
+        if refresh and self.refresh_once_per_client and client is not None:
+            denied = self._refresh_denied(sym, client)
+            refresh = denied is None
         with self._cv:
             job = self._inflight.get(sym)
             if job is not None:  # dedup; refresh is ignored while in flight
@@ -361,7 +394,10 @@ class JobManager:
                     recent = self._recent.get(sym)
                     if poll and recent is not None and recent.data is hit:
                         return self._snapshot(recent)  # the poller's own just-finished job
-                    return self._cached_snapshot(hit)
+                    snap = self._cached_snapshot(hit)
+                    if denied:
+                        snap["note"] = denied[0].upper() + denied[1:]
+                    return snap
                 if sym in self._recent:  # errors / uncacheable results are only kept here
                     return self._snapshot(self._recent[sym])
                 if poll:
@@ -383,6 +419,8 @@ class JobManager:
             self._wait(job, "refresh" if refresh else "fresh")
             if self.refresh_cooldown:
                 self._analysed[sym] = now
+            if refresh and self.refresh_once_per_client and client is not None:
+                self._refreshed.add((client, sym))  # spent only by a refresh that runs
             self._inflight[sym] = job
             self._queue.append(job)
             self._cv.notify_all()

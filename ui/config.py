@@ -171,10 +171,10 @@ class Settings:
     # N most looked-up tickers of the last 30 days, one at a time with their AI overviews, written by the
     # cache_llm model when it is up (0 = off)
     precache: int = field(default_factory=lambda: _env_int("LYNCH_UI_PRECACHE", 100))
-    # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; the daily scans need up to 25)
-    fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 225))
+    # FMP requests the portal may make in any rolling 24 h (free plan: 250 a day; 10 left for the daily scans)
+    fmp_limit: int = field(default_factory=lambda: _env_int("LYNCH_UI_FMP_LIMIT", 240))
     # Seconds after a ticker's last analysis before ↻ Refresh re-runs it (0 = any time): one visitor looping on a
-    # refresh would otherwise spend those 225 FMP requests in ~15 minutes
+    # refresh would otherwise spend those 240 FMP requests in ~15 minutes
     refresh_cooldown: int = field(default_factory=lambda: _env_int("LYNCH_UI_REFRESH_COOLDOWN", 300))
     # --public: cold lookups one visitor (IP; IPv6 /64) may have running or queued at once. 2 of the ~160 a minute
     # the workers manage (2026-10-24) still leaves room for dozens of visitors at once

@@ -132,7 +132,7 @@ def test_no_key_or_no_gate(tmp_path, fmp, monkeypatch):
 
 def test_settings_and_health(tmp_path, monkeypatch):
     from ui.server import PortalApp, parse_args
-    assert Settings().fmp_limit == 225 and parse_args(["--fmp-limit", "100"])[0].fmp_limit == 100
+    assert Settings().fmp_limit == 240 and parse_args(["--fmp-limit", "100"])[0].fmp_limit == 100
     s = Settings()
     s.cache_dir, s.enrich = str(tmp_path / "cache"), "on"
 
@@ -143,6 +143,6 @@ def test_settings_and_health(tmp_path, monkeypatch):
             return {"size": 0}
 
     app = PortalApp(s, jobs=Jobs())
-    assert app.health()["enrich"] == {"used": 0, "limit": 225, "remaining": 225, "next_free_s": 0}
+    assert app.health()["enrich"] == {"used": 0, "limit": 240, "remaining": 240, "next_free_s": 0}
     s.public = True
     assert "enrich" not in app.health()  # visitors don't see this machine's quota

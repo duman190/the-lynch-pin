@@ -213,14 +213,20 @@ def test_health_reports_refresh_only_with_ai(tmp_path, no_ai):
         app.jobs.shutdown()
 
 
-def test_public_never_refreshes_a_cached_ticker(tmp_path):
-    """--public with the AI overview on: no ↻ Refresh, and ?refresh=1 gets the cached result for the rest of the day."""
+@pytest.mark.parametrize("enrich", ["on", "off"])
+def test_public_refreshes_once_a_day_per_visitor(tmp_path, enrich):
+    """--public with the AI overview on: ↻ Refresh once a day per visitor and ticker, gated on the FMP budget
+    when enrichment is on (ui/tests/test_public.py has the behaviour)."""
     from ui.server import build_app, parse_args
-    s, a = parse_args(["--public", "--workers", "1", "--llm-url", "http://127.0.0.1:1"])
+    s, a = parse_args(["--public", "--workers", "1", "--llm-url", "http://127.0.0.1:1", "--enrich", enrich])
     s.cache_dir = str(tmp_path / "cache")
     app = build_app(s, with_ai=not a.no_ai)
     try:
-        assert app.llm is not None and app.health()["features"]["refresh"] is False
-        assert app.jobs.allow_refresh is False
+        assert app.llm is not None and app.health()["features"]["refresh"] is True
+        assert app.jobs.allow_refresh is True and app.jobs.refresh_once_per_client is True
+        if enrich == "on":
+            assert app.jobs.fmp_budget.limit == 240
+        else:
+            assert app.jobs.fmp_budget is None
     finally:
         app.jobs.shutdown()

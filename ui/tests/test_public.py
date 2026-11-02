@@ -1,4 +1,5 @@
 """--public: served to the internet through a local tunnel (cloudflared) — a few analyses per visitor."""
+import datetime as _dt
 import http.client
 import json
 import threading
@@ -27,11 +28,11 @@ def gate():
     g.release.set()
 
 
-def serve(settings, gate, public=True, max_per_client=1):
+def serve(settings, gate, public=True, max_per_client=1, **kw):
     settings.public = public
     b = fakes.backends(engine=fakes.AnyEngine, edge=gate.wrap(fakes.EDGE))
     jm = JobManager(settings, analyzer=TickerAnalyzer(settings, backends=b), store=DayStore(), workers=3,
-                    deadline=30, max_per_client=max_per_client if public else None)
+                    deadline=30, max_per_client=max_per_client if public else None, **kw)
     httpd = PortalServer(("127.0.0.1", 0), make_handler(PortalApp(settings, jobs=jm)))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, jm
@@ -281,3 +282,65 @@ def test_stats_count_an_ipv6_visitor_as_its_64(settings, gate):
         httpd.shutdown()
         httpd.server_close()
     assert seen == ["2001:db8:1:2::/64", "2001:db8:1:2::/64", "203.0.113.7"]
+
+
+# ── ↻ Refresh: once a day per visitor and ticker, while the FMP budget lasts ──
+def final(httpd, path, ip):
+    t0 = time.time()
+    while True:
+        r, snap = get(httpd, path, ip=ip)
+        if snap["status"] in ("done", "nodata", "error"):
+            return r, snap
+        assert time.time() - t0 < 10
+        time.sleep(0.02)
+        path = path.split("?")[0] + "?poll=1"
+
+
+def test_refresh_once_a_day_per_visitor_and_ticker(settings, gate):
+    gate.release.set()
+    day = [_dt.date(2026, 11, 1)]
+    httpd, jm = serve(settings, gate, max_per_client=2, refresh_once_per_client=True)
+    jm._today = lambda: day[0]
+    me, other = "203.0.113.5", "198.51.100.7"
+    try:
+        r, snap = final(httpd, "/api/ticker/MSFT", me)
+        assert snap["refresh"] == {"allowed": True, "reason": None}
+        n = fakes.AnyEngine.calls.count("MSFT")
+        r, snap = final(httpd, "/api/ticker/MSFT?refresh=1", me)  # the visitor's refresh of MSFT today: runs
+        assert fakes.AnyEngine.calls.count("MSFT") == n + 1
+        assert snap["refresh"]["allowed"] is False and "once a day" in snap["refresh"]["reason"]
+        r, snap = get(httpd, "/api/ticker/MSFT?refresh=1", ip=me)  # a second one: the cached result
+        assert r.status == 200 and snap["cached"] is True and "once a day" in snap["note"]
+        assert fakes.AnyEngine.calls.count("MSFT") == n + 1
+        final(httpd, "/api/ticker/AAPL", me)
+        m = fakes.AnyEngine.calls.count("AAPL")
+        r, snap = final(httpd, "/api/ticker/AAPL?refresh=1", me)  # another ticker: its own refresh
+        assert fakes.AnyEngine.calls.count("AAPL") == m + 1 and snap["refresh"]["allowed"] is False
+        r, snap = final(httpd, "/api/ticker/MSFT", other)  # another visitor: its own refresh of MSFT
+        assert snap["refresh"]["allowed"] is True
+        final(httpd, "/api/ticker/MSFT?refresh=1", other)
+        assert fakes.AnyEngine.calls.count("MSFT") == n + 2
+        day[0] = _dt.date(2026, 11, 2)  # a new day: refreshes again (the cache itself is the test's DayStore)
+        assert jm.request("MSFT", client=me)["refresh"]["allowed"] is True
+    finally:
+        stop(httpd, jm)
+
+
+def test_refresh_needs_fmp_budget_left(settings, gate, tmp_path):
+    from ui.fmp_budget import FmpBudget
+    gate.release.set()
+    budget = FmpBudget(str(tmp_path / "fmp.sqlite3"), limit=1)
+    httpd, jm = serve(settings, gate, refresh_once_per_client=True, fmp_budget=budget)
+    try:
+        assert final(httpd, "/api/ticker/MSFT", "203.0.113.5")[1]["refresh"]["allowed"] is True
+        budget.acquire("XYZ")(True)  # the budget is spent
+        r, snap = get(httpd, "/api/ticker/MSFT", ip="203.0.113.5")
+        assert snap["refresh"]["allowed"] is False and "data budget" in snap["refresh"]["reason"]
+        n = fakes.AnyEngine.calls.count("MSFT")
+        r, snap = get(httpd, "/api/ticker/MSFT?refresh=1", ip="203.0.113.5")
+        assert snap["cached"] is True and "data budget" in snap["note"]
+        assert fakes.AnyEngine.calls.count("MSFT") == n  # not re-run, and the visitor's refresh isn't spent
+        assert ("203.0.113.5", "MSFT") not in jm._refreshed
+    finally:
+        stop(httpd, jm)
+
