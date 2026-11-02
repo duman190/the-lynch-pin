@@ -137,6 +137,21 @@ class TestIncomeStatementGrader(unittest.TestCase):
             g = isg.grade_ticker(t)
         self.assertEqual((g['quarter'], g['source']), ('2026-06-30', 'Yahoo'))
 
+    def test_sec_facts_reuses_the_engines_download(self):
+        from types import SimpleNamespace
+        from engine import income_statement_grader as isg
+        from engine import lynch_pin_core as core
+        engine = core.LynchPinEngine.__new__(core.LynchPinEngine)
+        engine.ticker = SimpleNamespace(ticker='AMZN')
+        resp = MagicMock()
+        resp.json.return_value = {'facts': {'us-gaap': self._gaap()}}
+        with patch.object(core, '_SEC_SESSION') as sec, patch.object(core.time, 'sleep'), \
+                patch.object(core.LynchPinEngine, '_get_cik', return_value='0001018724'):
+            sec.get.return_value = resp
+            engine._get_companyfacts('0001018724')  # the stats stage's EPS / revenue history
+            self.assertEqual(isg._sec_facts(engine.ticker), self._gaap())
+        self.assertEqual(sec.get.call_count, 1)
+
     def test_grade_ticker_skips_sec_when_yahoo_is_current(self):
         from engine import income_statement_grader as isg
         t = MagicMock(quarterly_income_stmt=self._qinc(stub=False))

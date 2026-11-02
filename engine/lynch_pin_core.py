@@ -263,12 +263,18 @@ class LynchPinEngine:
 
     def _get_companyfacts(self, cik):
         """Fetches the SEC companyfacts JSON for a CIK, cached per instance
-        so EPS and revenue extraction share a single download."""
+        so EPS and revenue extraction share a single download. Its us-gaap
+        facts are left on the Ticker, where the income grader, which gets
+        only the Ticker, finds them instead of downloading them again."""
         if getattr(self, '_companyfacts_cache', None) is None:
             time.sleep(0.12)
             resp = _SEC_SESSION.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json',
                                     headers=_SEC_HEADERS)
             self._companyfacts_cache = resp.json()
+            try:
+                self.ticker._lynch_sec_gaap = self._companyfacts_cache['facts']['us-gaap']
+            except (KeyError, TypeError, AttributeError):
+                pass
         return self._companyfacts_cache
 
     @staticmethod

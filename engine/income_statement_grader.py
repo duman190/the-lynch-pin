@@ -78,7 +78,8 @@ def _yahoo_growths(qinc):
 
 def _sec_facts(ticker_obj):
     """us-gaap facts from the ticker's SEC filings ({} for a non-SEC filer or on
-    error), fetched once per Ticker object."""
+    error), fetched once per Ticker object. After the engine's stats they are
+    already there: LynchPinEngine._get_companyfacts leaves its download on the Ticker."""
     gaap = getattr(ticker_obj, '_lynch_sec_gaap', None)
     if gaap is None:
         from engine.lynch_pin_core import LynchPinEngine, _SEC_HEADERS, _SEC_SESSION
