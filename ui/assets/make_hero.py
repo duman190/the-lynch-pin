@@ -8,6 +8,7 @@ Outputs (the originals in tmp/ are only read, never modified):
   hero_wide.jpg/.webp    2400x900  desktop hero: logo badge + glow rings + candles + PEG bell curve + title
   hero_square.jpg/.webp  1200x1200 phone hero: same composition, stacked
   logo.png         512x512  circular logo with transparent corners
+  logo-132.png     132x132  the same, for the page's 40-44 px logo (3x screens; ~36 KB, not ~380 KB)
   icon-192.png / icon-512.png / apple-touch-icon.png   home-screen icons
   icon-512-maskable.png  badge at 78% on #121212 (Android adaptive-icon safe zone)
   banner.jpg       resized copy of the X banner (about section)
@@ -187,6 +188,7 @@ def main():
     })
     logo = circular_logo(512)
     logo.save(os.path.join(OUT, "logo.png"), optimize=True)
+    logo.resize((132, 132), Image.LANCZOS).save(os.path.join(OUT, "logo-132.png"), optimize=True)
     for size, name in [(192, "icon-192.png"), (512, "icon-512.png"), (180, "apple-touch-icon.png")]:
         bg = Image.new("RGBA", (size, size), BG)
         bg.alpha_composite(logo.resize((size, size), Image.LANCZOS))

@@ -36,7 +36,7 @@
     }
     const alt = c.alt(d);
     return el("figure", { class: "widget val-card" },
-      el("button", { type: "button", class: "val-chart", "aria-label": `Enlarge: ${alt}`, onclick: () => openLightbox(d.image, alt, c.file) },
+      el("button", { type: "button", class: "val-chart", "aria-label": `Enlarge: ${alt}`, onclick: () => openLightbox(d.preview, alt, c.file, d.image) },
         el("img", { src: d.preview, alt, width: 1100, height: 688, decoding: "async" })),
       caption(c, d));
   }

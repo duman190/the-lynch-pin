@@ -219,8 +219,9 @@
   }
 
   function renderPlot(d) {
-    S.chart = d.plot_preview_url ? { ticker: d.ticker, url: d.plot_url } : null;
+    S.chart = d.plot_preview_url ? { ticker: d.ticker, url: d.plot_url, preview: d.plot_preview_url } : null;
     S.plotSettled = true;
+    if (S.chart) new Image().src = S.chart.preview;  // in the browser's cache by the time View chart is clicked
     fillChart();
   }
 
@@ -231,9 +232,9 @@
       if (S.plotSettled) slot.replaceChildren();
       return;
     }
-    const { ticker, url } = S.chart;
+    const { ticker, url, preview } = S.chart;
     const alt = `${ticker} PEG valuation deviation chart: bell curve of the 5-year PEG history with today's position, stats, income grade and credit rating`;
-    slot.replaceChildren(el("button", { type: "button", class: "btn-primary btn-chart", onclick: () => openLightbox(url, alt, `${ticker}_valuation.png`) }, "View chart"));
+    slot.replaceChildren(el("button", { type: "button", class: "btn-primary btn-chart", onclick: () => openLightbox(preview, alt, `${ticker}_valuation.png`, url) }, "View chart"));
   }
 
   function renderIncome(d) {

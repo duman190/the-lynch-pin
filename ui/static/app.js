@@ -34,16 +34,19 @@ async function getJSON(url) {
 }
 
 /* ── lightbox ─────────────────────────────────────────────────────────────── */
-function openLightbox(src, alt, filename) {
+/* Shows ``src``; ``full`` is the file the download icon saves. The charts open on their 1100-px JPEG
+   (~90 KB, the page's own preview) and save the 300-dpi PNG (~0.5 MB, over a second through the tunnel). */
+function openLightbox(src, alt, filename, full = src) {
   const dlg = $("#lightbox");
   const img = $("#lightbox-img");
   img.src = src;
   img.alt = alt || "";
+  img.dataset.full = full;
   // a chart that can be saved gets a download icon next to the close button (see downloadLink)
   const dl = $("#lightbox-dl");
   dl.replaceChildren();
   dl.hidden = !filename;
-  if (filename) dl.append(downloadLink(src, filename, alt, DOWNLOAD_ICON, "Download chart", { prefetch: true }));
+  if (filename) dl.append(downloadLink(full, filename, alt, DOWNLOAD_ICON, "Download chart", { prefetch: true }));
   $("#lightbox-hint").hidden = true;
   if (dlg.open) return;
   if (typeof dlg.showModal === "function") dlg.showModal();
@@ -81,11 +84,13 @@ function fetchPng(url) {
   }
   return pngFetch.promise;
 }
-/* When the share sheet can't open: show the image with "press and hold to save". The lightbox stays as it
-   is when it already shows this image, download button included. */
+/* When the share sheet can't open: show the image with "press and hold to save". When the lightbox already
+   shows this chart (or its JPEG), it switches to the full file and keeps its download button. */
 function saveHint(url, alt) {
   const dlg = $("#lightbox");
-  if (!(dlg.open && $("#lightbox-img").src === new URL(url, location.href).href)) openLightbox(url, alt);
+  const img = $("#lightbox-img");
+  if (dlg.open && img.dataset.full === url) img.src = url;
+  else openLightbox(url, alt);
   $("#lightbox-hint").hidden = false;
 }
 /* the tray-and-arrow glyph of a browser's download button */

@@ -22,7 +22,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 HOME = ["/", "/static/app.css", "/static/app.js", "/static/search.js", "/static/scans.js", "/static/socials.js",
-        "/static/img/logo.png", "/static/img/hero_wide.webp", "/api/health"]
+        "/static/img/logo-132.png", "/static/img/hero_wide.webp", "/api/health"]
 
 
 def main(argv=None):

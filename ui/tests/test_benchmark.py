@@ -62,11 +62,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(HERE))
 SYMS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "AMD", "NFLX",
         "CRM", "ORCL", "ADBE", "INTC", "QCOM", "CSCO", "TXN", "MU", "PLTR", "UBER"]
-PAGE = ["/?t={s}", "/static/app.css", "/static/app.js", "/static/search.js", "/static/img/logo.png",
+PAGE = ["/?t={s}", "/static/app.css", "/static/app.js", "/static/search.js", "/static/img/logo-132.png",
         "/static/img/hero_wide.webp", "/api/health", "/api/ticker/{s}", "/plots/{s}.jpg",
         "/api/ticker/{s}/deepdive"]
 HOME = ["/", "/static/app.css", "/static/app.js", "/static/search.js", "/static/scans.js", "/static/socials.js",
-        "/static/img/logo.png", "/static/img/hero_wide.webp", "/api/health", "/api/scans", "/api/socials"]
+        "/static/img/logo-132.png", "/static/img/hero_wide.webp", "/api/health", "/api/scans", "/api/socials"]
 SCAN_KINDS = ["mags", "qqq", "schd", "smh", "igv", "fintwit", "portfolio"]
 
 

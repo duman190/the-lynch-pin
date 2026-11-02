@@ -158,7 +158,7 @@
     const name = p.image ? decodeURIComponent(p.image.full.split("/").pop().split("?")[0]) : null;
     return el("li", { class: "x-post" },
       el("div", { class: "x-rail" },
-        el("img", { class: "x-avatar", src: "/static/img/logo.png", alt: "", width: 44, height: 44 }),
+        el("img", { class: "x-avatar", src: "/static/img/logo-132.png", alt: "", width: 44, height: 44 }),
         i < n - 1 ? el("span", { class: "x-line", "aria-hidden": "true" }) : null),
       el("article", { class: "x-body", "aria-label": p.ticker ? `$${p.ticker}` : i === 0 ? "Scan summary" : "Closing post" },
         el("header", { class: "x-head" },
@@ -168,7 +168,7 @@
             ? el("button", { type: "button", class: "btn-ghost x-analyze", onclick: () => window.LynchSearch.go(p.ticker) }, `Analyze $${p.ticker} ›`)
             : null),
         el("p", { class: "x-text" }, richText(p.text, tickers)),
-        p.image ? el("button", { type: "button", class: "plot-btn x-media", "aria-label": `Enlarge ${alt}`, onclick: () => openLightbox(p.image.full, alt) },
+        p.image ? el("button", { type: "button", class: "plot-btn x-media", "aria-label": `Enlarge ${alt}`, onclick: () => openLightbox(p.image.src, alt, undefined, p.image.full) },
           el("img", { src: p.image.src, alt, loading: i > 1 ? "lazy" : "eager", width: 1100, height: 642, decoding: "async" })) : null,
         p.image ? el("p", { class: "x-dl muted small" }, "Tap to enlarge · ", downloadLink(p.image.full, name, alt)) : null));
   }
