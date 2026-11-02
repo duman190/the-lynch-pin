@@ -485,7 +485,7 @@ dialog#lightbox img { width: 100%; height: auto; }
   background: rgba(26,26,26,.9); color: var(--white); cursor: pointer; text-decoration: none;
 }
 .lightbox-dl a:hover, .lightbox-close:hover { border-color: var(--sky); }
-.lightbox-dl a.is-loading { opacity: .45; cursor: progress; }  /* iOS app: the PNG is still downloading */
+.lightbox-dl a.is-loading { opacity: .45; cursor: progress; }  /* iOS app: the chart is still downloading */
 .lightbox-dl svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .lightbox-close {
   position: sticky; top: max(8px, env(safe-area-inset-top)); float: right; margin: 8px; z-index: 2;

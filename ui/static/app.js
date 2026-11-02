@@ -35,7 +35,9 @@ async function getJSON(url) {
 
 /* ── lightbox ─────────────────────────────────────────────────────────────── */
 /* Shows ``src``; ``full`` is the file the download icon saves. The charts open on their 1100-px JPEG
-   (~90 KB, the page's own preview) and save the 300-dpi PNG (~0.5 MB, over a second through the tunnel). */
+   (~90 KB, the page's own preview) and save the 300-dpi PNG (~0.5 MB, over a second through the tunnel).
+   The iPhone home-screen app saves the JPEG it shows instead: it is downloaded already, so the share sheet
+   is ready at once and no PNG crosses the tunnel (see downloadLink). */
 function openLightbox(src, alt, filename, full = src) {
   const dlg = $("#lightbox");
   const img = $("#lightbox-img");
@@ -46,7 +48,12 @@ function openLightbox(src, alt, filename, full = src) {
   const dl = $("#lightbox-dl");
   dl.replaceChildren();
   dl.hidden = !filename;
-  if (filename) dl.append(downloadLink(full, filename, alt, DOWNLOAD_ICON, "Download chart", { prefetch: true }));
+  if (filename) {
+    const shareShown = navigator.standalone === true && src !== full && /\.jpe?g(\?|$)/i.test(src);
+    dl.append(shareShown
+      ? downloadLink(src, filename.replace(/\.png$/i, ".jpg"), alt, DOWNLOAD_ICON, "Download chart", { prefetch: true })
+      : downloadLink(full, filename, alt, DOWNLOAD_ICON, "Download chart", { prefetch: true }));
+  }
   $("#lightbox-hint").hidden = true;
   if (dlg.open) return;
   if (typeof dlg.showModal === "function") dlg.showModal();
@@ -69,28 +76,30 @@ function initLightbox() {
 
 /* ── chart download ──────────────────────────────────────────────────────── */
 /* An iOS home-screen app has no browser chrome: following a download link strands the user on a file
-   preview with no way back. There, hand the PNG to the share sheet ("Save Image") instead. iOS opens
-   the share sheet only within the tap that asked for it, so the PNG must already be downloaded by then:
-   the lightbox fetches it when it opens, and the tap shares the blob without waiting on anything. */
-let pngFetch = { url: null, promise: null, blob: null };
-function fetchPng(url) {
-  if (pngFetch.url !== url) {
+   preview with no way back. There, hand the image to the share sheet ("Save Image") instead. iOS opens
+   the share sheet only within the tap that asked for it, so the image must already be downloaded by then:
+   the lightbox fetches it when it opens (the JPEG it shows: from the browser's cache), and the tap shares
+   the blob without waiting on anything. */
+let imageFetch = { url: null, promise: null, blob: null };
+function fetchImage(url) {
+  if (imageFetch.url !== url) {
     const entry = { url, promise: null, blob: null };
     entry.promise = fetch(url)
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
       .then((blob) => { entry.blob = blob; return blob; });
-    entry.promise.catch(() => { if (pngFetch === entry) pngFetch = { url: null, promise: null, blob: null }; });
-    pngFetch = entry;
+    entry.promise.catch(() => { if (imageFetch === entry) imageFetch = { url: null, promise: null, blob: null }; });
+    imageFetch = entry;
   }
-  return pngFetch.promise;
+  return imageFetch.promise;
 }
 /* When the share sheet can't open: show the image with "press and hold to save". When the lightbox already
-   shows this chart (or its JPEG), it switches to the full file and keeps its download button. */
+   shows this chart (its JPEG, or the full file being saved), it shows that file and keeps its download button. */
 function saveHint(url, alt) {
   const dlg = $("#lightbox");
   const img = $("#lightbox-img");
-  if (dlg.open && img.dataset.full === url) img.src = url;
-  else openLightbox(url, alt);
+  const abs = new URL(url, location.href).href;
+  if (!dlg.open || (img.src !== abs && img.dataset.full !== url)) openLightbox(url, alt);
+  else if (img.src !== abs) img.src = url;
   $("#lightbox-hint").hidden = false;
 }
 /* the tray-and-arrow glyph of a browser's download button */
@@ -111,11 +120,11 @@ function downloadLink(url, filename, alt, content, label, { prefetch = false } =
     a.classList.add("is-loading");
     a.setAttribute("aria-disabled", "true");
     const done = () => { a.classList.remove("is-loading"); a.removeAttribute("aria-disabled"); };
-    fetchPng(url).then(done, done);
+    fetchImage(url).then(done, done);
   }
-  a.addEventListener("pointerdown", () => { fetchPng(url).catch(() => {}); });  // links elsewhere: head start
+  a.addEventListener("pointerdown", () => { fetchImage(url).catch(() => {}); });  // links elsewhere: head start
   const share = (blob) => {
-    const file = new File([blob], filename, { type: "image/png" });
+    const file = new File([blob], filename, { type: blob.type || "image/png" });
     if (!navigator.canShare || !navigator.canShare({ files: [file] })) return saveHint(url, alt);
     navigator.share({ files: [file] }).catch((err) => {
       if (!(err && err.name === "AbortError")) saveHint(url, alt);  // AbortError: share sheet dismissed
@@ -124,9 +133,9 @@ function downloadLink(url, filename, alt, content, label, { prefetch = false } =
   a.addEventListener("click", (e) => {
     e.preventDefault();
     if (a.classList.contains("is-loading")) return;  // a tap now would come too late for the share sheet
-    const ready = pngFetch.url === url ? pngFetch.blob : null;
+    const ready = imageFetch.url === url ? imageFetch.blob : null;
     if (ready) share(ready);  // still within the tap: the share sheet opens
-    else fetchPng(url).then(share, () => saveHint(url, alt));  // not downloaded yet: iOS may refuse → hint
+    else fetchImage(url).then(share, () => saveHint(url, alt));  // not downloaded yet: iOS may refuse → hint
   });
   return a;
 }
