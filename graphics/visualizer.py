@@ -184,6 +184,10 @@ class LynchPinVisualizer:
         current_peg, mean_peg, z_score = row['PEG'], row['Mean'], row['Dev_SD']
         
         sd = abs((current_peg - mean_peg) / z_score) if z_score != 0 else 0.5
+        # PEG and Mean are rounded to 2 decimals, so a tiny deviation (e.g. PEG 0.40, Mean 0.40,
+        # Dev 0.02 SD) recovers sd = 0 and the normal pdf turns all-NaN
+        if not np.isfinite(sd) or sd <= 0:
+            sd = 0.5
         x = np.linspace(mean_peg - 4 * sd, mean_peg + 4 * sd, 500)
         y = stats.norm.pdf(x, mean_peg, sd)
 
