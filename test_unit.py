@@ -3014,6 +3014,22 @@ class TestMainPortfolioHelpers(unittest.TestCase):
         self.assertIn('never write it as a label ("Assumptions: achievable", "Verdict: ...")', p)
         self.assertIn('📊 Reverse DCF: [Only the math, and start with it: "X% base ROI requires EPS', p)
         self.assertIn('Do not describe the company here; that belongs in 🤖.', " ".join(p.split()))
+        # 📊 weighs the forecast against the trailing EPS trend; the brief's verdict and reason stand
+        flat = " ".join(p.split())
+        self.assertIn('Weigh the growth forecast against the trailing EPS trend: a forecast below the trend is '
+                      'backed by history (a bigger base grows slower), one well above it needs a re-acceleration '
+                      '(a stretch), and a sharp slowdown from it is a possible thesis break.', flat)
+        self.assertIn("gives the verdict on the assumptions and its reason, keep both", flat)
+        self.assertIn('(a possible thesis break first)', flat)
+
+    def test_build_prompt_raw_metrics_carry_the_eps_trend(self):
+        from engine.ai_research import LynchPinResearcher
+        row = {'Ticker': 'MSFT', 'PE': 25.0, 'FwdPE': 20.0, '2YFwd': 18.0, '5YGrowth': '15.0%', 'Trend': '20.0%',
+               'TrendYears': 5, 'PEG': 1.33, 'Mean': 1.5, 'Dev_SD': -0.5, 'Bull': '20%', 'Base': '15%', 'Bear': '8%'}
+        p = LynchPinResearcher.build_prompt([row])
+        self.assertIn('Growth 15.0% (trailing 5Y EPS trend 20.0%/yr), PEG 1.33', p)
+        bare = {k: v for k, v in row.items() if k not in ('Trend', 'TrendYears')}  # a row from before the trend
+        self.assertIn('Growth 15.0%, PEG 1.33', LynchPinResearcher.build_prompt([bare]))
 
     def test_build_prompt_portfolio_mode(self):
         from engine.ai_research import LynchPinResearcher

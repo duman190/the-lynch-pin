@@ -170,7 +170,14 @@ Next to the forward estimate, the charts and the portal show what reported EPS h
 | **Data** | No extra requests: Yahoo's annual and quarterly statements the PEG history already reads (split-adjusted, signed), and the SEC download it already makes. Yahoo lists 4 fiscal years; SEC 10-K values fill the years it lacks, divided by the splits since they were filed (NVDA FY2022: 3.85 → 0.385), and only when SEC and Yahoo agree on every year both have (a pre-IPO per-share figure is on the old share count: CAVA 2022, -44.41 vs Yahoo's -0.61). |
 | **Shorter histories** | The label carries the years of EPS behind the trend: the quarters from the first period's start to the last one's end, rounded up to whole years (3 quarters → 1Y, 5 → 2Y, at most 5Y). Under 2 annual values the single quarters are regressed instead. |
 
-Examples (Nov 2026, fwd vs trl): AAPL 8.8% vs 9.8%, MSFT 14.4% vs 20.0%, COST 7.8% vs 11.6%, NVDA 51.9% vs 60.4%, INTC 21.1% vs -52.8% (losses in 2024-26), PLTR 46.3% vs 76.8% (losses to profits), FIG 7.3% vs -76.7% over 4Y. The line is left out for rows from before it and when there is no EPS history. The chart's stats box is 24 characters wide for the `(fwd)` label, and shows the bull and bear ROIs on one line in whole percent (`- Bull/Bear ROI %: 47/29`, under Base ROI, like the 6M edge's line), so it is no taller than before.
+Examples (Nov 2026, fwd vs trl): AAPL 8.8% vs 9.8%, MSFT 14.4% vs 20.0%, COST 7.8% vs 11.6%, NVDA 51.9% vs 60.4%, INTC 21.1% vs -52.8% (losses in 2024-26), PLTR 46.3% vs 76.8% (losses to profits), FIG 7.3% vs -76.7% over 4Y. The line is left out for rows from before it and when there is no EPS history.
+
+The reverse DCF weighs the forward estimate against the trend (`ui/quick.py`, `trend_vs_forecast`; the portal's Quick Overview, its AI overview and the daily scan's thread):
+- **Below the trend** (NVDA, AMD) is history backing it: a bigger base grows slower. Growth above 30%/yr is then "achievable", not "a stretch".
+- **Well above it** (8+ points and 1.5× the trend) needs a re-acceleration, and a falling trend (INTC, TSLA) a turnaround. Either makes the assumptions "a stretch".
+- **A sharp slowdown** (8+ points under it, at most 0.6× the trend: PYPL 7.8% vs 20.4%) is a high red flag, a possible thesis break. A one-off gain in the trailing 12 months can trip it too (GOOGL, 18.4% vs 36.4%).
+
+The chart's stats box is 24 characters wide for the `(fwd)` label, and shows the bull and bear ROIs on one line in whole percent (`- Bull/Bear ROI %: 47/29`, under Base ROI, like the 6M edge's line), so it is no taller than before.
 
 ## Historical Forward PEG Reconstruction
 

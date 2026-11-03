@@ -362,8 +362,10 @@ def test_portal_messages_static_system_then_terse_data(settings):
     text = user["content"]
     assert text.startswith("$MSFT Microsoft Corporation")
     # pre-computed: the reverse-DCF sentence, fortress tag, RED cost lines, the red-flag verdict
-    assert ("Reverse DCF: 13.5% base ROI requires EPS +13.0%/yr for 5 years, re-rating 21.8x to 22.4x forward PE; "
-            "assumptions: realistic") in text  # Quick Overview's rule-based verdict
+    assert ("Reverse DCF: 13.5% base ROI requires EPS +13.0%/yr for 5 years, re-rating 21.8x to 22.4x forward PE\n"
+            "EPS trend +20.0%/yr over 5Y: the 13.0%/yr growth forecast is below it, as expected from a bigger base\n"
+            # Quick Overview's rule-based verdict and its reason, on a line of their own (the 27B kept it there)
+            "Verdict on the assumptions: realistic (moderate growth without needing a richer multiple)\n") in text
     assert "Income grade A+: revenue +18%, op income +18%, G&A +40% RED" in text
     assert "Credit AAA (fortress)" in text and text.endswith("Red flags: none")
     assert len(text) < 750
@@ -374,6 +376,25 @@ def test_portal_data_reverse_dcf_mentions_the_dividend(settings):
     data["stats"]["div_yield"] = 2.5
     assert "Reverse DCF: 13.5% base ROI (2.5% of it dividend yield) requires EPS +13.0%/yr for 5 years" \
         in L.portal_data(data)
+
+
+def test_portal_data_weighs_the_forecast_against_the_eps_trend(settings):
+    """NVDA (2 Nov 2026): 46.7% forecast growth below a +60.4% EPS trend: history backs it, so "achievable"
+    (it was "a stretch" for 40%+ growth); PYPL-like: a sharp slowdown, in the trend line and the red flags."""
+    data = _analysed(settings)
+    data["stats"].update(growth_pct=46.7, PEG=0.31, Mean=0.49, Dev_SD=-1.0, trend_pct=60.4, trend_years=5)
+    data.pop("quick")
+    text = L.portal_data(data)
+    assert ("EPS trend +60.4%/yr over 5Y: the 46.7%/yr growth forecast is below it, as expected from a bigger base\n"
+            "Verdict on the assumptions: achievable (the growth has to hold up, but its EPS trend already "
+            "delivers it)") in text
+    data["stats"].update(growth_pct=7.8, PEG=1.27, Mean=1.3, trend_pct=20.4)
+    text = L.portal_data(data)
+    assert "EPS trend +20.4%/yr over 5Y: the 7.8%/yr growth forecast is a sharp slowdown, a possible thesis break" in text
+    assert text.endswith("Red flags: Growth forecast 7.8%/yr is a sharp slowdown from its +20.4%/yr EPS trend over "
+                         "the last 5 years: a possible thesis break")  # the whole flag: 🧪 builds on it
+    data["stats"].pop("trend_pct")  # an analysis from before the trailing trend: no trend line
+    assert "EPS trend" not in L.portal_data(data)
 
 
 def test_portal_data_profile_analyst_target_and_flags():

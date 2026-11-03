@@ -81,6 +81,53 @@ def test_dcf_verdicts(msft, growth, peg, mean, verdict, phrase):
     assert trails == (d["stats"]["Base"] < 9)
 
 
+@pytest.mark.parametrize("growth,trend,view", [
+    (46.7, 60.4, "slower"),            # NVDA: a bigger base grows slower
+    (44.5, 49.0, "slower"),            # AMD
+    (14.4, 15.5, "in line"),
+    (25.0, 20.0, "faster"),
+    (25.0, 10.0, "re-acceleration"),   # 15 points and 2.5x past the trend
+    (52.8, -52.8, "turnaround"),       # INTC: EPS has been falling
+    (5.0, -2.0, "faster"),             # a small step up from a flat trend is no turnaround
+    (7.8, 20.4, "sharp slowdown"),     # PYPL
+    (46.3, 76.8, "slower"),            # PLTR: 0.60x the trend, from a near-zero base
+    (4.0, 8.0, "slower"),              # half the trend, but only 4 points
+    (13.0, None, None),
+])
+def test_trend_vs_forecast(growth, trend, view):
+    assert quick.trend_vs_forecast(growth, trend) == view
+
+
+@pytest.mark.parametrize("growth,peg,mean,trend,verdict,why", [
+    # 45% growth, the multiple holding: "a stretch" unless the EPS trend already delivers it
+    ("45.0%", 0.7, 0.7, 50.0, "achievable", "its EPS trend already delivers it"),
+    ("45.0%", 0.7, 0.7, 40.0, "stretch", "sustained high growth its EPS trend has not shown"),
+    ("45.0%", 0.9, 1.2, -10.0, "stretch", "EPS has been falling, so it has to turn around"),
+    ("20.0%", 1.5, 1.6, 8.0, "stretch", "growth has to re-accelerate well past its EPS trend"),
+    ("13.0%", 1.68, 1.72, 30.0, "realistic", "moderate growth"),  # a sharp slowdown: a red flag, not a stretch
+])
+def test_dcf_verdict_weighs_the_eps_trend(msft, growth, peg, mean, trend, verdict, why):
+    d = copy.deepcopy(msft)
+    d["stats"].update(growth_pct=float(growth[:-1]), PEG=peg, Mean=mean, Dev_SD=-1.0, trend_pct=trend, trend_years=5)
+    q = quick.quick_overview(d)
+    assert q["dcf_verdict"] == verdict and why in q["dcf_why"]
+    assert f"Assumptions: {'a ' if verdict == 'stretch' else ''}{verdict} — {q['dcf_why']}." in q["reverse_dcf"]
+    assert f"EPS trended {trend:+.1f}%/yr over the last 5 years, so the {growth[:-1]}%/yr forecast is" in q["reverse_dcf"]
+    slowdown = [f for f in q["stomach_test"] if "sharp slowdown" in f["text"]]
+    assert bool(slowdown) == (trend == 30.0)
+    if slowdown:
+        assert slowdown[0] == {"level": "high", "text": "Growth forecast 13.0%/yr is a sharp slowdown from its "
+                               "+30.0%/yr EPS trend over the last 5 years: a possible thesis break."}
+
+
+def test_reverse_dcf_without_a_trend_reads_as_before(msft):
+    d = copy.deepcopy(msft)
+    for k in ("trend_pct", "trend_years"):
+        d["stats"].pop(k, None)
+    q = quick.quick_overview(d)
+    assert "EPS trended" not in q["reverse_dcf"] and q["dcf_verdict"] == "realistic"
+
+
 def test_reverse_dcf_quotes_the_faded_growth_from_20_percent(msft):
     from engine.lynch_pin_core import _avg_eps_growth
     d = copy.deepcopy(msft)

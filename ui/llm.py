@@ -569,14 +569,16 @@ Reply with exactly three paragraphs of 2-3 sentences, plain text, no markdown, e
 🤖: Start with what the company does and its moat, then conviction vs risk from the valuation and income grade; \
 end with the analysts' target sentence ("Analysts' target $X (Y% upside)") copied word for word.
 📊 Reverse DCF: Only the math: "X% base ROI requires EPS to compound at Y%/yr for 5 years, re-rating from Mx to Nx \
-forward PE", what that demands operationally (revenue growth, margins), then one plain sentence on whether \
-those assumptions are realistic, achievable or a stretch (as given) and why, never a label like "Assumptions: achievable".
-🧪 Stomach Test: The specific bear case: why it could lag the market for 5 years, built on the red flags, with numbers.
+forward PE", what that demands operationally (revenue growth, margins), then one plain sentence \
+with the verdict on those assumptions and its reason, both exactly as given (never your own), in your own words \
+and never as a label like "Assumptions: achievable". A forecast below the EPS trend is backed by history (a bigger \
+base grows slower); one well above it needs a re-acceleration.
+🧪 Stomach Test: The specific bear case: why it could lag the market for 5 years, built on the red flags (a thesis \
+break first), with numbers.
 Quote numbers exactly as given, never add or combine them, and never mention "the data" or these instructions."""
 
 _INCOME_KEEP = ("Revenue", "OpIncome", "EPS")  # plus any RED line
 _INCOME_NAMES = {"Revenue": "revenue", "OpIncome": "op income", "NetIncome": "net income"}
-_VERDICTS = {"realistic": "realistic", "achievable": "achievable", "stretch": "a stretch"}
 _DUP_FLAGS = ("Analysts' mean target", "Costs running ahead")  # already in the PT / income lines
 
 
@@ -588,7 +590,8 @@ def _flag_headline(text):
 
 def portal_data(d):
     """The ticker's analysis (``ui.analysis`` result) as a terse, pre-digested data block."""
-    from ui.quick import _first_sentences, _money, _num, implied_terminal_pe, quick_overview
+    from ui.quick import (TREND_READS, VERDICT_WORDS, _first_sentences, _money, _num, implied_terminal_pe,
+                          quick_overview, trend_vs_forecast)
     sym, p, st, cur = d["ticker"], d.get("profile") or {}, d.get("stats") or {}, d.get("currency")
     quick = d.get("quick") or quick_overview(d)
     out = [f"${sym} {d.get('name') or sym}" + (f", {d['industry']}" if d.get("industry") else "")
@@ -624,13 +627,23 @@ def portal_data(d):
             out.append(f"5Y ROI/yr: bull {bull:.1f}%, base {base:.1f}%, bear {bear:.1f}%")
             math = implied_terminal_pe(st)
             if math:
-                verdict = _VERDICTS.get(quick.get("dcf_verdict"))  # rule-based: small models muddle it
                 from engine.lynch_pin_core import _avg_eps_growth  # growth fades from 20% (engine ROI math)
                 div = _num(st.get("div_yield")) or 0.0
                 out.append(f"Reverse DCF: {base:.1f}% base ROI"
                            + (f" ({div:.1f}% of it dividend yield)" if div >= 0.05 else "")
                            + f" requires EPS +{_avg_eps_growth(math[0]):.1f}%/yr for 5 years, "
-                           f"re-rating {fwd:.1f}x to {math[1]:.1f}x forward PE" + (f"; assumptions: {verdict}" if verdict else ""))
+                           f"re-rating {fwd:.1f}x to {math[1]:.1f}x forward PE")
+                trend = _num(st.get("trend_pct"))
+                view = trend_vs_forecast(g, trend)
+                if view:  # what 📊 weighs the forecast against (ui/quick.py)
+                    out.append(f"EPS trend {trend:+.1f}%/yr over {st.get('trend_years') or 1}Y: the {g:.1f}%/yr "
+                               f"growth forecast is {TREND_READS[view]}")
+                # rule-based, with its reason, on a line of its own: at the end of the reverse-DCF line the 27B
+                # kept "achievable" 2 times in 6 (NVDA, AMD: it wrote "a stretch" for 40% growth), here 6/6
+                verdict = VERDICT_WORDS.get(quick.get("dcf_verdict"))
+                if verdict:
+                    out.append(f"Verdict on the assumptions: {verdict}"
+                               + (f" ({quick['dcf_why']})" if quick.get("dcf_why") else ""))
     inc = d.get("income") or {}
     if inc.get("grade"):
         items = [f"{_INCOME_NAMES.get(i['label'], i['label'])} {i['growth'] * 100:+.0f}%"

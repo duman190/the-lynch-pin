@@ -20,6 +20,9 @@ RULES = {
     "ttm_pe": 50.0,        # trailing PE above this: priced for perfection
     "fwd_pe": 40.0,        # forward PE above this
     "growth": 40.0,        # 5Y EPS growth assumption above this (%/yr): hard to sustain for 5 years
+    "trend_gap": 8.0,      # forecast this many points off the trailing EPS trend, and...
+    "trend_slow": 0.6,     # ...at most this × the trend: a sharp slowdown, a possible thesis break
+    "trend_fast": 1.5,     # ...at least this × the trend (or the trend falling): a re-acceleration, a stretch
     "peg": 2.5,            # the engine's own expensive-for-its-growth flag
     "dev_sd": 1.0,         # PEG this many SDs above its 5Y mean: mean reversion works against it
     "base_roi": 9.0,       # base ROI below this (%/yr): the engine's risk flag, ~a market return
@@ -147,12 +150,39 @@ def implied_terminal_pe(st):
     return g, base_peg * g ** _growth_decay(g)
 
 
+def trend_vs_forecast(growth, trend):
+    """The 5Y EPS growth forecast against the trailing EPS trend (both %/yr): "turnaround" (EPS has been
+    falling), "re-acceleration", "faster", "in line", "slower" (the base effect: a bigger base grows slower) or
+    "sharp slowdown"; None without both. The trend (slope ÷ mean |EPS|, engine) understates fast compounding,
+    so a forecast at or below it is one the company has already delivered."""
+    if growth is None or trend is None:
+        return None
+    r, gap = RULES, growth - trend
+    if gap >= r["trend_gap"] and (trend <= 0 or growth >= r["trend_fast"] * trend):
+        return "turnaround" if trend < 0 else "re-acceleration"
+    if -gap >= r["trend_gap"] and growth <= r["trend_slow"] * trend:
+        return "sharp slowdown"
+    return "in line" if abs(gap) < 2 else "faster" if gap > 0 else "slower"
+
+
+# "...so the 46.7%/yr forecast is <read>" (the Quick Overview), "...: the 46.7%/yr growth forecast is <read>" (AI)
+TREND_READS = {"turnaround": "a turnaround, as EPS has been falling", "re-acceleration": "a re-acceleration well "
+               "past it", "faster": "a bit faster than it", "in line": "in line with it", "slower": "below it, as "
+               "expected from a bigger base", "sharp slowdown": "a sharp slowdown, a possible thesis break"}
+VERDICT_WORDS = {"realistic": "realistic", "achievable": "achievable", "stretch": "a stretch"}
+
+
+def _trend_years(years):
+    return f"the last {years} years" if years and years > 1 else "the last year"
+
+
 def _reverse_dcf(d):
+    """(the reverse-DCF text, its verdict, the verdict's reason), or Nones."""
     st = d.get("stats") or {}
     base, fwd = _num(st.get("Base")), _num(st.get("FwdPE"))
     math = implied_terminal_pe(st) if base is not None and fwd else None
     if math is None:
-        return None, None
+        return None, None, None
     from engine.lynch_pin_core import _avg_eps_growth, _growth_decay
     g5, term = math
     g = _avg_eps_growth(g5)  # from 20% growth the engine fades EPS growth to the terminal growth
@@ -178,18 +208,29 @@ def _reverse_dcf(d):
     if rev is not None or eps is not None:
         bits = [f"{lab} {v * 100:+.0f}%" for lab, v in (("revenue", rev), ("EPS", eps)) if v is not None]
         out.append(f"Latest quarter vs a year ago: {' and '.join(bits)}.")
-    if g > 30 or change > 30:
-        verdict = "stretch"
+    trend = _num(st.get("trend_pct"))
+    view = trend_vs_forecast(g5, trend)
+    if view:
+        out.append(f"EPS trended {trend:+.1f}%/yr over {_trend_years(st.get('trend_years'))}, so the {g5:.1f}%/yr "
+                   f"forecast is {TREND_READS[view]}.")
+    backed = view in ("in line", "slower", "sharp slowdown")  # high growth the company has already delivered
+    if view in ("turnaround", "re-acceleration"):
+        verdict, why = "stretch", ("EPS has been falling, so it has to turn around" if view == "turnaround"
+                                   else "growth has to re-accelerate well past its EPS trend")
+    elif change > 30 or (g > 30 and not backed):
+        rerate, grow = change > 30, g > 30 and not backed
+        verdict, why = "stretch", ("sustained high growth and a much richer multiple" if rerate and grow else
+                                   "the stock has to re-rate to a much richer multiple" if rerate else
+                                   "sustained high growth" + (" its EPS trend has not shown" if view else ""))
     elif g <= 15 and change <= 5:
-        verdict = "realistic"
+        verdict, why = "realistic", "moderate growth without needing a richer multiple"
     else:
-        verdict = "achievable"
-    out.append({"realistic": "Assumptions: realistic — moderate growth without needing a richer multiple.",
-                "achievable": "Assumptions: achievable — the growth has to hold up, but nothing heroic.",
-                "stretch": "Assumptions: a stretch — sustained high growth and/or a richer multiple."}[verdict])
+        verdict, why = "achievable", ("the growth has to hold up, but its EPS trend already delivers it" if g > 30
+                                      else "the growth has to hold up, but nothing heroic")
+    out.append(f"Assumptions: {VERDICT_WORDS[verdict]} — {why}.")
     if base < RULES["base_roi"]:
         out.append(f"Even if they hold, the base return trails the ~{RULES['base_roi']:.0f}%/yr hurdle.")
-    return " ".join(out), verdict
+    return " ".join(out), verdict, why
 
 
 def _flags(d):
@@ -212,6 +253,10 @@ def _flags(d):
         if g and g > r["growth"]:
             add("high", f"Growth assumption {g:.1f}%/yr for 5 years (above {r['growth']:.0f}%): few companies sustain "
                         f"it; the ROI collapses if growth halves.")
+        trend = _num(st.get("trend_pct"))
+        if trend_vs_forecast(g, trend) == "sharp slowdown":
+            add("high", f"Growth forecast {g:.1f}%/yr is a sharp slowdown from its {trend:+.1f}%/yr EPS trend over "
+                        f"{_trend_years(st.get('trend_years'))}: a possible thesis break.")
         if peg and peg >= r["peg"]:
             add("high", f"PEG {peg:.2f} (≥ {r['peg']}): expensive even after paying for the growth.")
         if st.get("history") != "ok":
@@ -278,9 +323,9 @@ def _flags(d):
 
 def quick_overview(d):
     """The Quick Overview for an analysis result ``d`` (status done or nodata)."""
-    dcf, verdict = _reverse_dcf(d)
-    return {"overview": _overview(d), "reverse_dcf": dcf, "dcf_verdict": verdict, "stomach_test": _flags(d),
-            "rules": dict(RULES)}
+    dcf, verdict, why = _reverse_dcf(d)
+    return {"overview": _overview(d), "reverse_dcf": dcf, "dcf_verdict": verdict, "dcf_why": why,
+            "stomach_test": _flags(d), "rules": dict(RULES)}
 
 
 def profile_from_info(info):

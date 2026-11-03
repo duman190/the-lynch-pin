@@ -51,7 +51,8 @@ def analyses(settings, tickers, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump((today, cached), f)
-    return {t: cached[t] for t in tickers if t in cached}
+    from ui.quick import quick_overview  # recomputed: a cached analysis gets today's rules and verdicts
+    return {t: cached[t] | {"quick": quick_overview(cached[t])} for t in tickers if t in cached}
 
 
 def run_level(settings, data, conc, n, max_tokens=None):

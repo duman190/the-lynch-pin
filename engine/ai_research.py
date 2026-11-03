@@ -356,7 +356,9 @@ class LynchPinResearcher:
                         else f"EPS compounds at {d['5YGrowth']}/yr for 5 years")
             line = (
                 f"- {d['Ticker']}{w_tag}: PE {d['PE']}, FwdPE {d['FwdPE']}, 2YFwd {d['2YFwd']}, "
-                f"Growth {d['5YGrowth']}, PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
+                f"Growth {d['5YGrowth']}"
+                + (f" (trailing {d['TrendYears']}Y EPS trend {d['Trend']}/yr)" if d.get('TrendYears') else "")
+                + f", PEG {d['PEG']} (Hist Mean: {d['Mean']}, Dev: {d['Dev_SD']} SD). "
                 f"ROI Projections: Bull {d['Bull']}, Base {d['Base']}, Bear {d['Bear']}. "
                 f"Base ROI math: {eps_path}, "
                 f"terminal growth decays to {terminal_growth:.1f}% (decay {decay}), "
@@ -403,12 +405,16 @@ terminal PEG formulas, or intermediate calculation steps — just state the fina
 Then what this demands operationally — specific revenue growth, margin targets, market share
 gains needed. End with your verdict as one natural sentence in your own words: are these
 assumptions realistic, achievable, or a stretch given the current trajectory, and why (what has
-to go right)? When the ticker's line states the assumptions verdict, keep that judgement, but
+to go right)? Weigh the growth forecast against the trailing EPS trend: a forecast below the
+trend is backed by history (a bigger base grows slower), one well above it needs a
+re-acceleration (a stretch), and a sharp slowdown from it is a possible thesis break.
+When the ticker's data gives the verdict on the assumptions and its reason, keep both, but
 never write it as a label ("Assumptions: achievable", "Verdict: ..."). Do not describe the
 company here; that belongs in 🤖. Use numbers freely, don't be vague.]
 
 🧪 Stomach Test: [The specific bear case: why it could lag the market for 5 years, built on the
-ticker's red flags when they are listed, with numbers. What keeps you up at night?
+ticker's red flags when they are listed (a possible thesis break first), with numbers.
+What keeps you up at night?
 Be specific — real risks, not generic disclaimers. Be concise but thorough.
 Factor in balance sheet health: if credit rating is high (AA+/AAA), note the fortress balance sheet
 as a mitigating factor. If rating is low (BBB or below), flag debt burden as a key risk.
