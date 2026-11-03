@@ -2167,6 +2167,33 @@ class TestVisualizer(unittest.TestCase):
         self.assertTrue(os.path.exists(path))
         os.remove(path)
 
+    def test_stat_box_sections_are_half_a_line_apart(self):
+        """A stat box's blank line is SECTION_GAP of a line (one text per section) and its frame hugs them by
+        BOX_PAD of the font size."""
+        import matplotlib.pyplot as plt
+        from graphics import visualizer as v
+        fig, ax = plt.subplots()
+        props = dict(fontsize=16, family='monospace', fontweight='bold')
+        texts = v._boxed_text(ax, 0.02, 0.9, "a\nb\n\nc\nd", 'left', {}, **props)
+        right = v._boxed_text(ax, 0.98, 0.9, "a\nb\n\nc\nd", 'right', {}, **props)
+        fig.canvas.draw()
+        r = fig.canvas.get_renderer()
+        height = lambda s: ax.text(0, 0, s, **props).get_window_extent(r).height
+        pitch = height("a\nb\nc") - height("a\nb")
+        for ts in (texts, right):
+            self.assertEqual([t.get_text() for t in ts], ["a\nb", "c\nd"])
+            top, bottom = (t.get_window_extent(r) for t in ts)
+            # as tall as the text with its blank line SECTION_GAP of a line, on matplotlib 3.9 and 3.11 alike
+            self.assertAlmostEqual(top.y1 - bottom.y0, height("a\nb\nc\nd") + v.SECTION_GAP * pitch, delta=1)
+        self.assertAlmostEqual(texts[1].get_window_extent(r).x0, texts[0].get_window_extent(r).x0, delta=0.5)
+        self.assertAlmostEqual(right[1].get_window_extent(r).x1, right[0].get_window_extent(r).x1, delta=0.5)
+        frame = next(a for a in ax.patches if isinstance(a, v._SectionsFrame) and a.texts is texts)
+        pad = v.BOX_PAD * r.points_to_pixels(16)
+        fb, union = frame.get_window_extent(r), v.Bbox.union([t.get_window_extent(r) for t in texts])
+        self.assertAlmostEqual(fb.x0, union.x0 - pad, delta=1)
+        self.assertAlmostEqual(fb.y1, union.y1 + pad, delta=1)
+        plt.close(fig)
+
 
 # ─── engine/technical_timing.py ───
 

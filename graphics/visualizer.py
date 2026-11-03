@@ -3,6 +3,12 @@ import numpy as np
 import scipy.stats as stats
 import os
 import yfinance as yf
+from matplotlib.patches import FancyBboxPatch
+from matplotlib.transforms import Bbox, IdentityTransform
+
+# The per-ticker chart's stat boxes (ui/native/src/layout.rs draws them the same): padding around the text and
+# corner radius (fractions of the font size), and the gap between their sections (fraction of a line)
+BOX_PAD, BOX_RADIUS, SECTION_GAP = 0.6, 1.2, 0.5
 
 BENCHMARKS = {
     "mag7":   ("MAGS", "Mag 7 (MAGS)"),
@@ -30,6 +36,47 @@ def _bull_bear_roi(row):
         return "/".join(str(round(float(str(row.get(k, '0%')).rstrip('%')))) for k in ('Bull', 'Bear'))
     except (TypeError, ValueError):
         return "N/A"
+
+
+class _SectionsFrame(FancyBboxPatch):
+    """The round box around a stat box's section texts (``_boxed_text``), sized around them when drawn like a
+    text's own bbox patch, and like it left out of tight_layout."""
+
+    def __init__(self, **kw):
+        super().__init__((0, 0), 1, 1, transform=IdentityTransform(),
+                         boxstyle=f"round,pad={BOX_PAD},rounding_size={BOX_RADIUS}", **kw)
+        self.texts = []
+        self.set_in_layout(False)
+
+    def draw(self, renderer):
+        if self.texts:
+            bb = Bbox.union([t.get_window_extent(renderer) for t in self.texts])
+            self.set_bounds(bb.x0, bb.y0, bb.width, bb.height)
+            self.set_mutation_scale(renderer.points_to_pixels(self.texts[0].get_fontsize()))
+            super().draw(renderer)
+
+
+def _boxed_text(ax, x, y, text, ha, box, **props):
+    """``text`` top-aligned at (x, y) in axes coordinates, framed by a round box (``box``: its patch props).
+    A blank line separates sections, SECTION_GAP of a line apart rather than a full line: one text per
+    section, each hung below the one before (a text's blank line is as tall as any other)."""
+    frame = _SectionsFrame(zorder=props.get('zorder'), clip_on=False, **box)
+    ax.add_artist(frame)  # before its texts: drawn under them at the same zorder
+    # Sections as far apart as the lines around a blank line SECTION_GAP tall: baselines (1 + SECTION_GAP) line
+    # pitches apart. A multi-line text's extent past its outer baselines is a pitch on matplotlib 3.11, not on 3.9.
+    renderer = ax.figure.canvas.get_renderer()
+    probes = [ax.text(0, 0, "\n".join("x" * n), **props) for n in (2, 3)]
+    two, three = (p.get_window_extent(renderer).height for p in probes)
+    for p in probes:
+        p.remove()
+    pitch, outer = three - two, 2 * two - three
+    gap = ((1 + SECTION_GAP) * pitch - outer) * 72 / ax.figure.dpi  # points
+    sections = text.split("\n\n")
+    frame.texts.append(ax.text(x, y, sections[0], transform=ax.transAxes, ha=ha, va='top', **props))
+    for s in sections[1:]:
+        frame.texts.append(ax.annotate(s, xy=(1 if ha == 'right' else 0, 0), xycoords=frame.texts[-1],
+                                       xytext=(0, -gap), textcoords='offset points', ha=ha, va='top', **props))
+    return frame.texts
 
 
 class LynchPinVisualizer:
@@ -243,8 +290,8 @@ class LynchPinVisualizer:
         ax.set_title(f'{ticker} VALUATION DEVIATION (PEG)', loc='left', 
                      fontsize=20, fontweight='bold', color=sky_blue, pad=35)
         
-        box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=1.2', alpha=0.9)
-        
+        box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', alpha=0.9)
+
         # Stats box (left) — valuation + technicals, 24 characters wide (the "(fwd)" growth label);
         # the trailing EPS trend line is left out for rows from before it (and when there is no EPS)
         stats_text = (
@@ -276,9 +323,8 @@ class LynchPinVisualizer:
             # 6M bull / bear edge on one line
             edge = f"{edge_result['bull_acc']:.0f}/{edge_result['bear_acc']:.0f}"
             stats_text += f"\n- Bull/Bear %:{edge:>10}"
-        ax.text(0.02, 1.02, stats_text, transform=ax.transAxes, fontsize=16, 
-                color='#E0E0E0', family='monospace', verticalalignment='top',
-                bbox=box_style, zorder=9, fontweight='bold', parse_math=False)
+        _boxed_text(ax, 0.02, 1.02, stats_text, 'left', box_style, fontsize=16, color='#E0E0E0',
+                    family='monospace', zorder=9, fontweight='bold', parse_math=False)
 
         # Income grade + Credit rating (single box, right side)
         right_lines = []
@@ -304,9 +350,8 @@ class LynchPinVisualizer:
                     right_lines.append(f"  {label:<10} {'N/A':>8}")
 
         if right_lines:
-            ax.text(0.98, 1.09, "\n".join(right_lines), transform=ax.transAxes, 
-                    fontsize=16, color='#E0E0E0', family='monospace', ha='right',
-                    verticalalignment='top', bbox=box_style, zorder=9, fontweight='bold')
+            _boxed_text(ax, 0.98, 1.09, "\n".join(right_lines), 'right', box_style, fontsize=16,
+                        color='#E0E0E0', family='monospace', zorder=9, fontweight='bold')
 
         ax.set_xlabel('PEG RATIO', fontweight='bold', fontsize=14, alpha=0.7)
         ax.set_yticks([])

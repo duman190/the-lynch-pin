@@ -62,6 +62,11 @@ const LABEL_PAD: f64 = 4.0;
 const SPINE_WIDTH: f64 = 0.8;
 const PATCH_WIDTH: f64 = 1.0; // patch.linewidth: box frames and fill_between edges
 const TITLE_PAD: f64 = 35.0;
+// graphics/visualizer.py's stat boxes: padding and corner radius (fractions of the font size), and the gap between
+// sections (a blank line, as a fraction of a line)
+const BOX_PAD: f64 = 0.6;
+const BOX_RADIUS: f64 = 1.2;
+const SECTION_GAP: f64 = 0.5;
 const SAMPLES: usize = 500;
 const GLOW_LEVELS: usize = 100;
 
@@ -176,6 +181,17 @@ impl Bounds {
 /// half the line gap on each side (no gap for a single line); the width is the widest line's pen advance;
 /// multi-line alignment follows the horizontal alignment.
 fn layout_text(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign, va: VAlign) -> TextLayout {
+    layout_lines(font, text, size_pt, dpi, ha, va, 1.0)
+}
+
+/// A stat box's text: its blank lines (section breaks) are SECTION_GAP of a line tall, as the visualizer stacks
+/// one text per section that far apart.
+fn layout_box_text(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign) -> TextLayout {
+    layout_lines(font, text, size_pt, dpi, ha, VAlign::Top, SECTION_GAP)
+}
+
+/// ``layout_text`` with blank lines ``blank`` of a line tall.
+fn layout_lines(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign, va: VAlign, blank: f64) -> TextLayout {
     let scale = font.scale(size_pt, dpi);
     let (min_a, min_d, gap) = font.line_metrics(scale);
     let lines: Vec<&str> = text.split('\n').collect();
@@ -186,8 +202,9 @@ fn layout_text(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign, va: 
     for line in &lines {
         let s = font.shape(line, scale);
         let (w, h, d) = if line.is_empty() { (0.0, 0.0, 0.0) } else { s.whd() };
-        let a = (h - d).max(min_a) + half_gap;
-        let d = d.max(min_d) + half_gap;
+        let f = if line.is_empty() { blank } else { 1.0 };
+        let a = f * ((h - d).max(min_a) + half_gap);
+        let d = f * (d.max(min_d) + half_gap);
         thisy -= a;
         shaped.push((s, w, thisy));
         thisy -= d;
@@ -381,10 +398,9 @@ fn snap(v: f64, width_px: f64) -> f64 {
     (v + 0.5).floor() + if odd { 0.5 } else { 0.0 }
 }
 
-/// matplotlib's BoxStyle.Round: corners are quadratic Béziers of radius ``pad``.
-fn round_box(pb: &mut PathBuilder, flip: f64, b: Bounds, pad: f64) {
+/// matplotlib's BoxStyle.Round: corners are quadratic Béziers of radius ``dr`` (its rounding_size, else ``pad``).
+fn round_box(pb: &mut PathBuilder, flip: f64, b: Bounds, pad: f64, dr: f64) {
     let (x0, y0, x1, y1) = (b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad);
-    let dr = pad;
     let p = |x: f64, y: f64| (x as f32, (flip - y) as f32);
     let pts = [
         p(x0 + dr, y0),
@@ -517,9 +533,9 @@ impl<'a> Builder<'a> {
             tick_text,
             title: layout_text(&f.sans_bold, &c.title, TITLE_SIZE, self.dpi, HAlign::Left, VAlign::Baseline),
             xlabel: layout_text(&f.sans_bold, "PEG RATIO", FONT_SIZE, self.dpi, HAlign::Center, VAlign::Top),
-            left: layout_text(&f.mono_bold, &c.left_box, BOX_SIZE, self.dpi, HAlign::Left, VAlign::Top),
+            left: layout_box_text(&f.mono_bold, &c.left_box, BOX_SIZE, self.dpi, HAlign::Left),
             right: (!c.right_box.is_empty())
-                .then(|| layout_text(&f.mono_bold, &c.right_box, BOX_SIZE, self.dpi, HAlign::Right, VAlign::Top)),
+                .then(|| layout_box_text(&f.mono_bold, &c.right_box, BOX_SIZE, self.dpi, HAlign::Right)),
             badge: layout_text(&f.sans_bold, &c.badge, FONT_SIZE, self.dpi, HAlign::Center, VAlign::Baseline),
         })
     }
@@ -703,39 +719,43 @@ impl<'a> Builder<'a> {
         }
 
         // zorder 9 — the two stat boxes; zorder 10 — the SD badge
-        let boxed =
-            |t: &TextLayout, (x, y): (f64, f64), pad: f64, face: Rgba, edge: Option<Rgba>, ops: &mut dyn FnMut(Op)| {
-                let (b, pad) = (t.at(x, y).extent(), pad * t.size_px);
-                let mut pb = PathBuilder::new();
-                round_box(&mut pb, flip, b, pad);
-                if let Some(p) = pb.finish() {
-                    match edge {
-                        Some(e) => {
-                            let rb = RoundBox {
-                                left: b.x0 - pad,
-                                top: flip - (b.y1 + pad),
-                                right: b.x1 + pad,
-                                bottom: flip - (b.y0 - pad),
-                                radius: pad,
-                            };
-                            ops(Op::RoundBox(rb, face));
-                            ops(Op::Stroke(p, e, stroke(PATCH_WIDTH, LineCap::Butt, LineJoin::Miter)));
-                        }
-                        None => ops(Op::Fill(p, face)),
+        let boxed = |t: &TextLayout,
+                     (x, y): (f64, f64),
+                     (pad, radius): (f64, f64),
+                     face: Rgba,
+                     edge: Option<Rgba>,
+                     ops: &mut dyn FnMut(Op)| {
+            let (b, pad, radius) = (t.at(x, y).extent(), pad * t.size_px, radius * t.size_px);
+            let mut pb = PathBuilder::new();
+            round_box(&mut pb, flip, b, pad, radius);
+            if let Some(p) = pb.finish() {
+                match edge {
+                    Some(e) => {
+                        let rb = RoundBox {
+                            left: b.x0 - pad,
+                            top: flip - (b.y1 + pad),
+                            right: b.x1 + pad,
+                            bottom: flip - (b.y0 - pad),
+                            radius,
+                        };
+                        ops(Op::RoundBox(rb, face));
+                        ops(Op::Stroke(p, e, stroke(PATCH_WIDTH, LineCap::Butt, LineJoin::Miter)));
                     }
+                    None => ops(Op::Fill(p, face)),
                 }
-            };
-        boxed(&d.left, an.left, 1.2, BOX_FACE.alpha(0.9), Some(BOX_EDGE.alpha(0.9)), &mut push);
+            }
+        };
+        boxed(&d.left, an.left, (BOX_PAD, BOX_RADIUS), BOX_FACE.alpha(0.9), Some(BOX_EDGE.alpha(0.9)), &mut push);
         if let Some(g) = text_glyphs(&d.left, an.left.0, an.left.1, flip) {
             push(Op::Glyphs(g, LABEL));
         }
         if let Some(r) = &d.right {
-            boxed(r, an.right, 1.2, BOX_FACE.alpha(0.9), Some(BOX_EDGE.alpha(0.9)), &mut push);
+            boxed(r, an.right, (BOX_PAD, BOX_RADIUS), BOX_FACE.alpha(0.9), Some(BOX_EDGE.alpha(0.9)), &mut push);
             if let Some(g) = text_glyphs(r, an.right.0, an.right.1, flip) {
                 push(Op::Glyphs(g, LABEL));
             }
         }
-        boxed(&d.badge, an.badge, 0.4, RED, None, &mut push);
+        boxed(&d.badge, an.badge, (0.4, 0.4), RED, None, &mut push);
         if let Some(g) = text_glyphs(&d.badge, an.badge.0, an.badge.1, flip) {
             push(Op::Glyphs(g, WHITE));
         }

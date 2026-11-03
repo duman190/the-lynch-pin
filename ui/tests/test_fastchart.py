@@ -34,9 +34,10 @@ def _matplotlib_text(tmp_path, args):
 
     def capture(*a, **k):
         ax = plt.gcf().axes[0]
-        texts = [t.get_text() for t in ax.texts]
-        seen.update(title=ax._left_title.get_text(), badge=texts[0], left_box=texts[1],
-                    right_box=texts[2] if len(texts) > 2 else "")
+        # the stat boxes are one text per section (graphics/visualizer.py's _boxed_text), the badge centred
+        boxes = {ha: "\n\n".join(t.get_text() for t in ax.texts if t.get_ha() == ha) for ha in ("left", "right")}
+        seen.update(title=ax._left_title.get_text(), badge=ax.texts[0].get_text(), left_box=boxes["left"],
+                    right_box=boxes["right"])
         plt.close()
 
     orig = plt.savefig
