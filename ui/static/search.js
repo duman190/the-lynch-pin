@@ -170,8 +170,8 @@
         el("span", { class: "roi-val", text: signed(v, 1) }))));
   }
 
-  function statTable(pairs) {  // values may be strings or nodes
-    return el("dl", { class: "mono-table" }, pairs.map(([k, v, cls]) => [el("dt", { text: k }), el("dd", { class: cls || null }, v)]));
+  function statTable(pairs) {  // values may be strings or nodes; a 4th element is the label's hover hint
+    return el("dl", { class: "mono-table" }, pairs.map(([k, v, cls, hint]) => [el("dt", { text: k, title: hint }), el("dd", { class: cls || null }, v)]));
   }
 
   /** "Enriched" / "Not enriched" tag in front of the 5Y growth value. */
@@ -179,6 +179,10 @@
     if (typeof enriched !== "boolean") return null;
     return el("span", { class: `growth-tag ${enriched ? "tag-on" : "tag-off"}` }, enriched ? "Enriched" : "Not enriched");
   }
+
+  const GROWTH_HINT = "Forward: analysts' 5-year EPS growth estimate, the growth in the PEG";
+  const TREND_HINT = "Trailing: slope of the last 5 annual EPS values (the newest is the last 12 months) over time, "
+    + "÷ their mean |EPS|, per year. Fewer years when the company has less EPS history";
 
   function renderValuation(d) {
     const card = $("#card-valuation");
@@ -200,7 +204,8 @@
           : bellSVG(st.Dev_SD)),
       statTable([
         ["PE", fx(st.PE)], ["Fwd PE", fx(st.FwdPE)], ["2Y Fwd PE", fx(st["2YFwd"])],
-        ["5Y Growth", [growthTag(d.growth_enriched), " ", st.display["5YGrowth"]]],
+        ["5Y Growth (fwd)", [growthTag(d.growth_enriched), " ", st.display["5YGrowth"]], null, GROWTH_HINT],
+        ...(st.trend_years ? [[`${st.trend_years}Y Trend (trl)`, st.display.Trend, null, TREND_HINT]] : []),
         ["Dev (SD)", fx(st.Dev_SD, 2), st.Dev_SD < 0 ? "green" : "red"],
       ]),
       el("h3", { class: "sub-h", text: "5Y ROI projection" + (st.div_yield >= 0.05 ? ` · incl. ${fx(st.div_yield, 1)}% dividend` : "") }),

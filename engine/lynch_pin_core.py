@@ -211,6 +211,41 @@ def _blended_growth(k_years, realized_g, projected_g):
     return max(blended, _MIN_BLENDED_GROWTH)
 
 
+# Trailing EPS trend: annual EPS values regressed (Barra's historical earnings growth: 5 fiscal years)
+_TREND_POINTS = 5
+_QUARTER_DAYS = 365.25 / 4
+
+
+def _eps_trend(points, period_quarters=4):
+    """``(trend %/yr, years)`` from ``[(period end, EPS), ...]``: the OLS slope of EPS on time (years) ÷ the
+    mean |EPS| (Barra's historical earnings growth). Every point counts, so one bad year moves it less than
+    it moves a CAGR's endpoints, and a loss year or a sign change needs no special case (a CAGR has none).
+    ``years`` is the EPS history it covers, from the first period's start to the last one's end, in
+    quarters rounded up to whole years (3 quarters → 1Y, 5 → 2Y), at most 5. ``period_quarters``: the
+    length of each period, 4 for annual EPS, 1 for single quarters (the slope ÷ mean is scale-free, so
+    quarters need no annualizing). None under 2 points or when the mean |EPS| is 0."""
+    pts = sorted((pd.Timestamp(d), float(v)) for d, v in points if v is not None and np.isfinite(v))
+    if len(pts) < 2:
+        return None
+    t0 = pts[0][0]
+    x = np.array([(d - t0).days / 365.25 for d, _ in pts])
+    y = np.array([v for _, v in pts])
+    scale = np.abs(y).mean()
+    dx = x - x.mean()
+    if not (dx ** 2).sum() > 0 or not scale > 0:
+        return None
+    slope = (dx * (y - y.mean())).sum() / (dx ** 2).sum()
+    quarters = round((pts[-1][0] - t0).days / _QUARTER_DAYS) + period_quarters
+    years = int(min(_TREND_POINTS, max(1, np.ceil(quarters / 4))))
+    return float(slope / scale * 100), years
+
+
+def _trend_str(pct):
+    """'9.8%'; whole percent from ±100% ('-121%'), which only a short history reaches (5 annual values cap
+    it near ±100%), so it fits the chart's stats box."""
+    return f"{round(pct, 1)}%" if abs(pct) < 99.95 else f"{round(pct)}%"
+
+
 def _fwd_eps_proxy(fwd_eps, rev_ratio, eps_ratio):
     """Reconstructed historical forward EPS ("Method B2").
     Walks today's forward EPS consensus back in time by the geometric mean
@@ -491,6 +526,78 @@ class LynchPinEngine:
         pe = pe[(pe > 3) & (pe < 300)].dropna()
         return pe / growth_pct if len(pe) >= 12 else None
 
+    def _sec_annual_eps(self):
+        """{fiscal year end: diluted EPS} from the 10-K facts of the SEC download the PEG history made ({} when
+        it made none): the latest filing wins per year, divided by the splits since it was filed (a 10-K
+        restates the years it reports; older years stay as filed: NVDA's FY2022 3.85 → 0.385)."""
+        facts = getattr(self, '_companyfacts_cache', None)
+        try:
+            units = facts['facts']['us-gaap']['EarningsPerShareDiluted']['units']
+        except (KeyError, TypeError):
+            return {}
+        entries = next((units[u] for u in _SEC_EPS_UNITS if u in units), [])
+        seen = {}  # year end -> (val, filed)
+        for e in entries:
+            if e.get('form') != '10-K' or not e.get('start') or not e.get('filed'):
+                continue
+            end = pd.Timestamp(e['end'])
+            if 340 <= (end - pd.Timestamp(e['start'])).days <= 380:
+                if end not in seen or e['filed'] > seen[end][1]:
+                    seen[end] = (e['val'], e['filed'])
+        splits = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+        if seen and len(self.ticker.splits):
+            splits = self.ticker.splits[self.ticker.splits > 0]  # a copy: the Ticker's stays tz-aware
+            splits.index = splits.index.tz_localize(None)
+        return {end: val / float(splits[splits.index > pd.Timestamp(filed)].prod())
+                for end, (val, filed) in seen.items()}
+
+    def _annual_eps_points(self):
+        """``(points, period_quarters)`` for ``_eps_trend``: signed 12-month diluted EPS, the last 4 fiscal
+        years plus the TTM to the latest quarter when one was reported after the last fiscal year, else the
+        last 5 fiscal years; under 2 such values (a listing about a year old), the single quarters.
+
+        Yahoo's statements (split-adjusted), with SEC 10-K years filling the years Yahoo lacks (it lists 4)
+        when the two agree on every year both have: a pre-IPO per-share figure is on the old share count
+        (CAVA 2022: -44.41 vs Yahoo's -0.61). Nothing is downloaded for it: yfinance keeps the statements
+        the PEG history read on the Ticker (the income grader reads the quarterly one too), and the SEC
+        facts are the engine's download."""
+        inc, qinc = self.ticker.income_stmt, self.ticker.quarterly_income_stmt
+        fy = {}
+        if isinstance(inc, pd.DataFrame) and 'Diluted EPS' in inc.index:
+            fy = {pd.Timestamp(d): float(v) for d, v in inc.loc['Diluted EPS'].dropna().items()}
+        q = pd.Series(dtype=float)
+        if isinstance(qinc, pd.DataFrame) and 'Diluted EPS' in qinc.index:
+            q = qinc.loc['Diluted EPS'].dropna().astype(float)
+            q.index = pd.to_datetime(q.index)
+            q = q.sort_index()
+        last4 = q.tail(4)
+        ttm = ((last4.index[-1], float(last4.sum()))
+               if len(last4) == 4 and (last4.index[-1] - last4.index[0]).days <= 300 else None)
+
+        def pick(years):
+            pts = sorted(years.items())
+            if ttm is not None and (not pts or (ttm[0] - pts[-1][0]).days > 45):
+                return pts[-(_TREND_POINTS - 1):] + [ttm]
+            return pts[-_TREND_POINTS:]
+
+        pts = pick(fy)
+        if len(pts) < _TREND_POINTS and fy:
+            sec = self._sec_annual_eps()
+            match = {s: min(fy, key=lambda d: abs((d - s).days)) for s in sec}
+            match = {s: d for s, d in match.items() if abs((d - s).days) <= 20}
+            if match and all(abs(sec[s] - fy[d]) <= max(0.015, 0.05 * abs(fy[d])) for s, d in match.items()):
+                pts = pick({**fy, **{s: v for s, v in sec.items() if s not in match}})
+        if len(pts) >= 2:
+            return pts, 4
+        return list(q.items()), 1
+
+    def _trailing_eps_trend(self):
+        """``(trend %/yr, years)`` of the reported EPS (``_eps_trend`` of ``_annual_eps_points``), or None."""
+        try:
+            return _eps_trend(*self._annual_eps_points())
+        except Exception:
+            return None
+
     def calculate_peg_statistics(self, curr_peg, growth_pct):
         """Calculates Mean PEG and SD based on 5Y history.
 
@@ -585,6 +692,7 @@ class LynchPinEngine:
 
             curr_peg = fwd_pe / growth_pct
             mean_peg, std_peg, dev_sd = self.calculate_peg_statistics(curr_peg, growth_pct)
+            trend = self._trailing_eps_trend()  # after the PEG history: reads the statements it fetched
 
             pe_2y = (curr_price / (fwd_eps * (1 + growth_pct / 100))
                      if fwd_eps and fwd_eps > 0 else fwd_pe)
@@ -620,7 +728,9 @@ class LynchPinEngine:
                 "PE": round(curr_pe, 1) if curr_pe else 0,
                 "FwdPE": round(fwd_pe, 1),
                 "2YFwd": round(pe_2y, 1),
-                "5YGrowth": f"{round(growth_pct, 1)}%",
+                "5YGrowth": f"{round(growth_pct, 1)}%",  # forward: analysts' estimate
+                "Trend": _trend_str(trend[0]) if trend else "N/A",  # trailing: reported EPS
+                "TrendYears": trend[1] if trend else None,  # years of EPS behind "Trend" (≤ 5)
                 "PEG": round(curr_peg, 2),
                 "Mean": round(mean_peg, 2),
                 "Dev_SD": round(dev_sd, 2),

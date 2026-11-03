@@ -43,7 +43,9 @@ def format_stats(row):
         "growth_pct": _pct(row.get("5YGrowth")), "PEG": peg, "Mean": mean, "SD": sd, "Dev_SD": dev,
         "Bull": _pct(row.get("Bull")), "Base": _pct(row.get("Base")), "Bear": _pct(row.get("Bear")),
         "div_yield": _pct(row.get("DivYield")),  # cash dividend yield, already included in Bull / Base / Bear
-        "display": {k: str(row.get(k)) for k in ("5YGrowth", "Bull", "Base", "Bear")},
+        # trailing EPS trend (%/yr) and the years of EPS behind it; None for rows from before it
+        "trend_pct": _pct(row.get("Trend")), "trend_years": row.get("TrendYears"),
+        "display": {k: str(row.get(k)) for k in ("5YGrowth", "Trend", "Bull", "Base", "Bear")},
         # The engine falls back to (PEG, 0.2·PEG, Dev 0.0) when the 5Y price/EPS history could not be
         # fetched — that is a data outage, not "exactly at the mean".
         "history": "unavailable" if (dev == 0 and peg is not None and mean is not None and abs(peg - mean) < 1e-9)

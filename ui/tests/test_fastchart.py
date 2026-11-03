@@ -15,7 +15,10 @@ native = pytest.mark.skipif(fastchart.library() is None, reason="native renderer
 
 CASES = {
     "full": (dict(MSFT_ROW), INCOME, CREDIT, TECH, EDGE),
-    "bare": (dict(MSFT_ROW, Ticker="BARE*"), None, None, None, None),
+    "bare": ({k: v for k, v in dict(MSFT_ROW, Ticker="BARE*").items() if k not in ("Trend", "TrendYears")},
+             None, None, None, None),  # a row from before the trailing trend: no trend line
+    "short history": (dict(MSFT_ROW, Ticker="NEW", Trend="-121%", TrendYears=2, **{"5YGrowth": "120.5%"}),
+                      INCOME, CREDIT, TECH, EDGE),
     "dividend": (dict(MSFT_ROW, Ticker="DIV", DivYield="3.1%", PEG=0.35, Mean=1.9, Dev_SD=-5.2),
                  INCOME, None, dict(TECH, accumulation_zone=None), EDGE),
     "credit only": (dict(MSFT_ROW, Ticker="CRD", PEG=-0.4, Mean=0.6, Dev_SD=-1.25), None, CREDIT, TECH, None),
@@ -52,6 +55,18 @@ def test_chart_text_is_the_visualizers(tmp_path, case):
     assert {k: spec[k] for k in ("title", "badge", "left_box", "right_box")} == _matplotlib_text(tmp_path, args)
     row = args[0]
     assert (spec["peg"], spec["mean"], spec["z"]) == (row["PEG"], row["Mean"], row["Dev_SD"])
+
+
+def test_stats_box_labels_forward_growth_and_trailing_trend():
+    """5Y Growth (fwd), then the trailing trend with its years; every line 24 wide (right-aligned values)."""
+    box = fastchart.chart_text(*CASES["full"])["left_box"]
+    assert "- 5Y Growth (fwd): 13.0%\n- 5Y Trend (trl):  20.0%\n" in box
+    assert "- 2Y Trend (trl):  -121%" in fastchart.chart_text(*CASES["short history"])["left_box"]
+    assert "Trend" not in fastchart.chart_text(*CASES["bare"])["left_box"]
+    assert {len(line) for line in box.splitlines() if line} == {24}
+    # bull and bear ROI share a line in whole percent, like the 6M edge
+    assert "- Base ROI:        13.5%\n- Bull/Bear ROI %: 15/12\n" in box
+    assert "Bull ROI:" not in box and "Bear ROI:" not in box
 
 
 def test_math_text_is_left_to_matplotlib():

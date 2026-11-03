@@ -1984,6 +1984,123 @@ class TestHistoricalPegReconstruction(unittest.TestCase):
         self.assertAlmostEqual(mean, 6.25, places=6)  # legacy path
 
 
+# ─── engine/lynch_pin_core.py — trailing EPS trend (Barra's historical earnings growth) ───
+
+def _eps_frame(values):
+    """Yahoo-style statement: one 'Diluted EPS' row, {period end: EPS} columns."""
+    return pd.DataFrame({pd.Timestamp(d): [v] for d, v in values.items()}, index=['Diluted EPS'])
+
+
+class TestEpsTrend(unittest.TestCase):
+
+    def _years(self, values):
+        """[(Dec 31 of 2021, 2022, ...), EPS] for ``values``."""
+        return [(pd.Timestamp(f'{2021 + i}-12-31'), v) for i, v in enumerate(values)]
+
+    def test_slope_over_mean_abs_eps(self):
+        from engine.lynch_pin_core import _eps_trend
+        pct, years = _eps_trend(self._years([1, 2, 3, 4, 5]))
+        self.assertAlmostEqual(pct, 100 / 3, delta=0.1)  # +1/yr on a mean of 3
+        self.assertEqual(years, 5)
+
+    def test_handles_sign_changes(self):
+        """Losses to profits: a CAGR is undefined, the trend is the slope over the mean |EPS|."""
+        from engine.lynch_pin_core import _eps_trend
+        pct, _ = _eps_trend(self._years([-2, -1, 0, 1, 2]))
+        self.assertAlmostEqual(pct, 100 / 1.2, delta=0.1)
+        self.assertLess(_eps_trend(self._years([2, 1, 0, -1, -2]))[0], 0)
+
+    def test_one_bad_endpoint_moves_it_less_than_a_cagr(self):
+        from engine.lynch_pin_core import _eps_trend
+        pct, _ = _eps_trend(self._years([0.1, 1.0, 1.1, 1.2, 1.3]))  # CAGR from the trough year: 90%/yr
+        self.assertAlmostEqual(pct, 0.26 / 0.94 * 100, delta=0.1)
+
+    def test_years_round_up_the_quarters_covered(self):
+        from engine.lynch_pin_core import _eps_trend
+        q = lambda n: [(pd.Timestamp('2025-03-31') + pd.DateOffset(months=3 * i), i + 1) for i in range(n)]
+        self.assertEqual(_eps_trend(q(3), period_quarters=1)[1], 1)  # 3 quarters → 1Y
+        self.assertEqual(_eps_trend(q(5), period_quarters=1)[1], 2)  # 5 quarters → 2Y
+        fy_and_ttm = [(pd.Timestamp('2025-12-31'), 1.0), (pd.Timestamp('2026-03-31'), 1.2)]
+        self.assertEqual(_eps_trend(fy_and_ttm)[1], 2)  # a fiscal year and one quarter: 5 quarters
+        self.assertEqual(_eps_trend(self._years([1, 2, 3, 4]))[1], 4)
+        self.assertEqual(_eps_trend(self._years([1, 2, 3, 4, 5, 6]))[1], 5)  # at most 5Y
+
+    def test_none_without_a_trend_to_measure(self):
+        from engine.lynch_pin_core import _eps_trend
+        self.assertIsNone(_eps_trend([]))
+        self.assertIsNone(_eps_trend(self._years([1.0])))
+        self.assertIsNone(_eps_trend(self._years([0.0, 0.0, 0.0])))  # mean |EPS| 0
+        self.assertIsNone(_eps_trend([(pd.Timestamp('2025-12-31'), 1.0)] * 2))  # no time between them
+
+    def test_trend_str_drops_the_decimal_from_100(self):
+        from engine.lynch_pin_core import _trend_str
+        self.assertEqual(_trend_str(9.84), '9.8%')
+        self.assertEqual(_trend_str(-52.81), '-52.8%')
+        self.assertEqual(_trend_str(-120.6), '-121%')
+
+    # _annual_eps_points: Yahoo's statements + the engine's SEC download
+
+    def _engine(self, annual, quarterly, sec=None, splits=None):
+        from engine.lynch_pin_core import LynchPinEngine
+        engine = LynchPinEngine.__new__(LynchPinEngine)
+        engine.symbol = 'TEST'
+        engine.ticker = MagicMock()
+        engine.ticker.income_stmt = _eps_frame(annual)
+        engine.ticker.quarterly_income_stmt = _eps_frame(quarterly)
+        engine.ticker.splits = splits if splits is not None else pd.Series(dtype=float)
+        if sec is not None:
+            entries = [{'form': '10-K', 'start': str(pd.Timestamp(end) - pd.Timedelta(days=364))[:10], 'end': end,
+                        'val': val, 'filed': filed} for end, val, filed in sec]
+            engine._companyfacts_cache = {'facts': {'us-gaap': {'EarningsPerShareDiluted': {
+                'units': {'USD/shares': entries}}}}}
+        return engine
+
+    FY = {'2022-12-31': 2.0, '2023-12-31': 3.0, '2024-12-31': 4.0, '2025-12-31': 5.0}
+
+    def test_four_fiscal_years_and_the_ttm(self):
+        q = {'2025-06-30': 1.2, '2025-09-30': 1.3, '2025-12-31': 1.4, '2026-03-31': 1.5, '2026-06-30': 1.6}
+        engine = self._engine(self.FY, q)
+        engine._sec_annual_eps = MagicMock()
+        pts, period = engine._annual_eps_points()
+        self.assertEqual(period, 4)
+        self.assertEqual([str(d.date()) for d, _ in pts], list(self.FY) + ['2026-06-30'])
+        self.assertAlmostEqual(pts[-1][1], 5.8)  # the last 4 quarters
+        engine._sec_annual_eps.assert_not_called()  # 5 values without SEC
+
+    def test_sec_fills_the_fifth_year_split_adjusted(self):
+        """The latest quarter is the fiscal year's: the TTM is that year, so the 5th value is SEC's 2021, as
+        filed before a 10:1 split (restated years filed after it match Yahoo)."""
+        q = {'2025-03-31': 1.1, '2025-06-30': 1.2, '2025-09-30': 1.3, '2025-12-31': 1.4}
+        splits = pd.Series([10.0], index=pd.DatetimeIndex(['2023-06-10'], tz='America/New_York'))
+        sec = [('2021-12-26', 10.0, '2022-02-15'), ('2022-12-25', 2.0, '2025-02-14'), ('2023-12-31', 3.0, '2025-02-14')]
+        pts, period = self._engine(self.FY, q, sec, splits)._annual_eps_points()
+        self.assertEqual(len(pts), 5)
+        self.assertEqual(str(pts[0][0].date()), '2021-12-26')
+        self.assertAlmostEqual(pts[0][1], 1.0)
+        from engine.lynch_pin_core import _eps_trend
+        self.assertEqual(_eps_trend(pts, period)[1], 5)
+
+    def test_sec_years_skipped_when_they_disagree_with_yahoo(self):
+        """A pre-IPO per-share figure is on the old share count (CAVA 2022: -44.41 vs Yahoo's -0.61)."""
+        q = {'2025-03-31': 1.1, '2025-06-30': 1.2, '2025-09-30': 1.3, '2025-12-31': 1.4}
+        sec = [('2021-12-26', -51.06, '2024-02-27'), ('2022-12-25', -44.41, '2025-02-26')]
+        pts, _ = self._engine(self.FY, q, sec)._annual_eps_points()
+        self.assertEqual([str(d.date()) for d, _ in pts], list(self.FY))
+
+    def test_single_quarters_for_a_young_listing(self):
+        q = {'2026-01-31': 0.2, '2026-04-30': 0.3, '2026-07-31': 0.4}
+        engine = self._engine({}, q)
+        pts, period = engine._annual_eps_points()
+        self.assertEqual((len(pts), period), (3, 1))
+        self.assertEqual(engine._trailing_eps_trend()[1], 1)  # 3 quarters → 1Y
+
+    def test_trailing_trend_is_none_on_missing_data(self):
+        from engine.lynch_pin_core import LynchPinEngine
+        engine = LynchPinEngine.__new__(LynchPinEngine)
+        engine.ticker = MagicMock()  # statements are not DataFrames
+        self.assertIsNone(engine._trailing_eps_trend())
+
+
 # ─── graphics/visualizer.py ───
 
 class TestVisualizer(unittest.TestCase):

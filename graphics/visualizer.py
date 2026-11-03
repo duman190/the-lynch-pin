@@ -24,6 +24,14 @@ def _div_pct(row):
         return 0.0
 
 
+def _bull_bear_roi(row):
+    """'47/29': the bull and bear ROIs in whole percent, for the stats box's one Bull/Bear line."""
+    try:
+        return "/".join(str(round(float(str(row.get(k, '0%')).rstrip('%')))) for k in ('Bull', 'Bear'))
+    except (TypeError, ValueError):
+        return "N/A"
+
+
 class LynchPinVisualizer:
     def __init__(self, output_dir="tmp"):
         self.output_dir = output_dir
@@ -237,36 +245,37 @@ class LynchPinVisualizer:
         
         box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=1.2', alpha=0.9)
         
-        # Stats box (left) — valuation + technicals
+        # Stats box (left) — valuation + technicals, 24 characters wide (the "(fwd)" growth label);
+        # the trailing EPS trend line is left out for rows from before it (and when there is no EPS)
         stats_text = (
-            f"Ticker:     {ticker:>8}\n"
-            f"--------------------\n"
-            f"- PE:       {row.get('PE', 0):>8.1f}\n"
-            f"- Fwd PE:   {row.get('FwdPE', 0):>8.1f}\n"
-            f"- 2YFwd PE: {row.get('2YFwd', 0):>8.1f}\n" 
-            f"- PEG:      {current_peg:>8.2f}\n"
-            f"- 5Y Growth:{row.get('5YGrowth', '0%'):>8}\n"
-            + (f"- Div Yield:{row['DivYield']:>8}\n" if _div_pct(row) else "") +  # included in the ROIs
-            f"- Bull ROI: {row.get('Bull', '0%'):>8}\n"
-            f"- Base ROI: {row.get('Base', '0%'):>8}\n"
-            f"- Bear ROI: {row.get('Bear', '0%'):>8}"
+            f"Ticker:     {ticker:>12}\n"
+            f"------------------------\n"
+            f"- PE:       {row.get('PE', 0):>12.1f}\n"
+            f"- Fwd PE:   {row.get('FwdPE', 0):>12.1f}\n"
+            f"- 2YFwd PE: {row.get('2YFwd', 0):>12.1f}\n"
+            f"- PEG:      {current_peg:>12.2f}\n"
+            f"- 5Y Growth (fwd):{row.get('5YGrowth', '0%'):>6}\n"
+            + (f"- {row['TrendYears']}Y Trend (trl):{row['Trend']:>7}\n" if row.get('TrendYears') else "")
+            + (f"- Div Yield:{row['DivYield']:>12}\n" if _div_pct(row) else "") +  # included in the ROIs
+            f"- Base ROI: {row.get('Base', '0%'):>12}\n"
+            f"- Bull/Bear ROI %:{_bull_bear_roi(row):>6}"  # one line, like the 6M edge's
         )
         if tech_result:
             stats_text += (
                 f"\n\n"
-                f"Technicals: {tech_result['signal']:>8}\n"
-                f"--------------------\n"
-                f"- RSI:{int(tech_result['rsi'])}|SMA200:{tech_result['price_vs_sma200']:>+3.0f}%"
+                f"Technicals: {tech_result['signal']:>12}\n"
+                f"------------------------\n"
+                f"- RSI:{int(tech_result['rsi'])}|SMA200:{tech_result['price_vs_sma200']:>+7.0f}%"
             )
             zone = tech_result.get('accumulation_zone')
             if zone:
                 lo, hi = int(zone[0]), int(zone[1])
                 accum_val = "$" + str(lo) + "-$" + str(hi)
-                stats_text += f"\n- ACCUM: {accum_val:>11}"
+                stats_text += f"\n- ACCUM: {accum_val:>15}"
         if edge_result:
-            # 6M bull / bear edge on one line, within the box's 20 characters (the Div Yield line took one)
+            # 6M bull / bear edge on one line
             edge = f"{edge_result['bull_acc']:.0f}/{edge_result['bear_acc']:.0f}"
-            stats_text += f"\n- Bull/Bear %:{edge:>6}"
+            stats_text += f"\n- Bull/Bear %:{edge:>10}"
         ax.text(0.02, 1.02, stats_text, transform=ax.transAxes, fontsize=16, 
                 color='#E0E0E0', family='monospace', verticalalignment='top',
                 bbox=box_style, zorder=9, fontweight='bold', parse_math=False)

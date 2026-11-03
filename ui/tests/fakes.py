@@ -6,8 +6,8 @@ import time
 MSFT_INFO = {"currentPrice": 430.0, "forwardPE": 21.8, "longName": "Microsoft Corporation", "currency": "USD",
              "sector": "Technology", "industry": "Software—Infrastructure", "quoteType": "EQUITY",
              "marketCap": 3.2e12}
-MSFT_ROW = {"Ticker": "MSFT", "PE": 28.7, "FwdPE": 21.8, "2YFwd": 19.3, "5YGrowth": "13.0%", "PEG": 1.68,
-            "Mean": 1.72, "Dev_SD": -0.19, "Bull": "15.0%", "Base": "13.5%", "Bear": "12.1%"}
+MSFT_ROW = {"Ticker": "MSFT", "PE": 28.7, "FwdPE": 21.8, "2YFwd": 19.3, "5YGrowth": "13.0%", "Trend": "20.0%",
+            "TrendYears": 5, "PEG": 1.68, "Mean": 1.72, "Dev_SD": -0.19, "Bull": "15.0%", "Base": "13.5%", "Bear": "12.1%"}
 INCOME = {"grade": "A+", "items": [("Revenue", 0.18, "🟢"), ("COGS", 0.23, "🔵"), ("OpIncome", 0.18, "🟢"),
                                    ("EPS", None, "⚪"), ("G&A", 0.40, "🔴")]}
 CREDIT = {"rating": "AAA", "metrics": [("IntCov", 50.9), ("ND/EBITDA", 0.2), ("Cash/Debt", 0.4), ("Svc/FCF%", None)]}

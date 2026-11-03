@@ -159,6 +159,19 @@ This prevents fantasy projections (e.g., TSLA 40% growth with 1% fundamental sup
 
 Rebounds are unaffected, because their EPS outgrows revenue (MCHP: EPS +26% vs revenue +16% next year; ON: +41% vs +13%). Across Nasdaq 100 + SMH + IGV + SCHD (273 tickers, Yahoo only), 11 of the 56 capped names move, all with next-year EPS growth below revenue growth: META 9.8% → 20.6%, AVPT 10.0% → 20.4%, NFLX 6.1% → 11.2%, PLTR 44.7% → 49.7%, DDOG 17.7% → 22.5%, and small moves for THFF, FTNT, AAPL, ADM, PFG and MPWR. It costs one more Yahoo request per capped ticker (the revenue estimates).
 
+## Trailing EPS Trend
+
+Next to the forward estimate, the charts and the portal show what reported EPS has actually done: **5Y Growth (fwd)** is the analysts' estimate above (the growth in the PEG), **5Y Trend (trl)** the trailing trend. It is Barra's historical earnings growth: the OLS slope of the last 5 annual EPS values on time (years), divided by their mean absolute EPS, in %/yr.
+
+| | |
+|---|---|
+| **Annual EPS values** | Diluted EPS of the last 4 fiscal years plus the trailing 12 months to the latest quarter, when one was reported after the last fiscal year; otherwise the last 5 fiscal years. Each sits at its period end, so the regression runs on real time. |
+| **Why not a CAGR** | Every year counts, so one bad year moves the trend less than it moves a CAGR's endpoints, and a loss year or a sign change needs no special case (a CAGR is undefined there). With 5 annual values the result stays near ±100%/yr at most. |
+| **Data** | No extra requests: Yahoo's annual and quarterly statements the PEG history already reads (split-adjusted, signed), and the SEC download it already makes. Yahoo lists 4 fiscal years; SEC 10-K values fill the years it lacks, divided by the splits since they were filed (NVDA FY2022: 3.85 → 0.385), and only when SEC and Yahoo agree on every year both have (a pre-IPO per-share figure is on the old share count: CAVA 2022, -44.41 vs Yahoo's -0.61). |
+| **Shorter histories** | The label carries the years of EPS behind the trend: the quarters from the first period's start to the last one's end, rounded up to whole years (3 quarters → 1Y, 5 → 2Y, at most 5Y). Under 2 annual values the single quarters are regressed instead. |
+
+Examples (Nov 2026, fwd vs trl): AAPL 8.8% vs 9.8%, MSFT 14.4% vs 20.0%, COST 7.8% vs 11.6%, NVDA 51.9% vs 60.4%, INTC 21.1% vs -52.8% (losses in 2024-26), PLTR 46.3% vs 76.8% (losses to profits), FIG 7.3% vs -76.7% over 4Y. The line is left out for rows from before it and when there is no EPS history. The chart's stats box is 24 characters wide for the `(fwd)` label, and shows the bull and bear ROIs on one line in whole percent (`- Bull/Bear ROI %: 47/29`, under Base ROI, like the 6M edge's line), so it is no taller than before.
+
 ## Historical Forward PEG Reconstruction
 
 Historical PEG statistics (Mean, SD, deviation) compare today's PEG against where the stock has traded over 5 years. Free data sources only provide historical *trailing* EPS, which is contaminated by one-time gains (e.g., investment mark-ups) and low-base explosions (recently profitable companies show absurd trailing PEs). Naively dividing historical trailing PE by today's growth estimate inflates the historical mean and makes such stocks look falsely cheap (e.g., PLTR's mean PEG computed that way is ~6 vs ~1.8 in reality).
