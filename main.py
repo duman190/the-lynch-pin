@@ -12,9 +12,9 @@ from engine.ai_research import LynchPinResearcher
 from engine.technical_timing import analyze as analyze_technicals, backtest_edge
 from engine.portfolio import parse_portfolio_file, compute_weights, weighted_metrics, format_weighted_summary
 from graphics.visualizer import LynchPinVisualizer
-from social.x_publisher import XPublisher
+from social.x_publisher import XPublisher, strip_cashtags
 from social.threads_publisher import ThreadsPublisher
-from social.scan_archive import SCAN_DIR, save_scan, scan_kind, split_ai_overviews
+from social.scan_archive import SCAN_DIR, ai_ticker_narrative, save_scan, scan_kind, split_ai_overviews
 
 IDX_MAP = {
     "mag7": "MAGS", "mags": "MAGS",
@@ -417,13 +417,11 @@ def main():
             if not args.portfolio:
                 main_tweet += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            # Extract full AI narrative for this ticker.
-            # Anchored to a line-start "$TICKER" header (case-sensitive) so short
-            # tickers that are English words (e.g. ON) can't match prose inside
-            # another ticker's narrative.
-            pattern = rf"^\${re.escape(clean_t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.MULTILINE)
-            raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
+            # Extract full AI narrative for this ticker. X rejects a post with more than one
+            # cashtag (403, even the same one twice), so the narrative's own cashtags are
+            # stripped: the "$TICKER" header line below is the reply's only one.
+            raw_narrative = strip_cashtags(ai_ticker_narrative(bulk_ai_text, clean_t)
+                                           or "Valuation disconnect detected via quantitative analysis.")
             # Update section labels for tweet
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '📊 Reverse 5Y DCF:')
             raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '🐻 "Stomach Test" (why it can underperform in the next 5 years):')
@@ -549,9 +547,8 @@ def main():
             if not args.portfolio:
                 threads_main += f"{emoji} {clean_t}: PEG {r['PEG']:.1f} ({r['Dev_SD']:.1f}SD)| 🎯ROI:{r['Base']}\n"
 
-            pattern = rf"^\${re.escape(clean_t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)"
-            match = re.search(pattern, bulk_ai_text, re.DOTALL | re.MULTILINE)
-            raw_narrative = match.group(1).strip() if match else "Valuation disconnect detected via quantitative analysis."
+            raw_narrative = (ai_ticker_narrative(bulk_ai_text, clean_t)
+                             or "Valuation disconnect detected via quantitative analysis.")
             raw_narrative = raw_narrative.replace('📊 Reverse DCF:', '\n📊:')
             raw_narrative = raw_narrative.replace('🧪 Stomach Test:', '\n🐻 "Stomach Test" (why it can underperform in the next 5 years):')
             raw_narrative = raw_narrative.replace('🧪', '🐻')  # a bare "🧪:" label (no "Stomach Test") too

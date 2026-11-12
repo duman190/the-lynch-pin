@@ -1,7 +1,29 @@
 import tweepy
 import os
 import random
+import re
 import time
+
+# X allows at most one cashtag per post (403 "Posts are limited to a maximum of one cashtag"),
+# counting repeats of the same symbol. "$38.10" is a price, not a cashtag: a letter must follow "$".
+CASHTAG_RE = re.compile(r"(?<![\w$])\$(?=[A-Za-z])")
+
+
+def strip_cashtags(text):
+    """"$NVDA" -> "NVDA" everywhere in ``text``; dollar amounts are left alone."""
+    return CASHTAG_RE.sub("", text or "")
+
+
+def limit_cashtags(text, keep=1):
+    """Keeps the first ``keep`` cashtags in ``text`` and turns the rest into plain symbols."""
+    seen = 0
+
+    def repl(m):
+        nonlocal seen
+        seen += 1
+        return m.group(0) if seen <= keep else ""
+    return CASHTAG_RE.sub(repl, text or "")
+
 
 class XPublisher:
     def __init__(self):
@@ -36,6 +58,8 @@ class XPublisher:
             try:
                 return self.client.create_tweet(**kwargs)
             except Exception as e:
+                if "cashtag" in str(e).lower():
+                    raise  # a content rule, not a blip: the same text fails every retry
                 # 403 Forbidden is common when X thinks you're a bot/speeding
                 wait = (attempt + 1) * 5  # Incremental backoff: 5s, 10s, 15s
                 print(f"  [!] Attempt {attempt+1} failed: {e}. Retrying in {wait}s...")
@@ -46,6 +70,10 @@ class XPublisher:
 
     def post_thread(self, main_tweet, sub_tweets, comparison_img, disclaimer):
         """Orchestrates the full thread deployment."""
+        # Last line of defence for X's one-cashtag rule (AI text can carry extra "$TICKER"s)
+        main_tweet = limit_cashtags(main_tweet)
+        disclaimer = limit_cashtags(disclaimer)
+        sub_tweets = [dict(sub, text=limit_cashtags(sub['text'])) for sub in sub_tweets]
         print("\n--- 📝 PREVIEW OF POST ---")
         print(f"MAIN TWEET:\n{main_tweet}\n[Attach: {comparison_img}]")
         for sub in sub_tweets:

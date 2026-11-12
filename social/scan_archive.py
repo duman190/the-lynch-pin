@@ -50,13 +50,25 @@ def scan_kind(idx_name, src=None, weekly=False, portfolio=False):
     return re.sub(r"[^a-z0-9_\-]+", "-", stem).strip("-")[:32] or "spy"
 
 
+def ai_ticker_narrative(bulk_text, ticker):
+    """One ticker's AI overview from the batch narrative, or None.
+
+    Anchored to a line-start "$TICKER" header (case-sensitive) so short tickers that are English
+    words (e.g. ON) can't match prose inside another ticker's narrative. The model sometimes repeats
+    the header ("$SKHY:\\n$SKHY:"); every leading copy is dropped so it never leaks into the body.
+    """
+    head = rf"\${re.escape(ticker)}\b:?[ \t]*"
+    m = re.search(rf"^{head}(?:\n{head})*\n?(.*?)(?=\n\$[A-Z]|\Z)", bulk_text or "", re.DOTALL | re.MULTILINE)
+    return (m.group(1).strip() or None) if m else None
+
+
 def split_ai_overviews(bulk_text, tickers):
     """Each ticker's AI overview from the batch narrative ("$TICKER:" header lines), untruncated."""
     out = {}
     for t in tickers:
-        m = re.search(rf"^\${re.escape(t)}\b:?\s*\n?(.*?)(?=\n\$[A-Z]|\Z)", bulk_text or "", re.DOTALL | re.MULTILINE)
-        if m and m.group(1).strip():
-            out[t] = m.group(1).strip()
+        text = ai_ticker_narrative(bulk_text, t)
+        if text:
+            out[t] = text
     return out
 
 

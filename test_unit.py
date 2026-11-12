@@ -1237,6 +1237,59 @@ class TestXPublisher(unittest.TestCase):
         self.assertEqual(result.data['id'], '123456')
 
 
+    def test_safe_create_tweet_no_retry_on_cashtag_rule(self):
+        from social.x_publisher import XPublisher
+        with patch('social.x_publisher.tweepy.Client'), patch('social.x_publisher.tweepy.API'), \
+                patch('social.x_publisher.tweepy.OAuth1UserHandler'), patch('social.x_publisher.time.sleep'):
+            pub = XPublisher()
+            pub.client.create_tweet = MagicMock(side_effect=Exception(
+                "403 Forbidden\nPosts are limited to a maximum of one cashtag ($SYMBOL)."))
+            with self.assertRaises(Exception):
+                pub._safe_create_tweet(text="$A $B")
+            self.assertEqual(pub.client.create_tweet.call_count, 1)
+
+    def test_post_thread_sends_at_most_one_cashtag_per_post(self):
+        from social.x_publisher import XPublisher, CASHTAG_RE
+        with patch('social.x_publisher.tweepy.Client'), patch('social.x_publisher.tweepy.API'), \
+                patch('social.x_publisher.tweepy.OAuth1UserHandler'), patch('social.x_publisher.time.sleep'):
+            pub = XPublisher()
+            resp = MagicMock(); resp.data = {'id': '1'}
+            pub.client.create_tweet = MagicMock(return_value=resp)
+            pub._upload_media = MagicMock(return_value=None)
+            pub.post_thread("MARKET CLOSE: $SMH", [
+                {"ticker": "BL", "text": "$BL\n\n🤖: $BL automates accounting. Target $38.10.", "image": "x.png"},
+                {"ticker": "SKHY", "text": "$SKHY\n\n$SKHY:\n🤖: memory.", "image": "y.png"},
+            ], "x.png", "@grok about the $SMH tickers")
+            texts = [c.kwargs['text'] for c in pub.client.create_tweet.call_args_list]
+            self.assertEqual(len(texts), 4)
+            for t in texts:
+                self.assertLessEqual(len(CASHTAG_RE.findall(t)), 1, t)
+            self.assertIn("🤖: BL automates accounting. Target $38.10.", texts[1])
+            self.assertTrue(texts[2].startswith("$SKHY\n\nSKHY:"))
+
+
+class TestCashtags(unittest.TestCase):
+
+    def test_strip_cashtags_keeps_prices(self):
+        from social.x_publisher import strip_cashtags
+        self.assertEqual(strip_cashtags("$BL target $38.10, up $5 vs $ON"), "BL target $38.10, up $5 vs ON")
+
+    def test_limit_cashtags(self):
+        from social.x_publisher import limit_cashtags
+        self.assertEqual(limit_cashtags("$NVDA beats $AMD and $NVDA at $100"), "$NVDA beats AMD and NVDA at $100")
+
+    def test_narrative_drops_repeated_header(self):
+        from social.scan_archive import ai_ticker_narrative
+        bulk = "$NVDA:\n🤖: gpus.\n\n$SKHY:\n$SKHY:\n🤖: memory.\n\n$NXPI:\n🤖: auto."
+        self.assertEqual(ai_ticker_narrative(bulk, "SKHY"), "🤖: memory.")
+        self.assertEqual(ai_ticker_narrative(bulk, "NVDA"), "🤖: gpus.")
+        self.assertEqual(ai_ticker_narrative(bulk, "NXPI"), "🤖: auto.")
+        self.assertIsNone(ai_ticker_narrative(bulk, "ON"))
+
+    def test_narrative_header_on_same_line(self):
+        from social.scan_archive import ai_ticker_narrative
+        self.assertEqual(ai_ticker_narrative("$ON: 🤖: power chips.", "ON"), "🤖: power chips.")
+
 # ─── engine/growth_estimator.py ───
 
 class TestGrowthEstimator(unittest.TestCase):
