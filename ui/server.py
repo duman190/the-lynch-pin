@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover
     pd = None
 
 from ui.config import CPU_WORKERS, WORKER_MB, REPO_ROOT, Settings, available_mb  # noqa: E402
-from ui import netguard, tradingview, tvdata  # noqa: E402
+from ui import cards, netguard, tradingview, tvdata  # noqa: E402
 from ui.netguard import _ip, is_allowed_host, is_local_client  # noqa: E402
 from ui.stats import DEFAULT_REASON  # noqa: E402
 
@@ -114,6 +114,7 @@ class PortalApp:
             from ui.scans import ScanArchive
             scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
         self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
+        self.cards = cards.CardCache()  # link preview images (ui/cards.py)
         if socials is None and self.settings.socials:
             from ui.socials import SocialFeed
             socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file,
@@ -293,9 +294,7 @@ def make_handler(app):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", cache)
-            for k, v in security_headers.items():
-                self.send_header(k, v)
-            for k, v in (extra or {}).items():
+            for k, v in dict(security_headers, **(extra or {})).items():  # extra overrides a default
                 self.send_header(k, v)
             if self._body:  # tell the tunnel not to reuse this connection (see _begin)
                 self.send_header("Connection", "close")
@@ -349,7 +348,7 @@ def make_handler(app):
                 self.send_header(k, v)
             self.end_headers()
 
-        def send_page(self, name):
+        def send_page(self, name, head=""):
             """An HTML page of static_dir whose /static/*.js and *.css references carry ?v=<that file's version>.
             Through the tunnel, Cloudflare's Browser Cache TTL turns the scripts' no-cache into max-age=14400,
             so a browser could run a script 4 hours old; the page itself passes through uncached (no-cache)
@@ -367,6 +366,8 @@ def make_handler(app):
                     return m.group(0)
                 return f"{m.group(1)}/static/{m.group(2)}?v={v:x}{m.group(1)}"
 
+            if head:  # per-URL tags (link preview cards) at the end of <head>
+                html = html.replace("</head>", head + "</head>", 1)
             body = ASSET_REF_RE.sub(versioned, html).encode("utf-8")
             validators = {"ETag": f'"{hashlib.sha1(body).hexdigest()[:20]}"'}
             inm = self.headers.get("If-None-Match")
@@ -458,7 +459,9 @@ def make_handler(app):
         # ── routes ───────────────────────────────────────────────────────────────
         def route(self, path, query):
             if path in ("/", "/index.html"):
-                return self.send_page("index.html")
+                return self.send_page("index.html", head=self.link_meta(query))
+            if path.startswith("/card/"):
+                return self.route_card(path[len("/card/"):])
             if path == "/api/health":
                 return self.send_json(app.health())
             if path.startswith("/api/ticker/"):
@@ -629,6 +632,36 @@ def make_handler(app):
                     chunk = b"event: " + event.encode("ascii") + b"\ndata: " + to_json(data) + b"\n\n"
                 self.wfile.write(chunk)
                 self.wfile.flush()
+
+        def link_meta(self, query):
+            """The page's link preview tags (ui/cards.py): absolute URLs on the Host this request came to (the
+            guard has vetted it), https behind the --public tunnel."""
+            base = cards.origin(self.headers.get("Host"), https=app.public)
+            if base is None:
+                return ""
+            lookup = app.jobs.lookup if app.jobs is not None else None
+            try:
+                return cards.link_meta(base, query, lookup=lookup, scans=app.scans, ticker_re=TICKER_RE)
+            except Exception as e:  # a card must never break the page
+                sys.stderr.write(f"⚠️  link preview: {type(e).__name__}: {e}\n")
+                return ""
+
+        def route_card(self, name):
+            """/card/SYM.jpg = a ticker's link preview image from today's cached analysis (never starts one),
+            /card/home.jpg = the portal's. Public and embeddable: crawlers and chat apps fetch it."""
+            if not name.endswith(".jpg"):
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+            sym = name[:-4].upper()
+            if sym == "HOME":
+                key, render = ("", "home"), lambda: cards.render_generic()
+            elif TICKER_RE.match(sym):
+                entry = app.jobs.lookup(sym) if app.jobs is not None else None
+                key, render = (sym, cards.card_version(entry)), lambda: cards.render_ticker(sym, entry)
+            else:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+            body = app.cards.get(key, render)
+            self._send(HTTPStatus.OK, body, "image/jpeg", cache="public, max-age=3600",
+                       extra={"Cross-Origin-Resource-Policy": "cross-origin"})
 
         def route_plot(self, name):
             """/plots/SYM.png = full 300-dpi chart (lightbox), /plots/SYM.jpg = inline preview."""
