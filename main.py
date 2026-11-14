@@ -3,8 +3,10 @@ import pandas as pd
 import os
 import re
 import shutil
+import sys
 import time
 from datetime import date
+from engine import scan_health
 from engine.lynch_pin_core import LynchPinEngine
 from engine.income_statement_grader import print_grader_table, grade_ticker
 from engine.balance_sheet_grader import print_grader_table as print_bs_table, grade_ticker as grade_bs_ticker
@@ -118,13 +120,18 @@ def main():
                         help="Holdings file ('TICKER, SHARES' per line; repeats are summed). "
                              "Analyzes every position and rolls up weighted metrics. "
                              "Not compatible with --top / --excl-bad / --weekly.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Run everything (AI included) and print the X / Threads threads, but post nothing, "
+                             "archive nothing and push no images")
+    parser.add_argument("--force-post", action="store_true",
+                        help="Post even when Yahoo throttling left the scan incomplete (see the coverage line)")
 
     args = parser.parse_args()
 
     if args.portfolio and (args.top or args.excl_bad or args.weekly):
         print("❌ Error: --portfolio cannot be combined with --top, --excl-bad or --weekly "
               "(every position is analyzed, nothing is filtered).")
-        return
+        return 1
 
     positions = None   # ticker -> shares (portfolio mode only)
     weights = {}       # ticker -> market-value weight (portfolio mode only)
@@ -136,7 +143,7 @@ def main():
             positions = parse_portfolio_file(args.portfolio)
         except (FileNotFoundError, ValueError) as e:
             print(f"❌ Error reading portfolio: {e}")
-            return
+            return 1
         tickers = list(positions.keys())
         print(f"💼 PORTFOLIO MODE: {len(tickers)} unique positions loaded from {args.portfolio}")
     elif args.weekly:
@@ -151,7 +158,7 @@ def main():
     else:
         if not os.path.exists(args.src):
             print(f"❌ Error: {args.src} not found.")
-            return
+            return 1
         with open(args.src, 'r') as f:
             tickers = [line.strip() for line in f if line.strip()]
 
@@ -162,21 +169,36 @@ def main():
     src_label = ('FinTwit AI (weekly)' if args.weekly else args.portfolio if args.portfolio else args.src)
     print(f"📡 Processing Source: {src_label}")
 
-    for s in tickers:
-        engine = LynchPinEngine(s)
+    # Yahoo's 429s are counted, so a throttled ticker is retried and never mistaken for one without GARP data
+    scan_health.install()
+    health = scan_health.ScanHealth(len(tickers))
+
+    def _analyse(sym):
+        eng = LynchPinEngine(sym)
+        return eng, eng.get_ticker_stats()
+
+    for i, s in enumerate(tickers):
+        if health.aborted:
+            print(f"  🛑 Yahoo throttled {scan_health.MAX_THROTTLED_IN_A_ROW} tickers in a row: "
+                  f"skipping the remaining {len(tickers) - i}")
+            health.skip_rest(tickers[i:])
+            break
+        engine, res, outcome = health.analyse(s, _analyse)
         px = _extract_price(engine.info)
         if px is not None:
             prices[s] = px
-        res = engine.get_ticker_stats()
         if res:
             all_data.append(res)
             engines[s] = engine
         elif args.portfolio:
-            print(f"  ⚠️ {s}: no GARP data (negative/absent forward PE or growth) — kept in weights, excluded from metrics")
+            why = ("Yahoo throttled it" if outcome == "throttled" else "no quote" if outcome == "no_quote"
+                   else "no GARP data (negative/absent forward PE or growth)")
+            print(f"  ⚠️ {s}: {why} — kept in weights, excluded from metrics")
 
     if not all_data:
+        print(health.summary())
         print("⚠️ No data processed.")
-        return
+        return 1
 
     df = pd.DataFrame(all_data)
 
@@ -187,7 +209,7 @@ def main():
             print(f"  ⚠️ No price for {', '.join(unpriced)} — dropped from weights")
         if not weights:
             print("⚠️ Could not price any position.")
-            return
+            return 1
 
     # Pre-filter: grade all tickers for --excl-bad quality gate
     if args.excl_bad:
@@ -195,16 +217,20 @@ def main():
         _BAD_GRADES = {'B-', 'C', 'D'}
         _BAD_RATINGS = {'BB+', 'BB', 'BB-', 'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'D', 'NR'}
         exclude = set()
+        gate_throttled = set()  # a missing grade passes the gate: a throttled one may hide a bad grade
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
             if sym not in engines:
                 continue
+            before = scan_health.rate_limit_events()
             ig = grade_ticker(engines[sym].ticker)
             if ig and ig['grade'] in _BAD_GRADES:
                 exclude.add(row['Ticker'])
             bg = grade_bs_ticker(engines[sym].ticker)
             if bg and bg['rating'] in _BAD_RATINGS:
                 exclude.add(row['Ticker'])
+            if scan_health.rate_limit_events() > before:
+                gate_throttled.add(sym)
         if exclude:
             df = df[~df['Ticker'].isin(exclude)]
 
@@ -214,6 +240,9 @@ def main():
         df = df.sort_values(by='Dev_SD', ascending=True)
     if args.top:
         df = df.head(args.top)
+    if args.excl_bad:
+        health.degraded += [f"{t} quality gate" for t in df['Ticker'].str.replace('*', '', regex=False)
+                            if t in gate_throttled]
 
     # 3. Quantitative Terminal Output (Yahoo-only growth)
     wcol = f"{'Weight':<6} | " if args.portfolio else ""
@@ -239,7 +268,8 @@ def main():
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
             if sym in engines:
-                res = engines[sym].get_ticker_stats(enrich=True)
+                with health.watch(sym, "enrichment"):
+                    res = engines[sym].get_ticker_stats(enrich=True)
                 if res:
                     enriched_data.append(res)
                 else:
@@ -267,13 +297,14 @@ def main():
         for _, row in df.iterrows():
             sym = row['Ticker'].replace('*', '')
             if sym in engines:
-                g = grade_ticker(engines[sym].ticker)
+                with health.watch(sym, "grades/technicals"):
+                    g = grade_ticker(engines[sym].ticker)
+                    b = grade_bs_ticker(engines[sym].ticker)
+                    t = analyze_technicals(engines[sym].ticker)
                 if g:
                     grader_data[sym] = g
-                b = grade_bs_ticker(engines[sym].ticker)
                 if b:
                     bs_data[sym] = b
-                t = analyze_technicals(engines[sym].ticker)
                 if t:
                     tech_data[sym] = t
         print_grader_table(df.to_dict('records'), engines)
@@ -292,7 +323,8 @@ def main():
             sym = row['Ticker'].replace('*', '')
             t = tech_data.get(sym)
             print(f"\r  Running 6M backtest for {sym}...", end="", flush=True)
-            e = backtest_edge(sym, idx_name, days=180)
+            with health.watch(sym, "edge"):
+                e = backtest_edge(sym, idx_name, days=180)
             if e:
                 edge_data[sym] = e
             sig = t['signal'] if t else '—'
@@ -330,8 +362,20 @@ def main():
         print(portfolio_summary)
         print(f"{'─' * 100}")
 
+    # Coverage: how much of the list was really analysed, and whether that is enough to publish
+    print("\n" + health.summary())
+    publish = args.post or args.post_threads
+    problems = health.problems()
+    if problems:
+        print("⚠️ Incomplete scan:\n" + "\n".join(f"   - {p}" for p in problems))
+        if publish and not (args.dry_run or args.force_post):
+            print("🛑 Not posting: a thread built from a partial scan would rank whatever survived. "
+                  "Re-run later, or pass --force-post to post anyway.")
+            return 2
+
     # 4. AI Narrative (Batch) & Visuals
-    researcher = LynchPinResearcher() if args.research or args.post or args.post_threads else None
+    researcher = LynchPinResearcher() if args.research or publish else None
+    failures = []  # platforms whose thread did not go out
     bulk_ai_text = ""
     sentiment_text = ""
     portfolio_narrative = ""
@@ -464,27 +508,34 @@ def main():
                        "tickers": split_ai_overviews(bulk_ai_text, [sub["ticker"] for sub in ticker_sub_tweets])}
         if portfolio_narrative:
             ai_overview["portfolio"] = portfolio_narrative
-        try:
-            archived = save_scan(SCAN_DIR, kind,
-                                 [{"text": main_tweet, "image": comparison_img, "name": bench_name}]
-                                 + [dict(sub) for sub in ticker_sub_tweets] + [{"text": disclaimer}],
-                                 ai=ai_overview)
-            print(f"🗂️  Scan archived in {archived}/")
-        except (OSError, ValueError) as e:  # the portal's archive must never block posting
-            print(f"  ⚠️ Could not archive the scan: {e}")
+        if args.dry_run:
+            print("🗂️  Dry run: scan not archived")
+        else:
+            try:
+                archived = save_scan(SCAN_DIR, kind,
+                                     [{"text": main_tweet, "image": comparison_img, "name": bench_name}]
+                                     + [dict(sub) for sub in ticker_sub_tweets] + [{"text": disclaimer}],
+                                     ai=ai_overview)
+                print(f"🗂️  Scan archived in {archived}/")
+            except (OSError, ValueError) as e:  # the portal's archive must never block posting
+                print(f"  ⚠️ Could not archive the scan: {e}")
 
-        if args.post:
-            XPublisher().post_thread(
+        if args.post and args.dry_run:
+            XPublisher.preview(main_tweet, ticker_sub_tweets, comparison_img, disclaimer)
+            print("🧪 Dry run: nothing posted to X")
+        elif args.post:
+            if not XPublisher().post_thread(
                 main_tweet=main_tweet,
                 sub_tweets=ticker_sub_tweets,
                 comparison_img=comparison_img,
                 disclaimer=disclaimer
-            )
+            ):
+                failures.append("X")
 
     # 6. Threads Posting Support
     if args.post_threads:
         print("\n🧵 PREPARING THREADS POST...")
-        threads_client = ThreadsPublisher()
+        threads_client = None if args.dry_run else ThreadsPublisher()
 
         idx_name = _resolve_idx_name(args)
 
@@ -493,10 +544,11 @@ def main():
         # Topic tag: ticker for daily, FinTwit for weekly, Portfolio for holdings
         topic_tag = "Portfolio" if args.portfolio else "FinTwit" if args.weekly else idx_name
 
-        # Copy images to images/, remove old and push to GitHub for public URLs
+        # Copy images to images/, remove old and push to GitHub for public URLs (not in a dry run)
         img_dir = "images"
-        os.makedirs(img_dir, exist_ok=True)
-        os.system(f"rm -f {img_dir}/*")
+        if not args.dry_run:
+            os.makedirs(img_dir, exist_ok=True)
+            os.system(f"rm -f {img_dir}/*")
 
         if args.portfolio:
             bench_src = "tmp/portfolio_allocation.png"
@@ -504,21 +556,22 @@ def main():
         else:
             bench_src = "tmp/benchmark_comparison.png"
             bench_name = f"{idx_name.lower()}_benchmark.png"
-        bench_dest = f"{img_dir}/{bench_name}"
-        if os.path.exists(bench_src):
-            shutil.copy2(bench_src, bench_dest)
+        if not args.dry_run:
+            bench_dest = f"{img_dir}/{bench_name}"
+            if os.path.exists(bench_src):
+                shutil.copy2(bench_src, bench_dest)
 
-        for _, r in df.iterrows():
-            sym = r['Ticker'].replace('*', '')
-            src_img = f"tmp/{sym}_valuation.png"
-            if os.path.exists(src_img):
-                shutil.copy2(src_img, f"{img_dir}/{sym}_valuation.png")
+            for _, r in df.iterrows():
+                sym = r['Ticker'].replace('*', '')
+                src_img = f"tmp/{sym}_valuation.png"
+                if os.path.exists(src_img):
+                    shutil.copy2(src_img, f"{img_dir}/{sym}_valuation.png")
 
-        # Git commit and push images
-        print("  [git] Pushing images to GitHub...")
-        commit_msg = f"{idx_name}: update chart images on {date.today()} scan"
-        os.system(f'cd {os.getcwd()} && git add -A {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
-        time.sleep(5)  # Give GitHub CDN a moment to propagate
+            # Git commit and push images
+            print("  [git] Pushing images to GitHub...")
+            commit_msg = f"{idx_name}: update chart images on {date.today()} scan"
+            os.system(f'cd {os.getcwd()} && git add -A {img_dir}/ && git commit -s -m "{commit_msg}" --quiet && git push --quiet')
+            time.sleep(5)  # Give GitHub CDN a moment to propagate
 
         GITHUB_RAW = os.environ.get("GITHUB_IMAGE_PATH", "https://raw.githubusercontent.com/duman190/the-lynch-pin/main/images")
 
@@ -584,16 +637,24 @@ def main():
                 "Investing involves risk. Always DYOR. 🫶"
             )
 
-        threads_client.post_thread(
+        if args.dry_run:
+            ThreadsPublisher.preview(threads_main, threads_sub, threads_disclaimer, topic_tag)
+            print("🧪 Dry run: nothing posted to Threads")
+        elif not threads_client.post_thread(
             main_tweet=threads_main,
             sub_tweets=threads_sub,
             comparison_img_url=f"{GITHUB_RAW}/{bench_name}",
             disclaimer=threads_disclaimer,
             topic_tag=topic_tag,
-        )
+        ):
+            failures.append("Threads")
 
+    if failures:
+        print(f"\n❌ Posting failed on {' and '.join(failures)} (see above).")
+        return 3
     print(f"\n✨ Done. Assets available in tmp/")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

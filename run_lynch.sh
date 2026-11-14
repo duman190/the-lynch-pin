@@ -112,5 +112,16 @@ esac
 echo "🚀 Executing: $PYTHON_EXEC $ARGS" | tee -a "$LOG_FILE"
 
 caffeinate -is $PYTHON_EXEC $ARGS >> "$LOG_FILE" 2>&1
+STATUS=$?
+
+# main.py's exit status: 0 posted, 1 no data / bad input, 2 not posted (Yahoo throttling left the scan
+# incomplete), 3 posting failed (an X thread that died part-way: python -m social.x_publisher --resume)
+case $STATUS in
+    0) ;;
+    2) echo "  ⚠️ Scan incomplete (Yahoo throttling): nothing posted. Re-run later." | tee -a "$LOG_FILE" ;;
+    3) echo "  ❌ Posting failed: see the log; finish an X thread with python -m social.x_publisher --resume" | tee -a "$LOG_FILE" ;;
+    *) echo "  ❌ Scan failed (exit $STATUS)" | tee -a "$LOG_FILE" ;;
+esac
 
 echo "--- Finished Check: $(date) ---" | tee -a "$LOG_FILE"
+exit $STATUS

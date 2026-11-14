@@ -10,7 +10,8 @@ class ThreadsPublisher:
         self.user_id = os.environ.get("THREADS_USER_ID")
         self.base_url = f"https://graph.threads.net/v1.0/{self.user_id}"
 
-    def _truncate(self, text):
+    @staticmethod
+    def _truncate(text):
         """Truncate to 499 chars max, replacing last 3 with ... if over."""
         if len(text) <= 499:
             return text
@@ -62,13 +63,18 @@ class ThreadsPublisher:
                 time.sleep(wait)
         raise Exception("Failed to post to Threads after 3 attempts.")
 
-    def post_thread(self, main_tweet, sub_tweets, comparison_img_url, disclaimer, topic_tag=None):
-        """Orchestrates the full thread deployment to Threads."""
+    @classmethod
+    def preview(cls, main_tweet, sub_tweets, disclaimer, topic_tag=None):
+        """Prints the thread as it would be posted."""
         print("\n--- 📝 PREVIEW OF THREADS POST ---")
-        print(f"MAIN POST:\n{self._truncate(main_tweet)}\n[Tag: {topic_tag}]")
+        print(f"MAIN POST:\n{cls._truncate(main_tweet)}\n[Tag: {topic_tag}]")
         for sub in sub_tweets:
-            print(f"\nREPLY ({sub['ticker']}):\n{self._truncate(sub['text'])}")
-        print(f"\nFOOTER:\n{self._truncate(disclaimer)}\n--------------------------\n")
+            print(f"\nREPLY ({sub['ticker']}):\n{cls._truncate(sub['text'])}")
+        print(f"\nFOOTER:\n{cls._truncate(disclaimer)}\n--------------------------\n")
+
+    def post_thread(self, main_tweet, sub_tweets, comparison_img_url, disclaimer, topic_tag=None):
+        """Orchestrates the full thread deployment to Threads; returns True once every post is live."""
+        self.preview(main_tweet, sub_tweets, disclaimer, topic_tag)
 
         print("🚀 Posting Analysis Thread to Threads...")
 
@@ -95,6 +101,8 @@ class ThreadsPublisher:
             time.sleep(random.randint(5, 10))
             self._safe_post(disclaimer, reply_to=last_id)
             print("✅ Success. Threads thread deployed.")
+            return True
 
         except Exception as e:
             print(f"❌ Threads Deployment Failed: {e}")
+            return False

@@ -20,6 +20,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 │   ├── balance_sheet_grader.py     # Synthetic credit rating (Damodaran methodology)
 │   ├── technical_timing.py         # Technical trend, momentum, accumulation & 6M directional edge
 │   ├── portfolio.py                # Holdings parser, market-value weights & weighted roll-ups
+│   ├── scan_health.py              # Yahoo 429 counter, per-ticker outcomes, "is this scan fit to post?"
 │   └── ai_research.py              # Gemini AI batch narrative generation
 ├── experimental/          # Quant trading research (order flow, IV surface, backtesting)
 ├── graphics/
@@ -39,6 +40,7 @@ A Peter Lynch-inspired **GARP (Growth at a Reasonable Price)** stock screener th
 ```bash
 python main.py --src database/mag7.txt --top 5 --excl-bad --research --plot --post
 python main.py --portfolio my_holdings.txt --research --plot --post
+python main.py --src database/smh.txt --top 8 --excl-bad --post --post_threads --dry-run   # everything but posting
 ```
 
 | Flag | Description |
@@ -51,6 +53,25 @@ python main.py --portfolio my_holdings.txt --research --plot --post
 | `--plot` | Output dark-mode charts to `tmp/` |
 | `--post` | Publish full analysis thread to X |
 | `--post_threads` | Publish full analysis thread to Threads |
+| `--dry-run` | Run everything (AI included) and print the X / Threads threads, but post nothing, archive nothing and push no images |
+| `--force-post` | Post even when Yahoo throttling left the scan incomplete (see *Scan health* below) |
+
+## Scan health
+
+The engine swallows Yahoo's errors (a ticker it can't analyse simply has no row), so a run Yahoo throttled used to look like a run where most tickers had no forward earnings: a shorter table, exit 0, and a "top 8" posted from whatever survived. `engine/scan_health.py` counts every rate-limit error yfinance raises and classifies each ticker:
+
+| Outcome | Meaning | What happens |
+|---|---|---|
+| analysed | GARP row computed | ranked |
+| no GARP data | quote fine, no forward earnings or growth | left out, as before |
+| no quote | Yahoo returned nothing, without a 429 (an unknown or delisted symbol) | left out |
+| throttled | a 429 during its analysis | retried after 60 s, then 180 s; still throttled → left out (its numbers may rest on fallbacks); 3 in a row → the scan stops asking Yahoo |
+
+A 429 during a top pick's later stages (the `--excl-bad` quality gate, FMP enrichment, grades, technicals, the edge backtest) marks the pick **degraded**: a missing grade passes the quality gate, so a throttled pick may not belong in the list.
+
+Every run prints a coverage line, e.g. `📋 Coverage: 97/100 tickers analysed (91 with GARP data, 6 without) · 2 lost to Yahoo throttling · 1 without a quote (CTRA) · 5 Yahoo 429s`. With `--post` / `--post_threads` the run is **not posted** (exit 2) when more than 10% of the tickers were lost to throttling, more than half had no quote (an outage), or any top pick is degraded; `--force-post` posts anyway, `--dry-run` only warns.
+
+**Exit status** (logged by `run_lynch.sh`): `0` done, `1` no data or bad input, `2` not posted (incomplete scan), `3` posting failed. An X thread that fails part-way saves the posts not yet live, with the id of the last live one, to `tmp/x_thread_resume.json`; `python -m social.x_publisher --resume` finishes that same thread (before the next scan overwrites `tmp/`'s charts) instead of a re-run posting a second one.
 
 ## Environment Variables
 

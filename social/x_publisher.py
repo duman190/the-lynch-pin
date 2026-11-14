@@ -1,12 +1,17 @@
-import tweepy
+import json
 import os
 import random
 import re
 import time
 
+import tweepy
+
 # X allows at most one cashtag per post (403 "Posts are limited to a maximum of one cashtag"),
 # counting repeats of the same symbol. "$38.10" is a price, not a cashtag: a letter must follow "$".
 CASHTAG_RE = re.compile(r"(?<![\w$])\$(?=[A-Za-z])")
+
+# A thread that failed part-way: the posts not yet live, to finish with `python -m social.x_publisher --resume`
+RESUME_PATH = os.path.join("tmp", "x_thread_resume.json")
 
 
 def strip_cashtags(text):
@@ -68,62 +73,85 @@ class XPublisher:
         # If all retries fail, raise exception to stop the script
         raise Exception("Failed to post tweet after 3 attempts.")
 
-    def post_thread(self, main_tweet, sub_tweets, comparison_img, disclaimer):
-        """Orchestrates the full thread deployment."""
-        # Last line of defence for X's one-cashtag rule (AI text can carry extra "$TICKER"s)
-        main_tweet = limit_cashtags(main_tweet)
-        disclaimer = limit_cashtags(disclaimer)
-        sub_tweets = [dict(sub, text=limit_cashtags(sub['text'])) for sub in sub_tweets]
+    @staticmethod
+    def preview(main_tweet, sub_tweets, comparison_img, disclaimer):
+        """Prints the thread as it would be posted (the run log keeps it; scan_archive --backfill parses it)."""
+        main_tweet, disclaimer = limit_cashtags(main_tweet), limit_cashtags(disclaimer)
         print("\n--- 📝 PREVIEW OF POST ---")
         print(f"MAIN TWEET:\n{main_tweet}\n[Attach: {comparison_img}]")
         for sub in sub_tweets:
-            print(f"\nREPLY TWEET ({sub['ticker']}):\n{sub['text']}\n[Attach: {sub['image']}]")
+            print(f"\nREPLY TWEET ({sub['ticker']}):\n{limit_cashtags(sub['text'])}\n[Attach: {sub['image']}]")
         print(f"\nFOOTER:\n{disclaimer}\n--------------------------\n")
 
+    def post_thread(self, main_tweet, sub_tweets, comparison_img, disclaimer, resume_path=RESUME_PATH):
+        """Posts the thread; returns True once every post is live.
+
+        If a post fails after its retries, the posts not yet live are saved to ``resume_path`` with the id
+        of the last live one, so ``python -m social.x_publisher --resume`` can finish the same thread
+        instead of a re-run posting a second one (whose AI text would differ anyway)."""
+        self.preview(main_tweet, sub_tweets, comparison_img, disclaimer)
+        # Last line of defence for X's one-cashtag rule (AI text can carry extra "$TICKER"s)
+        posts = ([{"ticker": None, "text": limit_cashtags(main_tweet), "image": comparison_img}]
+                 + [dict(sub, text=limit_cashtags(sub['text'])) for sub in sub_tweets]
+                 + [{"ticker": None, "text": limit_cashtags(disclaimer), "image": None, "footer": True}])
         print("🚀 Posting Market Analysis Thread to X...")
+        return self._post_posts(posts, None, resume_path)
 
-        try:
-            # 1. Post the Main Header Tweet
-            m_id = self._upload_media(comparison_img)
-            response = self._safe_create_tweet(
-                text=main_tweet,
-                media_ids=[m_id] if m_id else None,
-            )
-            last_id = response.data['id']
-            print("  [+] Main header live.")
+    def resume(self, resume_path=RESUME_PATH):
+        """Finishes a thread a failed run left in ``resume_path``; returns True once it is complete."""
+        with open(resume_path, encoding="utf-8") as f:
+            state = json.load(f)
+        print(f"🔁 Resuming the X thread after post {state['last_id']}: {len(state['posts'])} posts left")
+        return self._post_posts(state["posts"], state["last_id"], resume_path)
 
-            # 2. Post Individual Ticker Replies
-            for sub in sub_tweets:
-                # Use a slightly longer delay (1-3m) to stay under X's rate-limit radar
-                delay = random.randint(60, 180)
-                print(f"  [wait] {delay}s delay for algorithm...")
-                time.sleep(delay)
-
-                m_id = self._upload_media(sub['image'])
-                body = sub['text']
-                
-                # Blue checkmark: 4000 char limit
-                if len(body) > 4000:
+    def _post_posts(self, posts, last_id, resume_path):
+        for i, post in enumerate(posts):
+            try:
+                if last_id is not None:
+                    # Space replies out (1-3 min) to stay under X's rate-limit radar
+                    delay = random.randint(60, 180)
+                    print(f"  [wait] {delay}s delay for algorithm...")
+                    time.sleep(delay)
+                m_id = self._upload_media(post['image']) if post.get('image') else None
+                body = post['text']
+                if len(body) > 4000:  # Blue checkmark: 4000 char limit
                     body = body[:3997] + "..."
-
-                response = self._safe_create_tweet(
-                    text=body,
-                    in_reply_to_tweet_id=last_id,
-                    media_ids=[m_id] if m_id else None,
-                )
+                kwargs = {"text": body}
+                if m_id:
+                    kwargs["media_ids"] = [m_id]
+                if last_id is not None:
+                    kwargs["in_reply_to_tweet_id"] = last_id
+                response = self._safe_create_tweet(**kwargs)
                 last_id = response.data['id']
-                print(f"  [+] {sub['ticker']} analysis live.")
+                print(f"  [+] {post['ticker'] + ' analysis' if post.get('ticker') else 'Footer' if post.get('footer') else 'Main header'} live.")
+            except Exception as e:
+                print(f"❌ Deployment Failed: {e}")
+                print("\n💡 TIP: If this was a 403, check your X Developer Portal Permissions.")
+                self._save_resume(resume_path, last_id, posts[i:])
+                return False
+        print("✅ Success. Thread deployed.")
+        if resume_path and os.path.exists(resume_path):
+            os.remove(resume_path)
+        return True
 
-            # 3. Post the Disclaimer Footnote
-            print("  [wait] Final delay before footer...")
-            time.sleep(random.randint(60, 180))
-            
-            self._safe_create_tweet(
-                text=disclaimer,
-                in_reply_to_tweet_id=last_id,
-            )
-            print("✅ Success. Thread deployed.")
+    @staticmethod
+    def _save_resume(resume_path, last_id, remaining):
+        """Saves the posts not yet live; with no post live there is no thread to resume (re-run instead)."""
+        if not resume_path or last_id is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(resume_path) or ".", exist_ok=True)
+            with open(resume_path, "w", encoding="utf-8") as f:
+                json.dump({"last_id": str(last_id), "posts": remaining}, f, ensure_ascii=False, indent=1)
+            print(f"💾 {len(remaining)} posts saved: finish the thread with "
+                  f"`python -m social.x_publisher --resume {resume_path}`")
+        except OSError as e:
+            print(f"  ⚠️ Could not save the rest of the thread: {e}")
 
-        except Exception as e:
-            print(f"❌ Deployment Failed: {e}")
-            print("\n💡 TIP: If this was a 403, check your X Developer Portal Permissions.")
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    ap = argparse.ArgumentParser(description="Finish an X thread that a failed run left half-posted")
+    ap.add_argument("--resume", default=RESUME_PATH, help=f"resume file (default {RESUME_PATH})")
+    sys.exit(0 if XPublisher().resume(ap.parse_args().resume) else 1)

@@ -1268,6 +1268,179 @@ class TestXPublisher(unittest.TestCase):
             self.assertTrue(texts[2].startswith("$SKHY\n\nSKHY:"))
 
 
+class TestXThreadResume(unittest.TestCase):
+    """A thread that dies part-way is saved so the same thread can be finished, not posted twice."""
+
+    def _pub(self):
+        from social.x_publisher import XPublisher
+        with patch('social.x_publisher.tweepy.Client'), patch('social.x_publisher.tweepy.API'), \
+                patch('social.x_publisher.tweepy.OAuth1UserHandler'):
+            pub = XPublisher()
+        pub._upload_media = MagicMock(return_value=None)
+        return pub
+
+    def test_failure_saves_the_rest_and_resume_finishes_it(self):
+        import tempfile, json as _json
+        path = os.path.join(tempfile.mkdtemp(), "resume.json")
+        pub = self._pub()
+        ids = iter(["100", "101"])
+
+        def create(**kw):
+            if kw["text"].startswith("$MU"):
+                raise RuntimeError("503 Service Unavailable")
+            r = MagicMock(); r.data = {"id": next(ids)}
+            return r
+        pub.client.create_tweet = MagicMock(side_effect=create)
+        subs = [{"ticker": "NVDA", "text": "$NVDA\n\nok", "image": "n.png"},
+                {"ticker": "MU", "text": "$MU\n\nfails", "image": "m.png"}]
+        with patch('social.x_publisher.time.sleep'), patch('builtins.print'):
+            self.assertFalse(pub.post_thread("MARKET CLOSE: $SMH", subs, "b.png", "footer", resume_path=path))
+        with open(path) as f:
+            state = _json.load(f)
+        self.assertEqual(state["last_id"], "101")  # the NVDA reply is the last post live
+        self.assertEqual([p.get("ticker") for p in state["posts"]], ["MU", None])
+        self.assertTrue(state["posts"][1]["footer"])
+
+        pub.client.create_tweet = MagicMock(side_effect=lambda **kw: MagicMock(data={"id": "200"}))
+        with patch('social.x_publisher.time.sleep'), patch('builtins.print'):
+            self.assertTrue(pub.resume(path))
+        replies = [c.kwargs.get("in_reply_to_tweet_id") for c in pub.client.create_tweet.call_args_list]
+        self.assertEqual(replies, ["101", "200"])  # MU under NVDA, then the footer under MU
+        self.assertFalse(os.path.exists(path))
+
+    def test_failure_before_anything_is_live_saves_nothing(self):
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(), "resume.json")
+        pub = self._pub()
+        pub.client.create_tweet = MagicMock(side_effect=RuntimeError("403"))
+        with patch('social.x_publisher.time.sleep'), patch('builtins.print'):
+            self.assertFalse(pub.post_thread("hdr", [], "b.png", "footer", resume_path=path))
+        self.assertFalse(os.path.exists(path))  # no thread exists: a re-run posts it whole
+
+
+class TestScanHealth(unittest.TestCase):
+    """main.py must tell Yahoo throttling apart from tickers without GARP data."""
+
+    def _run(self, plan):
+        """plan: ticker -> list of (throttled, stats) per attempt."""
+        from engine import scan_health as sh
+        attempts = {k: list(v) for k, v in plan.items()}
+
+        def run(sym):
+            throttled, stats = attempts[sym].pop(0)
+            if throttled:
+                sh.note_rate_limit()
+            eng = MagicMock(); eng.info = {} if stats == "noquote" else {"currentPrice": 10}
+            return eng, (stats if isinstance(stats, dict) else None)
+        return run
+
+    def test_outcomes_retry_and_abort(self):
+        from engine import scan_health as sh
+        waits = []
+        h = sh.ScanHealth(5, sleep=waits.append, backoffs=(60, 180))
+        run = self._run({"OK": [(False, {"PEG": 1})], "NOGARP": [(False, None)], "GONE": [(False, "noquote")],
+                         "FLAKY": [(True, None), (False, {"PEG": 2})],
+                         "DEAD": [(True, None), (True, {"PEG": 9}), (True, {"PEG": 9})]})
+        with patch('builtins.print'):
+            out = {s: h.analyse(s, run)[2] for s in ("OK", "NOGARP", "GONE", "FLAKY", "DEAD")}
+        self.assertEqual(out, {"OK": "ok", "NOGARP": "nodata", "GONE": "no_quote", "FLAKY": "ok", "DEAD": "throttled"})
+        self.assertEqual(waits, [60, 60, 180])  # FLAKY once, DEAD twice
+        with patch('builtins.print'):
+            _, stats, outcome = h.analyse("DEAD2", self._run({"DEAD2": [(True, {"PEG": 1})] * 3}))
+        self.assertEqual((stats, outcome), (None, "throttled"))  # a throttled result is never ranked
+        self.assertFalse(h.aborted)
+
+    def test_aborts_after_repeated_throttling(self):
+        from engine import scan_health as sh
+        h = sh.ScanHealth(10, sleep=lambda s: None, backoffs=())
+        run = self._run({s: [(True, None)] for s in "ABC"})
+        with patch('builtins.print'):
+            for s in "ABC":
+                h.analyse(s, run)
+        self.assertTrue(h.aborted)
+        h.skip_rest(list("DEFG"))
+        self.assertEqual(h.count("throttled"), 7)
+        self.assertIn("7/10 tickers lost to Yahoo throttling", h.problems()[0])
+
+    def test_problems_thresholds_and_degraded_picks(self):
+        from engine import scan_health as sh
+        h = sh.ScanHealth(20)
+        h.outcomes = {f"T{i}": "ok" for i in range(17)}
+        h.outcomes.update({"X1": "throttled", "X2": "throttled", "Q": "no_quote"})
+        self.assertEqual(h.problems(), [])  # 2/20 = 10% is tolerated, a delisted symbol is normal
+        h.outcomes["T0"] = "throttled"
+        self.assertEqual(len(h.problems()), 1)
+        h = sh.ScanHealth(4)
+        h.outcomes = {"A": "no_quote", "B": "no_quote", "C": "no_quote", "D": "ok"}
+        self.assertIn("without a quote", h.problems()[0])
+        h = sh.ScanHealth(1)
+        h.outcomes = {"NVDA": "ok"}
+        with h.watch("NVDA", "grades/technicals"):
+            sh.note_rate_limit()
+        with h.watch("NVDA", "edge"):
+            pass
+        self.assertEqual(h.degraded, ["NVDA grades/technicals"])
+        self.assertIn("degraded", h.problems()[0])
+        self.assertIn("1/1 tickers analysed", h.summary())
+
+    def test_counts_yfinance_rate_limit_errors(self):
+        from engine import scan_health as sh
+        from yfinance.exceptions import YFRateLimitError
+        sh.install()
+        before = sh.rate_limit_events()
+        YFRateLimitError()
+        self.assertEqual(sh.rate_limit_events(), before + 1)
+
+
+class TestMainRefusesPartialScans(unittest.TestCase):
+    """A scan Yahoo throttled is not posted (exit 2), unless --force-post; --dry-run never posts."""
+
+    ROW = {'PE': 20.0, 'FwdPE': 18.0, '2YFwd': 16.0, '5YGrowth': '15.0%', 'PEG': 1.2, 'Mean': 1.5,
+           'Dev_SD': -0.5, 'Bull': '20%', 'Base': '15%', 'Bear': '8%'}
+
+    def _main(self, argv, throttled):
+        import sys, tempfile
+        import main as m
+        from engine import scan_health as sh
+        src = os.path.join(tempfile.mkdtemp(), "list.txt")
+        tickers = [f"T{i}" for i in range(10)]
+        with open(src, "w") as f:
+            f.write("\n".join(tickers))
+
+        class FakeEngine:
+            def __init__(self, sym):
+                self.sym, self.info, self.ticker = sym, {"currentPrice": 10.0}, MagicMock()
+
+            def get_ticker_stats(self, enrich=False):
+                if self.sym in throttled:
+                    sh.note_rate_limit()
+                    return None
+                return dict(TestMainRefusesPartialScans.ROW, Ticker=self.sym)
+
+        x = MagicMock()
+        with patch.object(sys, 'argv', ['main.py', '--src', src] + argv), \
+                patch.object(m, 'LynchPinEngine', FakeEngine), \
+                patch.object(m, 'XPublisher', x), patch.object(m, 'ThreadsPublisher'), \
+                patch.object(m, 'LynchPinResearcher') as r, \
+                patch.object(sh, 'BACKOFFS', ()), patch('builtins.print') as p:
+            r.return_value.get_batch_narrative.return_value = "SENTIMENT: calm"
+            code = m.main()
+        return code, x, "\n".join(str(c.args[0]) for c in p.call_args_list if c.args)
+
+    def test_throttled_scan_is_not_posted(self):
+        code, x, out = self._main(['--post'], throttled={"T1", "T2"})
+        self.assertEqual(code, 2)
+        x.assert_not_called()
+        self.assertIn("8/10 tickers analysed", out)
+        self.assertIn("2 lost to Yahoo throttling", out)
+        self.assertIn("Not posting", out)
+
+    def test_no_data_at_all_exits_1(self):
+        code, x, out = self._main(['--post'], throttled={f"T{i}" for i in range(10)})
+        self.assertEqual(code, 1)
+        x.assert_not_called()
+
+
 class TestCashtags(unittest.TestCase):
 
     def test_strip_cashtags_keeps_prices(self):
