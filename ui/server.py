@@ -217,6 +217,8 @@ def make_handler(app):
             """The stdlib's own errors (malformed request, unknown method, oversized headers) as JSON, with the
             security headers its HTML pages lack; the connection is closed."""
             self.close_connection = True
+            if self.request_version == "HTTP/0.9":  # a one-word request line: older Pythons would answer it with
+                self.request_version = "HTTP/1.0"  # a bare body, no status line and none of the headers below
             try:
                 phrase = HTTPStatus(code).phrase
             except ValueError:

@@ -463,18 +463,9 @@ class JobManager:
             if entry.get("status") != "done" or not (entry.get("_ai_inputs") or {}).get("row"):
                 return {"ticker": sym, "status": "unavailable", "reason": "no_garp",
                         "error": "AI overview needs GARP valuation data"}
-            ai = entry.get("ai")
-            if ai is None:
-                ai = self._final_ai(sym)  # written today for an analysis since refreshed or evicted
-                if ai is not None:
-                    entry["ai"] = ai
-            if ai and (not refresh or ai.get("complete", True)):  # a complete overview is final for the day
-                return dict(ai, ticker=sym, cached=True)
-            now = self._clock()
-            for k in [k for k, j in self._recent_ai.items() if now - j.finished > self.recent_ttl]:
-                del self._recent_ai[k]
-            if not refresh and sym in self._recent_ai:
-                return self._ai_snapshot(self._recent_ai[sym])
+            done = self._ai_done(sym, entry, refresh)
+            if done is not None:
+                return done
         # local model status: a network probe (cached 15 s) — outside the lock. The switchboard answers it without
         # swapping models, so probing the pre-cache's model never unloads the online one.
         st = self.llm.status() if self.llm is not None else {"available": False, "reason": "no local model"}
@@ -482,6 +473,10 @@ class JobManager:
         with self._cv:
             job = self._ai_inflight.get(sym)
             if job is None:
+                # the overview may have been written while the probes ran: never start a second one
+                done = self._ai_done(sym, entry, refresh)
+                if done is not None:
+                    return done
                 local_pending = len(self._ai_queue) + sum(j.backend == "local" for j in self._ai_running.values())
                 route, wait = self.inference.admit(sym, bool(st.get("available")), local_pending, warm=warm,
                                                    cache_ok=cache_ok)
@@ -501,6 +496,22 @@ class JobManager:
         if backend == "cache":
             return self._cache_queue, self.cache_workers, self.cache_llm
         return self._ai_queue, self.ai_workers, self.llm
+
+    def _ai_done(self, sym, entry, refresh):
+        """Lock held: today's overview of ``sym`` if one is written (or just finished), else None."""
+        ai = entry.get("ai")
+        if ai is None:
+            ai = self._final_ai(sym)  # written today for an analysis since refreshed or evicted
+            if ai is not None:
+                entry["ai"] = ai
+        if ai and (not refresh or ai.get("complete", True)):  # a complete overview is final for the day
+            return dict(ai, ticker=sym, cached=True)
+        now = self._clock()
+        for k in [k for k, j in self._recent_ai.items() if now - j.finished > self.recent_ttl]:
+            del self._recent_ai[k]
+        if not refresh and sym in self._recent_ai:
+            return self._ai_snapshot(self._recent_ai[sym])
+        return None
 
     def _ai_paused(self, sym, st, wait, warm=False):
         """Lock held: no AI for this request now → the page shows the Quick overview with ↻ Retry AI. On the stats
