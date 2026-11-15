@@ -5,7 +5,7 @@ Every finished analysis (a visitor's or the nightly pre-cache's) offers its valu
 ISO week is kept (``INSERT OR IGNORE``), so a row never changes once written and "since then" always measures
 from the price the call was made at. ~100 bytes a row: a thousand tickers for five years is ~25 MB.
 
-    rows(sym)  → newest first: {date, price, peg, bear, base, bull}
+    rows(sym)  → newest first: {date, price, growth (5Y EPS growth forecast, %), peg, bear, base, bull}
 """
 import datetime as _dt
 import math
@@ -16,9 +16,10 @@ import threading
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS valuations (
     ticker TEXT NOT NULL, week TEXT NOT NULL, date TEXT NOT NULL, ts REAL NOT NULL,
-    price REAL NOT NULL, peg REAL, bear REAL, base REAL, bull REAL,
+    price REAL NOT NULL, peg REAL, bear REAL, base REAL, bull REAL, growth REAL,
     PRIMARY KEY (ticker, week)) WITHOUT ROWID;
 """
+COLUMNS = ("date", "price", "growth", "peg", "bear", "base", "bull")
 LIMIT = 260  # rows returned: five years of weeks
 
 
@@ -43,6 +44,9 @@ class TrackRecord:
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(valuations)")}
+        if "growth" not in cols:  # a record from before the 5Y growth column: those rows show "–"
+            self._db.execute("ALTER TABLE valuations ADD COLUMN growth REAL")
 
     def record(self, sym, entry, ts=None):
         """Keeps ``entry`` (a finished analysis) as ``sym``'s valuation for this week, unless the week has one.
@@ -59,18 +63,19 @@ class TrackRecord:
         ts = ts if ts is not None else (self._clock() if self._clock else entry.get("generated_at") or 0.0)
         with self._lock:
             cur = self._db.execute(
-                "INSERT OR IGNORE INTO valuations (ticker, week, date, ts, price, peg, bear, base, bull) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO valuations (ticker, week, date, ts, price, peg, bear, base, bull, growth) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (sym, week, day.isoformat(), float(ts), price, peg,
-                 _num(st.get("Bear")), _num(st.get("Base")), _num(st.get("Bull"))))
+                 _num(st.get("Bear")), _num(st.get("Base")), _num(st.get("Bull")),
+                 _num(st.get("growth_pct")) if _num(st.get("growth_pct")) is not None else _num(st.get("5YGrowth"))))
             return cur.rowcount == 1
 
     def rows(self, sym, limit=LIMIT):
         with self._lock:
             got = self._db.execute(
-                "SELECT date, price, peg, bear, base, bull FROM valuations WHERE ticker = ? "
+                f"SELECT {', '.join(COLUMNS)} FROM valuations WHERE ticker = ? "
                 "ORDER BY week DESC LIMIT ?", (sym, int(limit))).fetchall()
-        return [dict(zip(("date", "price", "peg", "bear", "base", "bull"), r)) for r in got]
+        return [dict(zip(COLUMNS, r)) for r in got]
 
     def report(self, sym, current=None):
         """/api/ticker/SYM/track: the rows, newest first, each with ``since_pct``, the share price's change

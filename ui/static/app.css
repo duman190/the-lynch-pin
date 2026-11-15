@@ -636,7 +636,7 @@ dialog#track .lightbox-close { position: static; float: none; margin: 0; flex: n
   .pop-panel { padding: 8px 6px; }
   dialog#track { width: 100vw; max-width: 100vw; max-height: 100dvh; height: 100dvh; border-radius: 0; border: 0; margin: 0; }
   .track-head { padding-top: calc(env(safe-area-inset-top) + 12px); }
-  .track-table th, .track-table td { padding: 8px 5px; font-size: .74rem; }
+  .track-table th, .track-table td { padding: 8px 4px; font-size: .7rem; }
   .track-table th:first-child, .track-table td:first-child { padding-left: 12px; }
   .track-table th:last-child, .track-table td:last-child { padding-right: 12px; }
   .track-table thead th { font-size: .6rem; letter-spacing: .02em; white-space: normal; vertical-align: bottom; }

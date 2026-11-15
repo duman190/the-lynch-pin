@@ -1,5 +1,5 @@
 /* The Lynch Pin · Quant Portal — Track record: a ticker's past valuations, one a week (ui/track.py), in a
-   scrollable table: date, price, PEG, 5Y bear / base / bull ROI, and the share price's change since then.
+   scrollable table: date, price, 5Y EPS growth forecast, PEG, 5Y bear / base / bull ROI, and the share price's change since then.
    Opened by "View track record" under the Valuation card. Depends on app.js helpers ($, el, getJSON). */
 "use strict";
 
@@ -32,11 +32,13 @@
   function table(d) {
     const cur = d.current && d.current.currency;
     const head = el("thead", {}, el("tr", {},
-      el("th", { scope: "col" }, "Date"), el("th", { scope: "col" }, "Price"), el("th", { scope: "col" }, "PEG"),
+      el("th", { scope: "col" }, "Date"), el("th", { scope: "col" }, "Price"),
+      el("th", { scope: "col", title: "The 5-year EPS growth forecast behind that day's PEG" }, "5Y growth"), el("th", { scope: "col" }, "PEG"),
       el("th", { scope: "col" }, "Bear / Base / Bull ROI"), el("th", { scope: "col" }, "Since then")));
     const body = el("tbody", {}, d.rows.map((r) => el("tr", {},
       el("th", { scope: "row" }, el("span", { class: "d-long" }, day(r.date)), el("span", { class: "d-short" }, day(r.date, true))),
-      el("td", {}, price(r.price, cur)),
+      el("td", {}, el("span", { class: "d-long" }, price(r.price, cur)), el("span", { class: "d-short" }, fx(r.price, 2))),
+      el("td", {}, fx(r.growth, 1), isNum(r.growth) ? el("span", { class: "tr-unit" }, "%") : null),
       el("td", {}, fx(r.peg, 2)),
       roi(r),
       el("td", { class: `tr-since ${isNum(r.since_pct) ? (r.since_pct > 0 ? "green" : r.since_pct < 0 ? "red" : "") : ""}` }, signed(r.since_pct)))));
