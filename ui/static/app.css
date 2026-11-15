@@ -642,7 +642,8 @@ dialog#track .lightbox-close { position: static; float: none; margin: 0; flex: n
   .track-table th:last-child, .track-table td:last-child { padding-right: 12px; }
   .track-table thead th { font-size: .6rem; letter-spacing: .02em; white-space: normal; vertical-align: bottom; }
   .track-table .tr-sep { margin: 0 .15em; }
-  .track-table .tr-unit { display: none; }
+  .track-table .tr-unit:not(.tr-pct) { display: none; }  /* the growth % stays */
+  .track-table .tr-pct { margin-left: 0; }
   .track-table .d-long { display: none; }
   .track-table .d-short { display: inline; }
   .pop-row { grid-template-columns: 1.4em 4.2em minmax(0, 1fr) 4em; gap: 8px; }

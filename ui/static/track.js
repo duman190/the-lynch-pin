@@ -38,7 +38,7 @@
     const body = el("tbody", {}, d.rows.map((r) => el("tr", {},
       el("th", { scope: "row" }, el("span", { class: "d-long" }, day(r.date)), el("span", { class: "d-short" }, day(r.date, true))),
       el("td", {}, el("span", { class: "d-long" }, price(r.price, cur)), el("span", { class: "d-short" }, fx(r.price, 2))),
-      el("td", {}, fx(r.growth, 1), isNum(r.growth) ? el("span", { class: "tr-unit" }, "%") : null),
+      el("td", {}, fx(r.growth, 1), isNum(r.growth) ? el("span", { class: "tr-unit tr-pct" }, "%") : null),
       el("td", {}, fx(r.peg, 2)),
       roi(r),
       el("td", { class: `tr-since ${isNum(r.since_pct) ? (r.since_pct > 0 ? "green" : r.since_pct < 0 ? "red" : "") : ""}` }, signed(r.since_pct)))));
