@@ -7,8 +7,8 @@
 (() => {
   const P = { loaded: 0 };
   const CARDS = [
-    { key: "week", caption: "Weekly Top 10", sub: "last 7 days" },
-    { key: "month", caption: "Monthly Top 10", sub: "last 30 days" },
+    { key: "week", caption: "Weekly Top 10 Lookups", sub: "Last 7 days" },
+    { key: "month", caption: "Monthly Top 10 Lookups", sub: "Last 30 days" },
   ];
   const count = new Intl.NumberFormat();
 
@@ -45,7 +45,7 @@
     return el("figure", { class: "widget val-card" },
       el("div", { class: "pop-panel" }, body),
       el("figcaption", {}, el("span", { class: "val-cap" }, c.caption),
-        el("span", { class: "val-sub" }, `Most looked-up tickers, ${c.sub}${total}`)));
+        el("span", { class: "val-sub" }, `${c.sub}${total}`)));
   }
 
   async function load() {
