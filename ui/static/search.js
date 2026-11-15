@@ -210,7 +210,9 @@
       ]),
       el("h3", { class: "sub-h", text: "5Y ROI projection" + (st.div_yield >= 0.05 ? ` · incl. ${fx(st.div_yield, 1)}% dividend` : "") }),
       roiBars(st),
-      el("div", { class: "chart-slot", id: "chart-slot" }, chartButton()));
+      el("div", { class: "chart-slot", id: "chart-slot" }, chartButton()),
+      window.LynchTrack ? el("button", { type: "button", class: "btn-ghost btn-track",
+        onclick: () => window.LynchTrack.open(d.ticker || S.sym) }, "View track record") : null);
     fillChart();
     // widths via CSSOM (CSP forbids inline style attributes)
     requestAnimationFrame(() => card.querySelectorAll(".roi-bar").forEach((b) => { b.style.width = `${b.dataset.w}%`; }));

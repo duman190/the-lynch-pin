@@ -234,7 +234,7 @@ class JobManager:
     def __init__(self, settings, analyzer=None, store=None, llm=None, deadline=300.0, max_queue=20,
                  clock=time.monotonic, today=_dt.date.today, start=True, workers=1, processes=False,
                  backends_spec=None, allow_refresh=True, max_per_client=None, stats=None, gemini=None,
-                 cache_llm=None, refresh_once_per_client=False, fmp_budget=None):
+                 cache_llm=None, refresh_once_per_client=False, fmp_budget=None, track=None):
         self.settings = settings
         self.analyzer = analyzer or TickerAnalyzer(settings, today=today)
         self.store = store if store is not None else self._default_store(settings, today)
@@ -260,6 +260,7 @@ class JobManager:
         # --public: analyses one client may have queued or running at once (None = no limit). Cached
         # tickers, polls and joining a ticker someone else is already analysing are never limited.
         self.max_per_client = max_per_client
+        self.track = track  # ui.track.TrackRecord: one valuation per ticker per week, for the track record (or None)
         self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None: lookups, Yahoo 429s and AI overviews
         self.workers = max(1, int(workers))
         self.processes = processes          # analyse in child processes (ui/workers.py)
@@ -976,6 +977,11 @@ class JobManager:
                     result["cacheable"] = False
                 if job.status in ("done", "nodata") and result.get("cacheable", True):  # errors never cached
                     self.store.put(job.sym, result)
+                if job.status == "done" and self.track is not None:
+                    try:
+                        self.track.record(job.sym, result)
+                    except Exception as e:  # the track record must never fail a lookup
+                        sys.stderr.write(f"⚠️  track record: {type(e).__name__}: {e}\n")
                 if throttled and job.status == "error":
                     job.error = "Yahoo Finance is rate-limiting this server — try again in a few minutes"
             job.stage = None

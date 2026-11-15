@@ -551,8 +551,12 @@ def make_handler(app):
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
             parts = rest.split("/")
             sym = parts[0].strip().upper()
-            if not TICKER_RE.match(sym) or parts[1:] not in ([], ["ai"], ["ai", "stream"], ["deepdive"]):
+            if not TICKER_RE.match(sym) or parts[1:] not in ([], ["ai"], ["ai", "stream"], ["deepdive"], ["track"]):
                 return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid ticker symbol")
+            if parts[1:] == ["track"]:  # past weekly valuations (ui/track.py); never starts an analysis
+                if app.jobs.track is None:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "no track record on this server")
+                return self.send_json(app.jobs.track.report(sym, current=app.jobs.lookup(sym)))
             if parts[1:] == ["deepdive"]:
                 dd = app.jobs.deep_dive(sym)
                 if dd is None:
@@ -831,6 +835,7 @@ def build_app(settings, with_search=True, with_ai=True):
     if with_search:
         try:
             from ui.jobs import JobManager
+            from ui.track import TrackRecord
             workers = settings.analysis_workers(with_ai=llm is not None)
             fmp = None
             if settings.public and settings.enrich_enabled:
@@ -843,7 +848,8 @@ def build_app(settings, with_search=True, with_ai=True):
                               max_per_client=settings.visitor_analyses if settings.public else None,  # --public: per visitor
                               stats=stats, gemini=gemini, cache_llm=cache_llm,
                               # --public: ↻ Refresh once a day per visitor and ticker, while the FMP budget lasts
-                              refresh_once_per_client=settings.public, fmp_budget=fmp)
+                              refresh_once_per_client=settings.public, fmp_budget=fmp,
+                              track=TrackRecord(os.path.join(settings.cache_dir, "track_record.sqlite3")))
         except ImportError:
             jobs = None
     if jobs is None:

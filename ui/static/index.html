@@ -22,6 +22,7 @@
   <script src="/static/socials.js" defer></script>
   <script src="/static/valuation.js" defer></script>
   <script src="/static/popular.js" defer></script>
+  <script src="/static/track.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -173,6 +174,18 @@
     <span>The Lynch Pin · GARP screener</span>
     <span class="muted">Local network only</span>
   </footer>
+
+  <dialog id="track" aria-labelledby="track-title">
+    <div class="track-head">
+      <div>
+        <h2 id="track-title">Track record</h2>
+        <p class="muted small" id="track-sub" role="status"></p>
+      </div>
+      <button type="button" class="lightbox-close" id="track-close" aria-label="Close track record">×</button>
+    </div>
+    <div class="track-body" id="track-body" tabindex="0" aria-label="Past valuations, newest first"></div>
+    <p class="track-note">One valuation a week: the first analysis of each week. ROI is the 5-year annualised projection made that day. Not financial advice.</p>
+  </dialog>
 
   <dialog id="lightbox" aria-label="Chart preview">
     <button class="lightbox-close" id="lightbox-close" aria-label="Close preview">×</button>
