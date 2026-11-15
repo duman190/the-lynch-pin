@@ -115,6 +115,7 @@ class PortalApp:
             scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
         self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
         self.cards = cards.CardCache()  # link preview images (ui/cards.py)
+        self._popular = None  # (computed at, /api/popular's answer)
         if names is None:
             from ui.names import NameIndex
             names = NameIndex(self.settings.cache_dir)  # loads on main()'s start() or the first suggestion
@@ -139,13 +140,33 @@ class PortalApp:
     def public(self):
         return self.settings.public
 
+    POPULAR_TTL = 300  # seconds the "Most wanted" lists are reused: they move slowly, and every visitor reads them
+
+    def popular(self):
+        """/api/popular: the most looked-up tickers this week and this month (ui/stats.py), with company names
+        (today's analysis, else the SEC's list). Recomputed at most every ``POPULAR_TTL`` seconds."""
+        if self.stats is None:
+            return {"enabled": False}
+        hit = self._popular
+        if hit is not None and time.time() - hit[0] < self.POPULAR_TTL:
+            return hit[1]
+        out = self.stats.popular(n=10)
+        for window in out.values():
+            for row in window["top"]:
+                entry = self.jobs.lookup(row["ticker"]) if self.jobs is not None else None
+                row["name"] = (entry or {}).get("name") or self.names.name(row["ticker"])
+        out = {"enabled": True, **out}
+        self._popular = (time.time(), out)
+        return out
+
     def health(self):
         out = {"ok": True, "uptime_s": round(time.time() - self.started, 1), "lan": self.settings.lan,
                "benchmark": self.settings.benchmark, "verbose": self.settings.verbose,
                "features": {"search": self.jobs is not None, "ai": self.llm is not None, "scans": True,
                             "edge": bool(self.settings.edge),
                             "refresh": self.jobs is not None and self.jobs.allow_refresh,
-                            "valuation": self.valuation is not None, "tv": self.tv is not None}}
+                            "valuation": self.valuation is not None, "tv": self.tv is not None,
+                            "popular": self.stats is not None}}
         if self.llm is not None:
             out["ai"] = self.llm.status(block=False)  # never block the page on the LLM probe
             if self.jobs is not None and self.jobs.gemini is not None:
@@ -497,6 +518,9 @@ def make_handler(app):
                 if not img:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
                 return self.send_file(img, "public, max-age=86400")
+            if path == "/api/popular":
+                return self._send(HTTPStatus.OK, to_json(app.popular()), "application/json; charset=utf-8",
+                                  cache="public, max-age=300")
             if path == "/api/valuation":
                 return self.send_json(app.valuation.snapshot() if app.valuation is not None else {"enabled": False})
             if path.startswith("/valuation/"):  # URLs carry ?v=<chart mtime>: a redrawn chart gets a new URL

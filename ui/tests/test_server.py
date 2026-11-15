@@ -73,7 +73,7 @@ def test_health(server):
     h = json.loads(body)
     assert h["ok"] is True
     assert h["features"] == {"search": False, "ai": False, "refresh": False, "scans": True, "edge": True,
-                             "valuation": False, "tv": False}
+                             "valuation": False, "tv": False, "popular": False}
     assert r.getheader("Cache-Control") == "no-store"
 
 

@@ -38,7 +38,7 @@ _FILLER = {"inc", "incorporated", "corp", "corporation", "co", "company", "compa
            "llc", "lp", "the", "holdings", "holding", "group", "sa", "nv", "ag", "se", "class", "com", "de", "del"}
 _KEEP_UPPER = {"LLC", "LP", "PLC", "NV", "SA", "AG", "SE", "ADR", "REIT", "ETF", "II", "III", "IV", "USA", "US",
                "AI", "IBM", "HP", "ASML", "AMD", "SPDR", "CVS", "UPS", "DBA", "NXP", "RTX", "AES", "PPG", "CSX",
-               "JPMORGAN", "TJX", "PG&E", "AT&T", "BJ'S", "MSCI", "KLA", "SBA", "CBRE", "HCA", "IQVIA", "CME"}
+               "JPMORGAN", "NVIDIA", "TJX", "PG&E", "AT&T", "BJ'S", "MSCI", "KLA", "SBA", "CBRE", "HCA", "IQVIA", "CME"}
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -144,6 +144,11 @@ class NameIndex:
     @property
     def size(self):
         return len(self._entries)
+
+    def name(self, ticker):
+        """The SEC's (prettified) name for a listed ticker, or None. Never starts a download."""
+        e = self._tickers.get(ticker)
+        return e[2] if e else None
 
     # ── search ───────────────────────────────────────────────────────────────
     def search(self, query, limit=LIMIT, cached=None):

@@ -172,6 +172,7 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 body:not([data-view="home"]) .hero,
 body:not([data-view="home"]) #valuation,
 body:not([data-view="home"]) #scans,
+body:not([data-view="home"]) #popular,
 body:not([data-view="home"]) #socials,
 body:not([data-view="ticker"]) #result,
 body:not([data-view="ticker"]) #deepdive,
@@ -219,6 +220,33 @@ body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
   margin: 0; color: var(--text); font: italic 1.05rem/1.6 Georgia, "Times New Roman", serif; text-wrap: pretty;
 }
 .val-quote figcaption { margin-top: 8px; text-align: right; color: var(--sky); font: 800 .9rem var(--sans); letter-spacing: .04em; }
+
+/* ── Most wanted: the tickers visitors looked up most this week and this month (/api/popular) ── */
+.popular { display: grid; gap: 12px; min-width: 0; }
+.pop-panel {
+  margin: 0; padding: 12px 14px; border-radius: 14px; border: 1px solid rgba(255,255,255,.06); background: #121212;
+}
+.pop-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; counter-reset: pop; }
+.pop-row {
+  display: grid; grid-template-columns: 1.6em 4.6em minmax(0, 1fr) 4.4em; gap: 10px; align-items: center;
+  padding: 6px 6px; border-radius: 10px; color: inherit; text-decoration: none;
+}
+.pop-row:hover, .pop-row:focus-visible { background: rgba(93,156,236,.10); outline: none; }
+.pop-row:focus-visible { box-shadow: 0 0 0 2px var(--sky); }
+.pop-rank { color: var(--dim); font: 700 .78rem var(--mono); text-align: right; }
+.pop-ticker { color: var(--white); font: 800 .95rem var(--mono); white-space: nowrap; }
+.pop-main { display: grid; gap: 4px; min-width: 0; }
+.pop-name { color: var(--dim); font-size: .74rem; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pop-track { height: 12px; position: relative; }
+.pop-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; min-width: 3px; border-radius: 0 5px 5px 0;
+  background: linear-gradient(90deg, rgba(93,156,236,.75), var(--sky)); box-shadow: 0 0 10px var(--sky-glow);
+}
+.pop-row:first-child .pop-rank { color: var(--amber); }
+.pop-row:hover .pop-fill { filter: brightness(1.15); }
+.pop-val { color: var(--white); font: 700 .85rem var(--mono); text-align: right; white-space: nowrap; }
+.pop-val small { display: block; color: var(--dim); font: 600 .68rem var(--mono); }
+.pop-empty { display: grid; place-content: center; min-height: 12em; color: var(--muted); text-align: center; }
 
 /* ── Latest scans: iOS-style widget stack ────────────────────────────────── */
 .scans { display: grid; gap: 12px; min-width: 0; }
@@ -576,6 +604,8 @@ dialog#lightbox img { width: 100%; height: auto; }
   .scans-nav { display: none; }  /* swipe on phones */
   .socials-grid { grid-template-columns: 1fr; }
   .val-grid { grid-template-columns: 1fr; }
+  .pop-panel { padding: 8px 6px; }
+  .pop-row { grid-template-columns: 1.4em 4.2em minmax(0, 1fr) 4em; gap: 8px; }
   .val-card { padding: 10px 10px 12px; border-radius: 22px; }
   .val-quote { padding: 14px 16px; }
   .val-quote p { font-size: .98rem; }

@@ -227,5 +227,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (window.LynchScans) window.LynchScans.init(state);
   if (window.LynchSocials) window.LynchSocials.init();
   if (window.LynchValuation) window.LynchValuation.init();
+  if (window.LynchPopular) window.LynchPopular.init();
   setInterval(refreshHealth, 30000);
 });

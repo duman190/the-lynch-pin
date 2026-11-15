@@ -278,6 +278,28 @@ class StatsRecorder:
             db.close()
         return [t for (t,) in rows]
 
+    def popular(self, n=10, windows=(("week", 7), ("month", 30)), now=None):
+        """The portal's "Most wanted" section: for each (name, days) window, the ``n`` tickers visitors looked
+        up most (errors left out, like ``top_tickers``; the nightly pre-cache is never a query), with each one's
+        share of that window's lookups. {name: {"days", "total", "top": [{ticker, n, pct}]}}."""
+        now = self._clock() if now is None else now
+        db = self._connect()
+        try:
+            out = {}
+            for name, days in windows:
+                days = min(int(days), self.retention_days)
+                since = now - days * 86400
+                (total,) = db.execute("SELECT COUNT(*) FROM queries WHERE ts >= ? AND status IN ('done', 'nodata')",
+                                      (since,)).fetchone()
+                rows = db.execute("SELECT ticker, COUNT(*) FROM queries WHERE ts >= ? AND status IN ('done', 'nodata') "
+                                  "GROUP BY ticker ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT ?",
+                                  (since, max(0, int(n)))).fetchall()
+                out[name] = {"days": days, "total": total,
+                             "top": [{"ticker": t, "n": c, "pct": round(100 * c / total, 1)} for t, c in rows]}
+            return out
+        finally:
+            db.close()
+
     def summary(self, days=None, now=None):
         """Everything the stats page draws, for the last ``days`` days (at most the retention window)."""
         days = self.retention_days if days is None else min(max(1, int(days)), self.retention_days)

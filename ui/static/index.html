@@ -21,6 +21,7 @@
   <script src="/static/scans.js" defer></script>
   <script src="/static/socials.js" defer></script>
   <script src="/static/valuation.js" defer></script>
+  <script src="/static/popular.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -90,6 +91,11 @@
       <div class="scan-tabs" id="scan-tabs" aria-label="Choose a scan by day"></div>
       <div class="scan-track" id="scan-track" role="region" aria-roledescription="carousel" aria-label="Daily scans, oldest to newest" tabindex="0"></div>
       <div class="scan-dots" id="scan-dots" aria-hidden="true"></div>
+    </section>
+
+    <section class="popular" id="popular" hidden aria-labelledby="popular-title">
+      <h2 id="popular-title">Most Wanted</h2>
+      <div class="val-grid" id="pop-grid"></div>
     </section>
 
     <section class="socials" id="socials" aria-labelledby="socials-title">
