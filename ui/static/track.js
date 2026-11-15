@@ -33,7 +33,7 @@
     const cur = d.current && d.current.currency;
     const head = el("thead", {}, el("tr", {},
       el("th", { scope: "col" }, "Date"), el("th", { scope: "col" }, "Price"),
-      el("th", { scope: "col", title: "The 5-year EPS growth forecast behind that day's PEG" }, "5Y growth"), el("th", { scope: "col" }, "PEG"),
+      el("th", { scope: "col", title: "The 5-year EPS growth forecast behind that day's PEG" }, "Fwd 5Y growth"), el("th", { scope: "col" }, "PEG"),
       el("th", { scope: "col" }, "Bear / Base / Bull ROI"), el("th", { scope: "col" }, "Since then")));
     const body = el("tbody", {}, d.rows.map((r) => el("tr", {},
       el("th", { scope: "row" }, el("span", { class: "d-long" }, day(r.date)), el("span", { class: "d-short" }, day(r.date, true))),
