@@ -567,6 +567,7 @@ dialog#track .lightbox-close { position: static; float: none; margin: 0; flex: n
   font: 700 .72rem var(--sans); letter-spacing: .06em; text-transform: uppercase;
 }
 .track-table th:first-child, .track-table td:first-child { text-align: left; }
+.track-table th:nth-child(3), .track-table td:nth-child(3) { text-align: center; }  /* Fwd 5Y growth */
 .track-table tbody th { color: var(--white); font-weight: 700; }
 .track-table tbody tr:hover { background: rgba(93,156,236,.07); }
 .track-table .tr-unit { color: var(--dim); margin-left: 2px; }
