@@ -104,7 +104,7 @@ class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
     def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None, valuation=None,
-                 tv=None):
+                 tv=None, names=None):
         self.settings = settings or Settings()
         self.tv = tv  # ui.tradingview.TradingView: the per-ticker chart (None = off)
         self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None
@@ -115,6 +115,10 @@ class PortalApp:
             scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
         self.scans = scans  # ui.scans.ScanArchive: the "Latest scans" widget
         self.cards = cards.CardCache()  # link preview images (ui/cards.py)
+        if names is None:
+            from ui.names import NameIndex
+            names = NameIndex(self.settings.cache_dir)  # loads on main()'s start() or the first suggestion
+        self.names = names  # ui.names.NameIndex: company-name search for the search box
         if socials is None and self.settings.socials:
             from ui.socials import SocialFeed
             socials = SocialFeed(self.settings.cache_dir, self.settings.social_env_file,
@@ -462,6 +466,8 @@ def make_handler(app):
         def route(self, path, query):
             if path in ("/", "/index.html"):
                 return self.send_page("index.html", head=self.link_meta(query))
+            if path == "/api/suggest":
+                return self.route_suggest(query)
             if path.startswith("/card/"):
                 return self.route_card(path[len("/card/"):])
             if path == "/api/health":
@@ -634,6 +640,17 @@ def make_handler(app):
                     chunk = b"event: " + event.encode("ascii") + b"\ndata: " + to_json(data) + b"\n\n"
                 self.wfile.write(chunk)
                 self.wfile.flush()
+
+        def route_suggest(self, query):
+            """/api/suggest?q=micro → up to 8 {ticker, name, match, cached?}, best first (ui/names.py). A name
+            maps to its ticker; the page then looks the ticker up as usual, so today's cache answers it."""
+            if app.jobs is None:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+            q = (query.get("q") or [""])[0]
+            cached = lambda t: app.jobs.lookup(t)  # noqa: E731 (no side effects: a peek, never a lookup)
+            results = app.names.search(q, cached=cached) if len(q) <= 60 else []
+            self._send(HTTPStatus.OK, to_json({"q": q, "results": results, "names": app.names.size}),
+                       "application/json; charset=utf-8", cache="private, max-age=60")
 
         def link_meta(self, query):
             """The page's link preview tags (ui/cards.py): absolute URLs on the Host this request came to (the
@@ -1021,6 +1038,8 @@ def main(argv=None):
         print(f"📈 Trading view: up to {settings.tv_viewers or 'any number of'} viewers at once, "
               f"{settings.tv_yahoo_rpm or 'unlimited'} Yahoo requests a minute, {app.tv.fetch_workers} at a time; bars built "
               f"{'natively (ui/native)' if why is None else 'in Python (' + why + ')'}", flush=True)
+    if app.jobs is not None:
+        app.names.start()  # company names for the search box: the cached SEC list, refreshed weekly in the background
     precacher = None
     if app.jobs is not None and app.stats is not None and settings.precache:
         from ui.precache import Precacher

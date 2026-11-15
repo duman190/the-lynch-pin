@@ -800,11 +800,118 @@
     S.timer = setTimeout(() => poll(token, sym, false), delay);
   }
 
+  /* ── company-name suggestions (/api/suggest, ui/names.py) ──────────────────
+     A name always maps to a ticker, and the ticker is looked up as usual (go): one analysed today comes from
+     the day's cache (the suggestion says "⚡ cached"). Enter takes the highlighted suggestion, else the first. */
+  const SG = { results: [], q: "", active: -1, timer: null, seq: 0 };
+
+  function closeSuggest() {
+    const box = $("#suggest"), input = $("#q");
+    if (box) { box.hidden = true; box.replaceChildren(); }
+    SG.active = -1;
+    if (input) { input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); }
+  }
+
+  /** ``name`` with the first typed word it contains in bold. */
+  function highlight(name, q) {
+    const lower = name.toLowerCase();
+    for (const w of q.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).sort((a, b) => b.length - a.length)) {
+      const i = lower.indexOf(w);
+      if (i >= 0) return [name.slice(0, i), el("mark", { text: name.slice(i, i + w.length) }), name.slice(i + w.length)];
+    }
+    return [name];
+  }
+
+  function renderSuggest() {
+    const box = $("#suggest"), input = $("#q");
+    if (!box || !SG.results.length || document.activeElement !== input || input.value.trim() !== SG.q) {
+      closeSuggest();
+      return;
+    }
+    put(box, SG.results.map((r, i) => el("li", {
+      id: `sg-${i}`, role: "option", "aria-selected": i === SG.active ? "true" : "false",
+      onpointerdown: (e) => { e.preventDefault(); pick(i); },  // before the input's blur closes the list
+    },
+    el("span", { class: "s-ticker", text: r.ticker }),
+    r.name ? el("span", { class: "s-name" }, highlight(r.name, SG.q))
+      : el("span", { class: "s-name s-plain", text: "Look up this ticker" }),
+    r.cached ? el("span", { class: "s-tag", text: "⚡ cached", title: "Analysed today: opens from the cache" }) : null)));
+    box.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    if (SG.active >= 0) {
+      input.setAttribute("aria-activedescendant", `sg-${SG.active}`);
+      const li = $(`#sg-${SG.active}`);
+      if (li) li.scrollIntoView({ block: "nearest" });
+    } else input.removeAttribute("aria-activedescendant");
+  }
+
+  async function fetchSuggest(q) {
+    const seq = ++SG.seq;
+    try {
+      const d = await getJSON(`/api/suggest?q=${encodeURIComponent(q)}`);
+      if (seq !== SG.seq) return null;  // the box changed meanwhile: a newer request answers it
+      SG.q = q;
+      SG.results = Array.isArray(d.results) ? d.results.filter((r) => r && TICKER_RE.test(r.ticker)) : [];
+      SG.active = -1;
+      renderSuggest();
+      return SG.results;
+    } catch (_) {
+      return null;  // offline / no search: the box still takes tickers
+    }
+  }
+
+  function onSuggestInput(e) {
+    e.target.setCustomValidity("");
+    const q = e.target.value.trim();
+    clearTimeout(SG.timer);
+    if (!q) {
+      SG.seq += 1;
+      SG.results = [];
+      SG.q = "";
+      closeSuggest();
+      return;
+    }
+    SG.timer = setTimeout(() => fetchSuggest(q), 120);
+  }
+
+  function onSuggestKey(e) {
+    const n = $("#suggest").hidden ? 0 : SG.results.length;
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && n) {
+      e.preventDefault();
+      SG.active = e.key === "ArrowDown" ? (SG.active + 1) % n : (SG.active - 1 + n) % n;
+      renderSuggest();
+    } else if (e.key === "Escape" && n) {
+      e.preventDefault();
+      closeSuggest();
+    }
+  }
+
+  function pick(i) {
+    const r = SG.results[i];
+    if (!r) return;
+    closeSuggest();
+    go(r.ticker);
+  }
+
+  /** Enter / Analyze: the highlighted suggestion, else the best match for what was typed, else a ticker. */
+  async function submitSearch() {
+    const q = $("#q").value.trim();
+    if (!q) return;
+    if (SG.active >= 0 && SG.q === q) { pick(SG.active); return; }
+    clearTimeout(SG.timer);
+    const results = SG.q === q ? SG.results : await fetchSuggest(q);
+    closeSuggest();
+    if ($("#q").value.trim() !== q) return;  // typed on while the match was fetched
+    if (results && results.length) go(results[0].ticker);
+    else go(q);
+  }
+
   function go(raw, refresh = false, push = true) {
     const sym = String(raw || "").trim().toUpperCase().replace(/^\$/, "");
     const input = $("#q");
+    closeSuggest();
     if (!TICKER_RE.test(sym)) {
-      input.setCustomValidity("Enter a ticker symbol like MSFT or BRK.B");
+      input.setCustomValidity("No company or ticker matches that: try a ticker like MSFT or a name like Microsoft");
       input.reportValidity();
       return;
     }
@@ -895,8 +1002,11 @@
       if (!appState.health || !appState.health.features.search) return;
       initDeepDive();
       renderRecent();
-      $("#search-form").addEventListener("submit", (e) => { e.preventDefault(); go($("#q").value); });
-      $("#q").addEventListener("input", (e) => e.target.setCustomValidity(""));
+      $("#search-form").addEventListener("submit", (e) => { e.preventDefault(); submitSearch(); });
+      $("#q").addEventListener("input", onSuggestInput);
+      $("#q").addEventListener("keydown", onSuggestKey);
+      $("#q").addEventListener("focus", renderSuggest);
+      $("#q").addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== $("#q")) closeSuggest(); }, 150));
       window.addEventListener("popstate", fromURL);
       document.addEventListener("keydown", (e) => {
         if (e.key === "/" && document.activeElement !== $("#q") && !e.ctrlKey && !e.metaKey) { e.preventDefault(); $("#q").focus(); }
@@ -904,6 +1014,6 @@
       fromURL();
     },
     go,
-    _test: { applySnapshot, go },
+    _test: { applySnapshot, go, submitSearch },
   };
 })();
