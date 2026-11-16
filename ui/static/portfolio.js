@@ -318,6 +318,65 @@
           : el("td", { colspan: 4, class: "muted" }, p.reason || "no GARP data"))))));
   }
 
+  /* ── the mini donut beside the weighted PEG (the ticker card's bell curve, for a portfolio) ─────── */
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  /** The weights as a ring (the X-ray donut's blues, darker down the list; under 3% grouped as "Other"), the larger
+      slices named outside it, the weighted PEG's deviation from its historical mean in the middle. */
+  function donutSVG(positions, dev) {
+    const W = 260, H = 124, cx = W / 2, cy = 62, R = 56, r = 37;
+    let slices = positions.filter((p) => isNum(p.weight) && p.weight > 0).map((p) => ({ label: p.ticker, w: p.weight }));
+    const small = slices.filter((s) => s.w < 0.03);
+    if (small.length > 1) {
+      slices = slices.filter((s) => s.w >= 0.03).concat([{ label: `Other (${small.length})`, w: small.reduce((t, s) => t + s.w, 0) }]);
+    }
+    const total = slices.reduce((t, s) => t + s.w, 0) || 1;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("class", "mini-donut");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `Portfolio weights: ${slices.map((s) => `${s.label} ${(s.w / total * 100).toFixed(1)}%`).join(", ")}. `
+      + (isNum(dev) ? `Weighted PEG ${signed(dev, 2, "")} standard deviations from its historical mean.` : ""));
+    const mk = (tag, attrs, parent = svg) => { const n = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); parent.append(n); return n; };
+    const pt = (rad, a) => [cx + rad * Math.cos(a), cy + rad * Math.sin(a)];
+    mk("circle", { cx, cy, r: (R + r) / 2, class: "md-glow" });
+    let a0 = -Math.PI / 2;
+    const n = slices.length;
+    const labels = [];
+    slices.forEach((s, i) => {
+      const frac = s.w / total;
+      const a1 = a0 + frac * 2 * Math.PI;
+      const path = frac >= 0.9999
+        ? `M ${cx} ${cy - R} A ${R} ${R} 0 1 1 ${cx - 0.01} ${cy - R} L ${cx - 0.01} ${cy - r} A ${r} ${r} 0 1 0 ${cx} ${cy - r} Z`
+        : (() => {
+          const big = a1 - a0 > Math.PI ? 1 : 0;
+          const [x0, y0] = pt(R, a0), [x1, y1] = pt(R, a1), [x2, y2] = pt(r, a1), [x3, y3] = pt(r, a0);
+          return `M ${x0} ${y0} A ${R} ${R} 0 ${big} 1 ${x1} ${y1} L ${x2} ${y2} A ${r} ${r} 0 ${big} 0 ${x3} ${y3} Z`;
+        })();
+      const seg = mk("path", { d: path, class: "md-slice", "fill-opacity": (0.95 - (n > 1 ? 0.55 * i / (n - 1) : 0)).toFixed(2) });
+      mk("title", {}, seg).textContent = `${s.label} ${(frac * 100).toFixed(1)}%`;
+      if (frac >= 0.08 && labels.length < 6) {
+        const mid = (a0 + a1) / 2;
+        const [x, y] = pt(R + 9, mid);
+        labels.push({ x, y, right: Math.cos(mid) >= 0, text: `${s.label} ${Math.round(frac * 100)}%` });
+      }
+      a0 = a1;
+    });
+    // labels: one column each side of the ring, pushed apart where neighbours would overlap
+    for (const right of [true, false]) {
+      const side = labels.filter((l) => l.right === right).sort((p, q) => p.y - q.y);
+      for (let i = 1; i < side.length; i++) side[i].y = Math.max(side[i].y, side[i - 1].y + 14);
+      for (let i = side.length - 2; i >= 0; i--) side[i].y = Math.min(side[i].y, side[i + 1].y - 14);
+      for (const l of side) {
+        const t = mk("text", { x: l.x + (right ? 2 : -2), y: Math.max(10, Math.min(H - 4, l.y + 4)), class: "md-lab", "text-anchor": right ? "start" : "end" });
+        t.textContent = l.text;
+      }
+    }
+    const t = mk("text", { x: cx, y: cy + 2, class: `md-dev ${isNum(dev) ? (dev > 0 ? "red" : "green") : ""}`.trim(), "text-anchor": "middle" });
+    t.textContent = isNum(dev) ? signed(dev, 2, "") : "N/A";
+    mk("text", { x: cx, y: cy + 16, class: "md-sd", "text-anchor": "middle" }).textContent = "SD";
+    return svg;
+  }
+
   function renderResult(r, token) {
     const m = r.metrics || {};
     const cov = isNum(m.Coverage) ? `${Math.round(m.Coverage * 100)}% · ${m.Positions} of ${m.TotalPositions}` : "N/A";
@@ -327,8 +386,9 @@
         el("div", { class: "peg-hero" },
           el("div", {},
             el("div", { class: "peg-num", text: fx(m.PEG, 2) }),
-            el("div", { class: "peg-sub muted", text: `weighted PEG · median ${fx(m.MedianPEG, 2)} · hist. mean ${fx(m.Mean, 2)}` })),
-          el("span", { class: `pf-dev ${isNum(m.Dev_SD) ? (m.Dev_SD > 0 ? "red" : "green") : "muted"}` }, isNum(m.Dev_SD) ? `${signed(m.Dev_SD, 2, "")} SD` : "N/A")),
+            el("div", { class: "peg-sub muted", text: "weighted PEG" }),
+            el("div", { class: "peg-sub muted", text: `median ${fx(m.MedianPEG, 2)} · hist. mean ${fx(m.Mean, 2)}` })),
+          donutSVG(r.positions || [], m.Dev_SD)),
         statTable([
           ["PE", fx(m.PE)], ["Fwd PE", fx(m.FwdPE)], ["2Y Fwd PE", fx(m["2YFwd"])],
           ["5Y Growth (fwd)", fx(m.Growth, 1, "%")],

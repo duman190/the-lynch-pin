@@ -289,7 +289,16 @@ body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
 .pf-card .sub-h { margin: 0; }
 .pf-card .mono-table dt { white-space: nowrap; }
 .pf-ai { grid-column: 1 / -1; }
-.pf-dev { white-space: nowrap; font: 800 1rem var(--sans); padding: 4px 10px; border-radius: 8px; background: #121212; border: 1px solid var(--border); }
+.pf-card .peg-hero { grid-template-columns: auto minmax(170px, 1fr); }
+.pf-card .peg-sub { margin-top: 2px; }
+.mini-donut { width: 100%; height: auto; max-height: 150px; overflow: visible; }
+.md-glow { fill: none; stroke: rgba(93,156,236,.18); stroke-width: 36; }
+.md-slice { fill: #5D9CEC; stroke: #26262A; stroke-width: 2; }
+.md-lab { fill: var(--muted); font: 600 12px var(--mono); }
+.md-dev { fill: var(--white); font: 800 19px var(--mono); }
+.md-dev.green { fill: var(--green); }
+.md-dev.red { fill: var(--red); }
+.md-sd { fill: var(--dim); font: 700 10px var(--sans); letter-spacing: .08em; }
 .pf-chart { justify-self: start; }
 .pf-table-wrap { overflow-x: auto; }
 .pf-table { width: 100%; border-collapse: collapse; font: 700 .9rem/1.4 var(--mono); }
