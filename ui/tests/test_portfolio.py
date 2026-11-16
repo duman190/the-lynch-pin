@@ -119,6 +119,8 @@ def test_portfolio_prompt_is_the_xrays_verdict():
     assert PORTFOLIO_VERDICT_TASK in p and "  Weighted PE: 30.0" in p
     assert "- MSFT [60.0% of portfolio]: PE 28.7" in p and "- AAPL [40.0% of portfolio]:\nAAPL brief" in p
     assert "SECTION 2" not in p  # no per-ticker posts: each position has its own AI overview
+    assert "weighted 5Y growth forecast (fwd) against the weighted 5Y EPS trend (trl)" in p  # as the ticker's
+    assert "(trailing 5Y EPS trend 20.0%/yr)" in p  # each position's trend, as in the scan's dataset
     # the scan's thread asks for the same Section 1
     assert PORTFOLIO_VERDICT_TASK in LynchPinResearcher.build_prompt(rows, portfolio_summary="x")
 
@@ -144,9 +146,10 @@ def test_rollup_matches_engine_and_uses_the_cache(settings, jm):
     assert [p["weight"] for p in r["positions"]] == pytest.approx(list(w.values()))
     rows = [dict(ROWS[s], Weight=w[s]) for s in w]
     expect = weighted_metrics(rows, w, {s: fakes.INCOME for s in w}, {s: fakes.CREDIT for s in w})
-    for k in ("PE", "FwdPE", "PEG", "Dev_SD", "Base", "Bull", "Bear"):
+    for k in ("PE", "FwdPE", "PEG", "Dev_SD", "Growth", "Trend", "Base", "Bull", "Bear"):
         assert r["metrics"][k] == pytest.approx(expect[k]), k
     assert r["metrics"]["IncomeGrade"] == "A+" and r["metrics"]["CreditRating"] == "AAA"
+    assert r["metrics"]["Trend"] == pytest.approx(20.0)  # every fake row's trailing 5Y EPS trend
     assert calls[0][0] == pytest.approx(w) and calls[0][2] == BENCH
     assert r["chart"]["url"].startswith(f"/portfolio/{r['key']}.png?v=")
     assert pf.plot_path(r["key"]) and pf.plot_path("../../etc") is None
@@ -342,7 +345,7 @@ def test_api_without_search(tmp_path):
 
 # ── the donut ───────────────────────────────────────────────────────────────
 WEIGHTS = {"MSFT": 0.42, "AAPL": 0.25, "NVDA": 0.15, "GOOGL": 0.10, "KO": 0.03, "PEP": 0.025, "T": 0.025}
-WM = {"PE": 28.1, "FwdPE": 24.3, "2YFwd": 21.0, "PEG": 1.42, "MedianPEG": 1.38, "Dev_SD": 0.35, "Growth": 15.2,
+WM = {"PE": 28.1, "FwdPE": 24.3, "2YFwd": 21.0, "PEG": 1.42, "MedianPEG": 1.38, "Dev_SD": 0.35, "Growth": 15.2, "Trend": 18.3,
       "Bull": 18.0, "Base": 12.4, "Bear": 4.2, "IncomeGrade": "A", "CreditRating": "AA"}
 
 
@@ -356,6 +359,8 @@ def test_donut_text_is_the_visualizers():
     assert [s["text"] for s in d["slices"]] == ["MSFT\n42.0%", "AAPL\n25.0%", "NVDA\n15.0%", "GOOGL\n10.0%",
                                                 "Other (3)\n8.0%"]
     assert d["badge_red"] is True and not any(s["small"] for s in d["slices"])
+    assert "- W. 5Y Growth:   15.2%\n- W. 5Y Trend:    18.3%\n" in d["stats_box"]  # fwd and trailing, as a ticker's
+    assert {len(line) for line in d["stats_box"].split("\n")} == {23}
     lone = fastchart.donut_text({"MSFT": 0.98, "KO": 0.02}, dict(WM, Dev_SD=-0.4), BENCH)
     assert lone["slices"][1] == {"weight": 0.02, "text": "KO 2.0%", "small": True} and lone["badge_red"] is False
 

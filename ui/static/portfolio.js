@@ -331,7 +331,8 @@
           el("span", { class: `pf-dev ${isNum(m.Dev_SD) ? (m.Dev_SD > 0 ? "red" : "green") : "muted"}` }, isNum(m.Dev_SD) ? `${signed(m.Dev_SD, 2, "")} SD` : "N/A")),
         statTable([
           ["PE", fx(m.PE)], ["Fwd PE", fx(m.FwdPE)], ["2Y Fwd PE", fx(m["2YFwd"])],
-          ["5Y Growth", fx(m.Growth, 1, "%")],
+          ["5Y Growth (fwd)", fx(m.Growth, 1, "%")],
+          ["5Y Trend (trl)", fx(m.Trend, 1, "%")],
           ["Bull ROI", signed(m.Bull), isNum(m.Bull) && m.Bull < 0 ? "red" : null],
           ["Base ROI", signed(m.Base), isNum(m.Base) && m.Base < 0 ? "red" : null],
           ["Bear ROI", signed(m.Bear), isNum(m.Bear) && m.Bear < 0 ? "red" : null],

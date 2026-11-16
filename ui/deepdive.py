@@ -320,7 +320,8 @@ Work through the steps in order and don't write the verdict before step 7. The l
 result: give them the deepest work, and size your effort on each position by its weight.
 
 1. Snapshot. Read the X-ray below. Note what the weighted numbers imply (cheap or expensive against history, what \
-growth the price assumes, quality, how concentrated the portfolio is) and which positions drive them. The \
+growth the price assumes and how it compares with the weighted trailing EPS trend, quality, how concentrated the \
+portfolio is) and which positions drive them. The \
 weighted PE ratios are harmonic means (total value / total earnings), the rest are weighted averages. Positions \
 without GARP data still count for their weight in the allocation.
 2. Each position, largest first. Read the last two quarterly earnings releases and call transcripts (and the \
@@ -371,7 +372,9 @@ PORTFOLIO_NOTES = """- Weights = each position's market value / the portfolio's 
 analysis price). No dollar amounts are given.
 - Weighted PE, Fwd PE and 2Y Fwd PE are harmonic weighted means (= total value / total earnings, the way index \
 providers compute a fund's PE); unprofitable positions are left out and the other weights renormalised. PEG, the \
-historical mean PEG, its SD and Dev (SD), 5Y growth and the Bull / Base / Bear ROIs are arithmetic weighted means. \
+historical mean PEG, its SD and Dev (SD), 5Y growth (fwd: the consensus EPS forecast), 5Y trend (trl: the trailing \
+EPS trend of up to 5 years, over the positions that have one) and the Bull / Base / Bear ROIs are arithmetic weighted \
+means. \
 Median PEG is weight-aware. Income grade and credit rating are weighted ordinal averages rounded to the nearest \
 grade. Coverage is the share of the portfolio's weight that has GARP data."""
 

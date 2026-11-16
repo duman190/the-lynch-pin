@@ -3084,6 +3084,19 @@ class TestPortfolio(unittest.TestCase):
         self.assertAlmostEqual(wm['Coverage'], 1.0)
         self.assertEqual(wm['Positions'], 3)
 
+    def test_weighted_trend_is_trailing_and_skips_missing(self):
+        from engine.portfolio import format_weighted_summary, weighted_metrics
+        rows = [dict(self.ROWS[0], Trend='8.0%', TrendYears=5), dict(self.ROWS[1], Trend='20.0%', TrendYears=3),
+                dict(self.ROWS[2], Trend='N/A', TrendYears=None)]  # NVDA: no trend → left out, weights renormalised
+        wm = weighted_metrics(rows, {'AAPL': 0.5, 'MSFT': 0.25, 'NVDA': 0.25})
+        self.assertAlmostEqual(wm['Trend'], (0.5 * 8 + 0.25 * 20) / 0.75)
+        self.assertAlmostEqual(wm['Growth'], 0.5 * 10 + 0.25 * 15 + 0.25 * 40)  # the forward one is unchanged
+        text = format_weighted_summary(wm)
+        self.assertIn('Weighted 5Y Growth: 18.8% (fwd)', text)
+        self.assertIn('Weighted 5Y Trend:  12.0% (trl)', text)
+        self.assertIsNone(weighted_metrics(self.ROWS, {'AAPL': 1.0})['Trend'])  # rows from before the trend
+        self.assertIn('Weighted 5Y Trend:  N/A% (trl)', format_weighted_summary(weighted_metrics(self.ROWS, {'AAPL': 1.0})))
+
     def test_weighted_metrics_excludes_nonpositive_pe_and_uncovered_rows(self):
         from engine.portfolio import weighted_metrics
         rows = [dict(self.ROWS[0]), dict(self.ROWS[1])]

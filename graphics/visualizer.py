@@ -408,7 +408,8 @@ class LynchPinVisualizer:
             f"- W. 2YFwd PE: {fmt(wm.get('2YFwd'), '.1f'):>8}\n"
             f"- W. PEG:      {fmt(wm.get('PEG'), '.2f'):>8}\n"
             f"- Median PEG:  {fmt(wm.get('MedianPEG'), '.2f'):>8}\n"
-            f"- W. Growth:   {fmt(wm.get('Growth'), '.1f', '%'):>8}\n"
+            f"- W. 5Y Growth:{fmt(wm.get('Growth'), '.1f', '%'):>8}\n"  # forward: the consensus EPS estimate
+            f"- W. 5Y Trend: {fmt(wm.get('Trend'), '.1f', '%'):>8}\n"   # trailing: reported EPS
             f"- W. Bull ROI: {fmt(wm.get('Bull'), '.1f', '%'):>8}\n"
             f"- W. Base ROI: {fmt(wm.get('Base'), '.1f', '%'):>8}\n"
             f"- W. Bear ROI: {fmt(wm.get('Bear'), '.1f', '%'):>8}"

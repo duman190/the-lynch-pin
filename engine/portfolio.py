@@ -184,7 +184,9 @@ def weighted_metrics(rows, weights, grader_data=None, bs_data=None):
 
     Returns a dict:
         ``PE, FwdPE, 2YFwd`` (harmonic), ``PEG, Mean, Std, Dev_SD, Growth,
-        Bull, Base, Bear`` (arithmetic, growth/ROI in %), ``MedianPEG``,
+        Trend, Bull, Base, Bear`` (arithmetic, growth/trend/ROI in %; ``Growth`` is
+        the forward 5Y EPS estimate, ``Trend`` the trailing EPS trend of up to 5
+        years, over the positions that have one), ``MedianPEG``,
         ``IncomeGrade, IncomeScore, CreditRating, CreditScore``,
         ``Coverage`` (share of portfolio weight with valuation data),
         ``Positions`` (count of rows used).
@@ -211,6 +213,7 @@ def weighted_metrics(rows, weights, grader_data=None, bs_data=None):
         'Std': _weighted_mean([(w, position_peg_std(r)) for w, r in used]),
         'Dev_SD': _weighted_mean([(w, _pct(r.get('Dev_SD'))) for w, r in used]),
         'Growth': _weighted_mean([(w, _pct(r.get('5YGrowth'))) for w, r in used]),
+        'Trend': _weighted_mean([(w, _pct(r.get('Trend')) if r.get('TrendYears') else None) for w, r in used]),
         'Bull': _weighted_mean([(w, _pct(r.get('Bull'))) for w, r in used]),
         'Base': _weighted_mean([(w, _pct(r.get('Base'))) for w, r in used]),
         'Bear': _weighted_mean([(w, _pct(r.get('Bear'))) for w, r in used]),
@@ -230,7 +233,8 @@ def format_weighted_summary(wm):
         f"  Weighted PE:        {f(wm['PE'], '.1f')}\n"
         f"  Weighted Fwd PE:    {f(wm['FwdPE'], '.1f')}\n"
         f"  Weighted 2Y Fwd PE: {f(wm['2YFwd'], '.1f')}\n"
-        f"  Weighted 5Y Growth: {f(wm['Growth'], '.1f')}%\n"
+        f"  Weighted 5Y Growth: {f(wm['Growth'], '.1f')}% (fwd)\n"
+        f"  Weighted 5Y Trend:  {f(wm.get('Trend'), '.1f')}% (trl)\n"
         f"  Weighted PEG:       {f(wm['PEG'], '.2f')}  (median {f(wm['MedianPEG'], '.2f')})\n"
         f"  Weighted Mean PEG:  {f(wm['Mean'], '.2f')}  ± {f(wm['Std'], '.2f')} SD  → Dev {f(wm['Dev_SD'], '+.2f')} SD\n"
         f"  Weighted ROI:       Bull {f(wm['Bull'], '.1f')}% | Base {f(wm['Base'], '.1f')}% | Bear {f(wm['Bear'], '.1f')}%\n"
