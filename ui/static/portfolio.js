@@ -341,7 +341,10 @@
         r.chart
           ? el("button", { type: "button", class: "btn-primary btn-chart pf-chart",
               onclick: () => openLightbox(r.chart.preview, "Portfolio X-ray: market-value weight donut with the weighted PEG, weighted GARP metrics, quality and index returns", "portfolio_allocation.png", r.chart.url) }, "View chart")
-          : el("p", { class: "muted small" }, "The chart could not be drawn.")),
+          : el("p", { class: "muted small" }, "The chart could not be drawn."),
+        window.LynchBacktest ? el("button", { type: "button", class: "btn-ghost btn-track pf-backtest",
+          onclick: () => window.LynchBacktest.open(r.key, (r.positions || []).filter((p) => isNum(p.weight)).slice(0, 4).map((p) => "$" + p.ticker).join(" ") + ((r.positions || []).length > 4 ? " …" : "")) },
+          "5Y backtest") : null),
       el("section", { class: "widget pf-card", "aria-labelledby": "pf-pos-title" },
         el("h3", { class: "sub-h", id: "pf-pos-title" }, "Positions"),
         positionsTable(r.positions || [])),

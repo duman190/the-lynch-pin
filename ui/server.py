@@ -505,7 +505,7 @@ def make_handler(app):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
             if path.startswith("/api/tv/"):
                 return self.route_tv(path[len("/api/tv/"):], query)
-            if path in ("/api/portfolio", "/api/portfolio/ai", "/api/portfolio/deepdive"):
+            if path in ("/api/portfolio", "/api/portfolio/ai", "/api/portfolio/deepdive", "/api/portfolio/backtest"):
                 return self.route_portfolio(path, query)
             if path.startswith("/portfolio/"):
                 return self.route_portfolio_plot(path[len("/portfolio/"):])
@@ -601,18 +601,19 @@ def make_handler(app):
         def route_portfolio(self, path, query):
             """/api/portfolio?m=pct|amt&p=SYM:VALUE,... → the portfolio X-ray (ui/portfolio.py), ``running`` while its
             positions are analysed (the page polls with &poll=1); /api/portfolio/ai?k=KEY → its AI verdict with the
-            generation metrics; /api/portfolio/deepdive?k=KEY → its Portfolio Deep Dive Prompt."""
+            generation metrics; /api/portfolio/deepdive?k=KEY → its Portfolio Deep Dive Prompt;
+            /api/portfolio/backtest?k=KEY → its 5Y backtest against VOO / QQQ / SCHD / SMH / IGV (ui/backtest.py)."""
             pf = app.portfolio
             if pf is None:
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
             from ui.portfolio import KEY_RE, PortfolioError, parse_positions
-            if path.endswith(("/ai", "/deepdive")):
+            if path.endswith(("/ai", "/deepdive", "/backtest")):
                 key = query.get("k", [""])[0]
                 if not KEY_RE.match(key):
                     return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid portfolio key")
                 if path.endswith("/ai"):
                     return self.send_json(pf.request_ai(key))
-                dd = pf.deep_dive(key)
+                dd = pf.backtest(key) if path.endswith("/backtest") else pf.deep_dive(key)
                 if dd is None:
                     return self.send_error_json(HTTPStatus.NOT_FOUND, "analyze this portfolio first")
                 return self.send_json(dd)

@@ -24,6 +24,7 @@
   <script src="/static/popular.js" defer></script>
   <script src="/static/track.js" defer></script>
   <script src="/static/portfolio.js" defer></script>
+  <script src="/static/backtest.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -219,6 +220,17 @@
     <span>The Lynch Pin · GARP screener</span>
     <span class="muted">Local network only</span>
   </footer>
+
+  <dialog id="backtest" class="bt-dialog" aria-labelledby="bt-title">
+    <div class="track-head">
+      <div>
+        <h2 id="bt-title">5Y backtest</h2>
+        <p class="muted small" id="bt-sub" role="status"></p>
+      </div>
+      <button type="button" class="lightbox-close" id="bt-close" aria-label="Close the backtest">×</button>
+    </div>
+    <div class="bt-body" id="bt-body"></div>
+  </dialog>
 
   <dialog id="track" aria-labelledby="track-title">
     <div class="track-head">

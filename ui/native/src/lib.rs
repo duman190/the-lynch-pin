@@ -5,6 +5,7 @@
 //! The chart is laid out like matplotlib does it (layout.rs), rasterised with tiny-skia (NEON / SSE SIMD) in
 //! horizontal bands on several threads, and written as a 300-dpi PNG (bands deflated in parallel) plus a JPEG
 //! preview drawn at its own size on another thread.
+pub mod backtest;
 pub mod bars;
 pub mod donut;
 pub mod encode;
@@ -335,6 +336,42 @@ pub unsafe extern "C" fn lynch_bars_free(out: *mut BarsOut) {
 /// Version of the trading-view interface (``lynch_bars_*``); ui/tvdata.py checks it.
 #[no_mangle]
 pub extern "C" fn lynch_bars_abi() -> u32 {
+    1
+}
+
+/// C entry point of the portfolio backtest (backtest.rs): a request JSON (backtest::Request) → the result JSON in
+/// ``out.body``. Returns 0 on success; 2 when the series share too little history and 1 on any other failure, with
+/// the message in ``out.meta``. ``out`` must be given back to ``lynch_bars_free``.
+///
+/// # Safety
+/// ``req`` must point to ``req_len`` readable bytes, ``out`` to a writable BarsOut.
+#[no_mangle]
+pub unsafe extern "C" fn lynch_backtest_run(req: *const u8, req_len: usize, out: *mut BarsOut) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    let result = std::panic::catch_unwind(|| {
+        // SAFETY: guaranteed by the caller (see above).
+        let req = unsafe { std::slice::from_raw_parts(req, req_len) };
+        backtest::run_json(req)
+    });
+    let (code, body, meta) = match result {
+        Ok(Ok(b)) => (0, b, Vec::new()),
+        Ok(Err(backtest::BacktestError::NoData(m))) => (2, Vec::new(), m.into_bytes()),
+        Ok(Err(backtest::BacktestError::Failed(m))) => (1, Vec::new(), m.into_bytes()),
+        Err(_) => (1, Vec::new(), b"backtest panicked".to_vec()),
+    };
+    let (body, body_len) = leak(body);
+    let (gz, gz_len) = leak(Vec::new());
+    let (meta, meta_len) = leak(meta);
+    // SAFETY: ``out`` is writable (see above).
+    unsafe { *out = BarsOut { body, body_len, gz, gz_len, meta, meta_len } };
+    code
+}
+
+/// Version of the portfolio backtest interface (``lynch_backtest_run``); ui/backtest.py checks it.
+#[no_mangle]
+pub extern "C" fn lynch_backtest_abi() -> u32 {
     1
 }
 

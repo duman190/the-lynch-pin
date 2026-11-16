@@ -154,7 +154,7 @@ class PortfolioAnalyzer:
     ``plot`` draws the donut: ``plot(weights, wm, benchmark_returns, out_dir, filename) → (path, timings)``."""
 
     def __init__(self, settings, jobs, llm=None, gemini=None, benchmarks=None, plot=None, today=_dt.date.today,
-                 clock=time.monotonic):
+                 clock=time.monotonic, backtester=None):
         self.settings, self.jobs, self.llm, self.gemini = settings, jobs, llm, gemini
         self._benchmarks_fn = benchmarks or _benchmarks
         if plot is None:
@@ -167,6 +167,7 @@ class PortfolioAnalyzer:
         self._bench = None
         self._bench_lock = threading.Lock()
         self._ai_gate = threading.Semaphore(1)  # one portfolio overview at a time (the ticker overviews come first)
+        self._backtester = backtester  # ui.backtest.Backtester, made on the first "5Y backtest"
 
     @property
     def ai_enabled(self):
@@ -310,6 +311,20 @@ class PortfolioAnalyzer:
             from ui.imaging import PLOT_PREVIEW_WIDTH, jpeg_preview, plot_preview_dir
             return jpeg_preview(path, plot_preview_dir(path), PLOT_PREVIEW_WIDTH)
         return path
+
+    def backtest(self, key):
+        """The 5Y backtest of today's X-ray ``key`` (ui/backtest.py): ``running`` while it is built, then the weekly
+        values of the portfolio and the benchmark ETFs with the risk / return table; None without such an X-ray."""
+        with self._lock:
+            self._roll()
+            kept = self._results.get(key)
+            if kept is None:
+                return None
+            if self._backtester is None:
+                from ui.backtest import Backtester
+                self._backtester = Backtester(today=self._today, clock=self._clock, cache_dir=self.settings.cache_dir)
+            bt = self._backtester
+        return bt.request(key, kept["weights"])
 
     def deep_dive(self, key):
         """The Portfolio Deep Dive Prompt of today's X-ray ``key`` (ui/deepdive.py), with the AI verdict once it is
