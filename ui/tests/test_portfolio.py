@@ -179,8 +179,9 @@ class FakeLLM:
     def generate(self, prompt, max_tokens=None, on_delta=None, cancelled=None, on_rewind=None):
         self.prompts.append(prompt)
         for chunk in (self.reply[:10], self.reply[10:]):
-            on_delta(None, chunk, {})
-        return self.reply, {"model": "fake-model"}
+            on_delta(None, chunk, {"ttft_s": 0.2, "tokens": 3})
+        return self.reply, {"model": "fake-model", "reasoning": "off",
+                            "metrics": {"ttft_s": 0.25, "tok_s": 42.0, "tokens": 30, "elapsed_s": 1.0}}
 
 
 def wait_ai(pf, key, timeout=5):
@@ -201,10 +202,56 @@ def test_ai_verdict(settings, jm):
     ai = wait_ai(pf, r["key"])
     assert ai["status"] == "done" and ai["model"] == "fake-model"
     assert (ai["verdict"], ai["bull"], ai["bear"]) == ("Fairly priced.", "Quality.", "Concentration.")
+    m = ai["metrics"]  # the ticker overview's metrics bar; TTFT and Time count from the request
+    assert m["tok_s"] == 42.0 and m["tokens"] == 30 and ai["reasoning"] == "off" and ai["phase"] is None
+    assert m["ttft_s"] >= 0.25 and m["elapsed_s"] >= 1.0 and m["elapsed_s"] - m["ttft_s"] == pytest.approx(0.75)
     assert len(llm.prompts) == 1 and PORTFOLIO_VERDICT_TASK in llm.prompts[0]
     assert "[60.0% of portfolio]" in llm.prompts[0] and "Microsoft Corporation" in llm.prompts[0]  # portal briefs
     assert wait_ai(pf, r["key"])["status"] == "done" and len(llm.prompts) == 1  # one overview per portfolio
     assert pf.request_ai("0123456789abcdef")["need_analysis"] is True
+
+
+def test_ai_metrics_while_running(settings, jm):
+    gate = threading.Event()
+
+    class Slow(FakeLLM):
+        def generate(self, prompt, max_tokens=None, on_delta=None, cancelled=None, on_rewind=None):
+            on_delta("hmm", None, {"reasoning_tokens": 5})
+            gate.wait(5)
+            return super().generate(prompt, max_tokens, on_delta, cancelled, on_rewind)
+    pf = PortfolioAnalyzer(settings, jm, llm=Slow(), benchmarks=lambda: BENCH, plot=fake_plot([]))
+    r = run(pf, parse_positions("MSFT:100", "pct"))
+    t0 = time.time()
+    ai = pf.request_ai(r["key"])
+    while ai.get("phase") != "thinking":
+        assert time.time() - t0 < 5, ai
+        time.sleep(0.02)
+        ai = pf.request_ai(r["key"])
+    assert ai["status"] == "running" and ai["metrics"]["reasoning_tokens"] == 5
+    assert ai["metrics"]["elapsed_s"] >= 0  # the Time pill ticks before the first token
+    gate.set()
+    assert wait_ai(pf, r["key"])["status"] == "done"
+
+
+def test_portfolio_deep_dive(settings, jm):
+    pf = PortfolioAnalyzer(settings, jm, llm=FakeLLM(), benchmarks=lambda: BENCH, plot=fake_plot([]))
+    assert pf.deep_dive("0123456789abcdef") is None
+    r = run(pf, parse_positions("MSFT:60,AAPL:40", "pct"))
+    dd = pf.deep_dive(r["key"])
+    assert dd["ai"] in ("pending", "included") and dd["words"] > 500
+    wait_ai(pf, r["key"])
+    dd = pf.deep_dive(r["key"])
+    text = dd["prompt"]
+    assert dd["ai"] == "included" and dd["words"] == len(text.split())
+    assert text.startswith("You are a senior portfolio manager") and "2 positions ($MSFT 60.0%, $AAPL 40.0%)" in text
+    assert "beat the S&P 500" in text and "## Report format" in text and "Position calls" in text
+    assert "Weighted metrics:" in text and "Weighted PEG" in text  # the X-ray's summary
+    assert text.index("POSITION 1: $MSFT · 60.0%") < text.index("POSITION 2: $AAPL · 40.0%")
+    assert text.count("Microsoft Corporation") >= 1 and "Verdict: Fairly priced." in text  # data blocks, local verdict
+    assert "=== NOTES ON THE DATA ===" in text and "harmonic weighted means" in text
+    off = PortfolioAnalyzer(settings, jm, benchmarks=lambda: BENCH, plot=fake_plot([]))
+    r = run(off, parse_positions("MSFT:100", "pct"))
+    assert off.deep_dive(r["key"])["ai"] == "disabled" and "AI overview is disabled" in off.deep_dive(r["key"])["prompt"]
 
 
 def test_ai_off_and_unavailable(settings, jm):
@@ -260,14 +307,21 @@ def test_api_end_to_end(api, capsys):
             break
         assert time.time() - t0 < 5, ai
         time.sleep(0.05)
-    assert ai["verdict"] == "Fairly priced."
+    assert ai["verdict"] == "Fairly priced." and ai["metrics"]["tok_s"] == 42.0
+    r, dd = get(api, f"/api/portfolio/deepdive?k={snap['key']}")
+    assert r.status == 200 and dd["ai"] == "included" and "$MSFT" in dd["prompt"]
+    r, page = get(api, "/?pf=MSFT:$4300,AAPL:20sh&m=amt")  # the portfolio page: the same HTML as home
+    assert r.status == 200 and b'id="portfolio-page"' in page and b'id="pf-switch"' in page
     log = capsys.readouterr().err
-    assert "/api/portfolio?…" in log and "4300" not in log  # amounts never reach the access log
+    assert "/api/portfolio?…" in log and "/api/portfolio/deepdive?…" in log and "GET /?… " in log
+    assert "4300" not in log  # amounts never reach the access log
 
 
 @pytest.mark.parametrize("path,status", [
     ("/api/portfolio?m=pct&p=MSFT:50", 400), ("/api/portfolio?m=amt&p=MSFT:1", 400),
-    ("/api/portfolio/ai?k=nothex", 400), ("/portfolio/0123456789abcdef.png", 404), ("/portfolio/../x.png", 404),
+    ("/api/portfolio/ai?k=nothex", 400), ("/api/portfolio/deepdive?k=nothex", 400),
+    ("/api/portfolio/deepdive?k=0123456789abcdef", 404),
+    ("/portfolio/0123456789abcdef.png", 404), ("/portfolio/../x.png", 404),
 ])
 def test_api_rejects(api, path, status):
     r, body = get(api, path)

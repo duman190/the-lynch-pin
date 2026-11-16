@@ -296,3 +296,118 @@ def build_deep_dive(data, ai=None, ai_state=None):
         "=== NOTES ON THE DATA ===",
         NOTES,
     ])
+
+
+# ── Portfolio Deep Dive Prompt (the Portfolio Analyzer, ui/portfolio.py) ──────────────────────────────────────────
+PORTFOLIO_ROLE = """You are a senior portfolio manager at a long-only fundamental hedge fund. A client has brought \
+their portfolio of {n} position{s} ({tickers}) to tomorrow's investment committee and wants your call: is it built \
+to beat the S&P 500 over the next 3-5 years, and what should they keep, add to, trim or sell?
+
+At the end of this prompt is a quantitative X-ray from our in-house GARP screener, "The Lynch Pin": the portfolio's \
+market-value weights, its weighted valuation, growth, 5-year ROI scenarios and quality grades, then a full snapshot \
+of every position (valuation against the stock's own PEG history, 5-year ROI scenarios, income statement and \
+balance sheet grades, technicals, price levels to watch and a 6-month backtested directional edge), followed by a \
+first-pass verdict from a small local AI model. Treat the X-ray as a starting point and the AI verdict as a junior \
+analyst's draft: verify, don't trust. Only weights are given, never dollar amounts.
+
+If you can browse or search the web, use it for every step below. Prefer primary sources (SEC filings, company \
+investor relations, earnings call transcripts) and cite each fact with its source and date. If you cannot browse, \
+say so up front, work from your own knowledge and flag anything that may be out of date.
+
+## How to work
+
+Work through the steps in order and don't write the verdict before step 7. The largest positions drive the \
+result: give them the deepest work, and size your effort on each position by its weight.
+
+1. Snapshot. Read the X-ray below. Note what the weighted numbers imply (cheap or expensive against history, what \
+growth the price assumes, quality, how concentrated the portfolio is) and which positions drive them. The \
+weighted PE ratios are harmonic means (total value / total earnings), the rest are weighted averages. Positions \
+without GARP data still count for their weight in the allocation.
+2. Each position, largest first. Read the last two quarterly earnings releases and call transcripts (and the \
+latest 10-Q or 10-K) of every position above 5% of the portfolio; for the smaller ones the latest quarter and \
+guidance are enough. Extract, with numbers: revenue and segment growth, margins, guidance and how it changed, free \
+cash flow, buybacks, dilution, debt, and the material news of the last 6-12 months (litigation, regulation, \
+management changes, competitive threats, insider selling). Note how management says it will handle each issue \
+and whether the plan is credible.
+3. Portfolio construction. Concentration (top position, top three, number of meaningful bets), sector, industry \
+and geographic exposure, overlapping bets (several names riding the same theme, customer, supplier or cycle), how \
+the positions are likely to move together, and sensitivity to rates, the economy, AI capex, consumer spending, \
+currency and commodity prices. Name what is missing as well as what is doubled up.
+4. Red flags and worrying trends, position by position: receivables or inventory growing faster than revenue, \
+falling margins, spending without a visible return, rising leverage, heavy adjustments, guidance cuts, dilution, \
+aggressive accounting, valuations that need a re-acceleration the history does not support.
+5. Expected return. For each position judge whether the snapshot's Base ROI is realistic, then weight them into a \
+portfolio expected return and compare it with the S&P 500's. State the S&P 500 return you assume and how you \
+derived it.
+6. Stress-test and loop. Write the strongest bull case and the strongest bear case for the portfolio as a whole. \
+Check every claim against the evidence; if a claim is unsupported or a new question comes up, go back to steps \
+2-5 for that point. Where your reading disagrees with the X-ray (for example a low PEG with deteriorating \
+fundamentals), say which one you trust and why. Repeat until another pass would not change your conclusion, and \
+report how many passes you made and what changed in each.
+7. Report, in the format below.
+
+## Report format
+
+1. Verdict: is the portfolio likely to BEAT, MATCH or LAG the S&P 500 over 3-5 years, your conviction (low, medium \
+or high) and the three reasons that decide it.
+2. Position calls: a table with each position, its current weight, your call (ADD, HOLD, TRIM or SELL), a target \
+weight and the one-line reason. Target weights add up to 100% and may include new positions or cash.
+3. What the last quarters show for the largest positions: numbers, trends, guidance, issues and management's \
+answers.
+4. Portfolio construction: concentration, exposures, overlaps and the risks they create.
+5. Red flags and worrying trends, most serious first, with the position they belong to.
+6. Expected return: per position and weighted, against the S&P 500.
+7. Rebalancing plan: what to do first, the price levels at which to add or trim each position (start from the \
+levels in the snapshots and adjust them with your own reading), and replacements worth researching for anything \
+you would sell.
+8. Signals and news to watch: upcoming catalysts with dates and the metrics and thresholds that would confirm or \
+break the thesis for each large position and for the portfolio.
+9. What would change your mind, in either direction.
+
+Open the report with the sources you read in full and those you only skimmed. Be specific and quantitative, use \
+plain language and don't hedge the verdict."""
+
+PORTFOLIO_NOTES = """- Weights = each position's market value / the portfolio's total (shares are valued at the \
+analysis price). No dollar amounts are given.
+- Weighted PE, Fwd PE and 2Y Fwd PE are harmonic weighted means (= total value / total earnings, the way index \
+providers compute a fund's PE); unprofitable positions are left out and the other weights renormalised. PEG, the \
+historical mean PEG, its SD and Dev (SD), 5Y growth and the Bull / Base / Bear ROIs are arithmetic weighted means. \
+Median PEG is weight-aware. Income grade and credit rating are weighted ordinal averages rounded to the nearest \
+grade. Coverage is the share of the portfolio's weight that has GARP data."""
+
+
+def portfolio_ai_block(ai, ai_state):
+    if ai and ai.get("status") == "done":
+        parts = [f"{label}: {ai[key].strip()}" for key, label in (("verdict", "Verdict"), ("bull", "Bull case"),
+                                                                   ("bear", "Bear case")) if ai.get(key)]
+        return "\n\n".join(parts) or (ai.get("text") or "(the local model returned no usable text)")
+    return {"pending": "(still being written by the local model; copy again in a minute to include it)",
+            "disabled": "(AI overview is disabled in this portal)"}.get(ai_state, "(not available for this portfolio)")
+
+
+def build_portfolio_deep_dive(result, weights, entries, summary, ai=None, ai_state=None):
+    """The Portfolio Deep Dive Prompt: a copy-paste brief on the whole portfolio for a stronger model. ``result`` is
+    the X-ray (ui/portfolio.py), ``weights`` ticker → weight, ``entries`` ticker → that ticker's stored analysis."""
+    syms = list(weights)
+    as_of = result.get("day") or _dt.date.today().isoformat()
+    model = (ai or {}).get("model") or "local model"
+    lines = [
+        PORTFOLIO_ROLE.format(n=len(syms), s="" if len(syms) == 1 else "s",
+                              tickers=", ".join(f"${s} {weights[s] * 100:.1f}%" for s in syms)),
+        "",
+        f"=== LYNCH PIN PORTFOLIO X-RAY as of {as_of} ===",
+        "Positions by weight: " + ", ".join(f"${s} {weights[s] * 100:.1f}%" for s in syms),
+        "Weighted metrics:",
+        summary,
+    ]
+    unvalued = [p for p in result.get("positions") or [] if p.get("weight") is None]
+    if unvalued:
+        lines.append("Not valued (left out of the weights): "
+                     + ", ".join(f"${p['ticker']} ({p.get('reason') or 'no price'})" for p in unvalued))
+    for i, sym in enumerate(syms, 1):
+        lines += ["", f"--- POSITION {i}: ${sym} · {weights[sym] * 100:.1f}% of the portfolio ---"]
+        entry = entries.get(sym)
+        lines.append(data_block(entry) if entry else "- no analysis available")
+    lines += ["", f"=== LOCAL AI PORTFOLIO VERDICT ({model}; a first draft, verify it) ===",
+              portfolio_ai_block(ai, ai_state), "", "=== NOTES ON THE DATA ===", PORTFOLIO_NOTES, NOTES]
+    return "\n".join(lines)

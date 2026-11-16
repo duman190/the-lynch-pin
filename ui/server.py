@@ -48,7 +48,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
-PORTFOLIO_QUERY_RE = re.compile(r"(/api/portfolio)\?\S*")
+PORTFOLIO_QUERY_RE = re.compile(r"(/api/portfolio[\w/]*|/(?:index\.html)?(?=\?\S*\bpf=))\?\S*")
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 STATIC_FILE_RE = re.compile(r"^(?:[a-z0-9_\-]+/)?[A-Za-z0-9_\-]+\.(?:html|css|js|png|jpg|jpeg|webp|svg|webmanifest|ico)$")
 # A page's "/static/NAME.js" / ".css" references, versioned as the page is served (see send_page)
@@ -505,7 +505,7 @@ def make_handler(app):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
             if path.startswith("/api/tv/"):
                 return self.route_tv(path[len("/api/tv/"):], query)
-            if path in ("/api/portfolio", "/api/portfolio/ai"):
+            if path in ("/api/portfolio", "/api/portfolio/ai", "/api/portfolio/deepdive"):
                 return self.route_portfolio(path, query)
             if path.startswith("/portfolio/"):
                 return self.route_portfolio_plot(path[len("/portfolio/"):])
@@ -600,16 +600,22 @@ def make_handler(app):
 
         def route_portfolio(self, path, query):
             """/api/portfolio?m=pct|amt&p=SYM:VALUE,... → the portfolio X-ray (ui/portfolio.py), ``running`` while its
-            positions are analysed (the page polls with &poll=1); /api/portfolio/ai?k=KEY → its AI verdict."""
+            positions are analysed (the page polls with &poll=1); /api/portfolio/ai?k=KEY → its AI verdict with the
+            generation metrics; /api/portfolio/deepdive?k=KEY → its Portfolio Deep Dive Prompt."""
             pf = app.portfolio
             if pf is None:
                 return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
             from ui.portfolio import KEY_RE, PortfolioError, parse_positions
-            if path.endswith("/ai"):
+            if path.endswith(("/ai", "/deepdive")):
                 key = query.get("k", [""])[0]
                 if not KEY_RE.match(key):
                     return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid portfolio key")
-                return self.send_json(pf.request_ai(key))
+                if path.endswith("/ai"):
+                    return self.send_json(pf.request_ai(key))
+                dd = pf.deep_dive(key)
+                if dd is None:
+                    return self.send_error_json(HTTPStatus.NOT_FOUND, "analyze this portfolio first")
+                return self.send_json(dd)
             try:
                 positions = parse_positions(query.get("p", [""])[0][:2000], query.get("m", ["pct"])[0])
             except PortfolioError as e:

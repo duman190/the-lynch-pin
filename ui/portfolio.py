@@ -266,7 +266,8 @@ class PortfolioAnalyzer:
         prompt = LynchPinResearcher.build_portfolio_prompt(rows, summary, grader, credit, ticker_briefs=briefs)
         with self._lock:
             if self._roll() == day:
-                self._results[key] = {"result": result, "prompt": prompt, "ai": None}
+                self._results[key] = {"result": result, "prompt": prompt, "ai": None, "weights": dict(weights),
+                                      "entries": entries, "summary": summary}
                 while len(self._results) > MAX_RESULTS:
                     self._results.popitem(last=False)
         return result
@@ -310,6 +311,29 @@ class PortfolioAnalyzer:
             return jpeg_preview(path, plot_preview_dir(path), PLOT_PREVIEW_WIDTH)
         return path
 
+    def deep_dive(self, key):
+        """The Portfolio Deep Dive Prompt of today's X-ray ``key`` (ui/deepdive.py), with the AI verdict once it is
+        written; None when there is no such X-ray today."""
+        from ui.deepdive import build_portfolio_deep_dive
+        with self._lock:
+            self._roll()
+            kept = self._results.get(key)
+            if kept is None:
+                return None
+            ai = kept["ai"]
+            view = self._ai_view(ai) if ai is not None else None
+        if not self.ai_enabled:
+            state = "disabled"
+        elif view is not None and view["status"] == "done":
+            state = "included"
+        elif view is None or view["status"] in ("queued", "running"):  # None: the page asks for it next
+            state = "pending"
+        else:
+            state = "unavailable"
+        text = build_portfolio_deep_dive(kept["result"], kept["weights"], kept["entries"], kept["summary"],
+                                         ai=view if state == "included" else None, ai_state=state)
+        return {"prompt": text, "words": len(text.split()), "ai": state}
+
     # ── AI overview ──────────────────────────────────────────────────────────
     def request_ai(self, key):
         """The portfolio verdict of today's X-ray ``key``: starts it on the first request, then reports progress
@@ -329,12 +353,18 @@ class PortfolioAnalyzer:
                 threading.Thread(target=self._run_ai, args=(kept,), name=f"portfolio-ai-{key}", daemon=True).start()
             return self._ai_view(ai)
 
-    @staticmethod
-    def _ai_view(ai):
-        out = {k: ai.get(k) for k in ("status", "error", "model", "backend")}
+    def _ai_view(self, ai):
+        """What the page shows: status and phase, the verdict so far and the generation metrics (TTFT, tok/s,
+        tokens, thinking, total time — the ticker overview's metrics bar)."""
+        out = {k: ai.get(k) for k in ("status", "error", "model", "backend", "phase", "reasoning")}
         text = ai.get("text") or ""
         out["text"] = text
         out.update(parse_verdict(text))
+        metrics = dict(ai.get("metrics") or {})
+        if ai["status"] in ("queued", "running") and ai.get("started") is not None:
+            # the clock runs from the request (queue wait and prompt processing included), like the ticker's
+            metrics["elapsed_s"] = round(self._clock() - ai["started"], 1)
+        out["metrics"] = metrics
         return out
 
     def _client(self):
@@ -359,11 +389,23 @@ class PortfolioAnalyzer:
                 ai.update(status="unavailable", error="AI overviews are unavailable right now — try again shortly",
                           finished=self._clock())
                 return
-            ai.update(status="running", backend=backend)
+            ai.update(status="running", backend=backend, phase="connecting")
             parts = []
+            waited = self._clock() - ai["started"]  # queued behind another portfolio's overview
+
+            def timed(m):
+                m = dict(m or {})
+                for k in ("ttft_s", "elapsed_s"):  # from the request, as the page's clock runs
+                    if isinstance(m.get(k), (int, float)):
+                        m[k] = round(m[k] + waited, 2 if k == "ttft_s" else 1)
+                return m
 
             def on_delta(reasoning, content, metrics):
+                ai["metrics"] = timed(metrics)
+                if reasoning and not parts:
+                    ai["phase"] = "thinking"
                 if content:
+                    ai["phase"] = "writing"
                     parts.append(content)
                     ai["text"] = "".join(parts)
 
@@ -382,4 +424,5 @@ class PortfolioAnalyzer:
             parsed = parse_verdict(ai["text"])
             ok = bool(parsed["verdict"] or parsed["bull"] or parsed["bear"])
             ai.update(status="done" if ok else "error", model=meta.get("model"), finished=self._clock(),
-                      error=None if ok else "the model returned no verdict")
+                      error=None if ok else "the model returned no verdict", phase=None,
+                      metrics=timed(meta.get("metrics")), reasoning=meta.get("reasoning"))

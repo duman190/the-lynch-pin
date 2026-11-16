@@ -54,7 +54,18 @@
       </picture>
     </section>
 
-    <section class="search-wrap" id="search-section" hidden aria-label="Ticker search">
+    <section class="search-wrap" id="search-section" hidden aria-label="Ticker and portfolio search">
+      <div class="pf-bar" id="pf-bar" hidden>
+        <div class="pf-mode" id="pf-mode" role="group" aria-label="Positions are entered as" hidden>
+          <button type="button" data-mode="pct" aria-pressed="true">% weights</button>
+          <button type="button" data-mode="amt" aria-pressed="false">$ / shares</button>
+        </div>
+        <button type="button" class="pf-switch" id="pf-switch" role="switch" aria-checked="false" aria-label="Portfolio mode" hidden>
+          <span class="pf-switch-track" aria-hidden="true"><span class="pf-switch-thumb"></span></span>
+          <span class="pf-switch-label"><span class="pf-switch-icon" aria-hidden="true">💼 </span>Portfolio<span class="pf-switch-word"> mode</span></span>
+          <span class="pf-switch-state" aria-hidden="true">Off</span>
+        </button>
+      </div>
       <div class="search-box">
         <form class="search" id="search-form" role="search" autocomplete="off">
           <label class="sr-only" for="q">Ticker or company name</label>
@@ -67,35 +78,18 @@
         </form>
         <ul class="suggest" id="suggest" role="listbox" aria-label="Matching companies" hidden></ul>
       </div>
+      <form class="pf-form" id="pf-form" autocomplete="off" novalidate hidden aria-label="Portfolio positions">
+        <ol class="pf-rows" id="pf-rows" aria-label="Positions" aria-describedby="pf-hint"></ol>
+        <div class="pf-actions">
+          <button type="button" class="pf-add" id="pf-add" aria-label="Add a position" title="Add a position"><span aria-hidden="true">+</span></button>
+          <button type="submit" class="btn-primary pf-go">Analyze</button>
+        </div>
+        <p class="hint pf-hint" id="pf-hint" role="status"></p>
+      </form>
       <p class="hint" id="search-hint">PEG deviation · 5Y ROI · income grade · credit rating · technicals<span id="edge-hint" hidden> · 6M edge</span><span id="ai-hint" hidden> · AI overview</span></p>
       <div class="recent" id="recent" aria-label="Recent lookups"></div>
-      <button type="button" class="btn-ghost pf-open" id="pf-open" aria-expanded="false" aria-controls="portfolio" hidden>
-        <span aria-hidden="true">💼</span> Portfolio Analyzer
-      </button>
     </section>
 
-    <section class="panel portfolio" id="portfolio" hidden aria-labelledby="pf-title">
-      <div class="card-title-row">
-        <h2 id="pf-title">💼 Portfolio Analyzer</h2>
-        <button type="button" class="lightbox-close pf-close" id="pf-close" aria-label="Close the Portfolio Analyzer">×</button>
-      </div>
-      <p class="muted small">A portfolio X-ray like the weekly scan’s: weighted valuation, growth, 5Y ROI and quality, the weight donut and an AI verdict. Tickers analysed today come straight from the cache.</p>
-      <form class="pf-form" id="pf-form" autocomplete="off" novalidate>
-        <div class="pf-mode" id="pf-mode" role="group" aria-label="How positions are entered">
-          <button type="button" data-mode="pct" aria-pressed="true">% weights</button>
-          <button type="button" data-mode="amt" aria-pressed="false">$ / shares</button>
-        </div>
-        <p class="muted small pf-mode-hint" id="pf-mode-hint"></p>
-        <ol class="pf-rows" id="pf-rows" aria-label="Positions"></ol>
-        <div class="pf-actions">
-          <button type="button" class="btn-ghost" id="pf-add">+ Add position</button>
-          <span class="pf-total muted" id="pf-total" role="status"></span>
-        </div>
-        <p class="pf-error red small" id="pf-error" role="alert"></p>
-        <button type="submit" class="btn-primary pf-go" id="pf-go" disabled>Analyze portfolio</button>
-      </form>
-      <div class="pf-result" id="pf-result" hidden></div>
-    </section>
 
     <section class="valuation" id="valuation" hidden aria-labelledby="valuation-title">
       <h2 id="valuation-title">US Stock Market Valuation</h2>
@@ -169,6 +163,30 @@
 
     <section id="thread" class="thread" hidden aria-labelledby="thread-title"></section>
 
+
+    <section class="result pf-page" id="portfolio-page" hidden aria-labelledby="pf-title">
+      <div class="panel pf-head">
+        <div class="card-title-row">
+          <h2 id="pf-title">💼 Portfolio X-ray</h2>
+          <span class="pf-mode-tag muted small" id="pf-mode-tag"></span>
+        </div>
+        <ul class="pf-chips" id="pf-chips" aria-label="Positions as entered"></ul>
+      </div>
+      <div class="pf-result" id="pf-result" aria-live="polite"></div>
+    </section>
+
+    <section class="panel deepdive" id="pf-deepdive" hidden aria-labelledby="pf-dd-title">
+      <div class="card-title-row dd-head">
+        <h2 id="pf-dd-title">🔬 Portfolio Deep Dive Prompt</h2>
+        <div class="dd-actions">
+          <button type="button" class="btn-primary btn-sm" id="pf-dd-copy">Copy</button>
+          <button type="button" class="btn-ghost" id="pf-dd-toggle" aria-expanded="false" aria-controls="pf-dd-text">Show</button>
+        </div>
+      </div>
+      <p class="muted small" id="pf-dd-meta">An investment-committee brief on the whole portfolio for Claude, ChatGPT or Gemini: paste it into a chat with web search on.</p>
+      <pre class="dd-text" id="pf-dd-text" tabindex="0" hidden></pre>
+      <p class="sr-only" id="pf-dd-status" role="status" aria-live="polite"></p>
+    </section>
 
     <section class="panel deepdive" id="deepdive" hidden aria-labelledby="dd-title">
       <div class="card-title-row dd-head">

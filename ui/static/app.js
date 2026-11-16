@@ -140,10 +140,10 @@ function downloadLink(url, filename, alt, content, label, { prefetch = false } =
   return a;
 }
 
-/* ── views: home (search + Latest scans), ?t=SYM (ticker), ?scan=KIND (thread) ── */
+/* ── views: home (search + Latest scans), ?t=SYM (ticker), ?pf=POSITIONS (portfolio), ?scan=KIND (thread) ── */
 function currentView() {
   const q = new URLSearchParams(location.search);
-  return q.get("t") ? "ticker" : q.get("scan") ? "scan" : "home";
+  return q.get("t") ? "ticker" : q.get("pf") ? "portfolio" : q.get("scan") ? "scan" : "home";
 }
 /** Shows what belongs to the URL's view: body[data-view] drives the CSS, the Home button leaves home. */
 function applyView() {

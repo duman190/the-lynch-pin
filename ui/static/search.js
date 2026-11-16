@@ -1016,6 +1016,7 @@
       fromURL();
     },
     go,
+    copyText,
     _test: { applySnapshot, go, submitSearch },
   };
 })();
