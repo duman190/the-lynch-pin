@@ -171,6 +171,8 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 20px; display: grid; gap
 /* ── views: home = hero + search + Latest scans; ?t= = ticker page; ?scan= = thread page ── */
 body:not([data-view="home"]) .hero,
 body:not([data-view="home"]) #valuation,
+body:not([data-view="home"]) #portfolio,
+body:not([data-view="home"]) #pf-open,
 body:not([data-view="home"]) #scans,
 body:not([data-view="home"]) #popular,
 body:not([data-view="home"]) #socials,
@@ -196,6 +198,76 @@ body:not(.verbose) .aim-tokens, body:not(.verbose) .aim-thinking { display: none
 body:not(.verbose) .ai-metrics { flex-wrap: nowrap; }
 body:not(.verbose) .aim { min-width: 0; white-space: nowrap; }
 body:not(.verbose) .aim dd { overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Portfolio Analyzer: positions in, X-ray out ──────────────────────────── */
+.pf-open { margin-top: 2px; display: inline-flex; align-items: center; gap: 8px; font-size: .95rem; padding: 10px 18px; }
+.pf-open[aria-expanded="true"] { border-color: var(--sky); color: var(--white); }
+.portfolio { display: grid; gap: 12px; min-width: 0; }
+.portfolio > p { margin: 0; }
+.portfolio .pf-close { position: static; float: none; margin: 0; flex: none; }
+.pf-form { display: grid; gap: 10px; justify-items: start; min-width: 0; }
+.pf-mode { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: 3px; background: #121212; }
+.pf-mode button {
+  border: 0; background: transparent; color: var(--muted); font: 800 .88rem var(--sans); letter-spacing: .02em;
+  padding: 8px 16px; border-radius: 999px; cursor: pointer; min-height: 36px;
+}
+.pf-mode button[aria-pressed="true"] { background: linear-gradient(180deg, #7FB3F5, var(--sky)); color: #0B1422; box-shadow: 0 0 14px var(--sky-glow); }
+.pf-mode-hint { margin: 0; }
+.pf-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; width: min(560px, 100%); counter-reset: pf; }
+.pf-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) 36px; gap: 8px; align-items: center; }
+.pf-row input, .pf-unit-sel {
+  min-width: 0; width: 100%; min-height: 40px; padding: 8px 12px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); color: var(--text); font: 700 1rem var(--mono);
+}
+.pf-row input:focus, .pf-unit-sel:focus { outline: none; border-color: var(--sky); box-shadow: 0 0 0 3px rgba(93,156,236,.18); }
+.pf-sym { text-transform: uppercase; }
+.pf-amount { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.pf-unit { color: var(--muted); font: 800 1rem var(--mono); padding-right: 4px; }
+.pf-unit-sel { width: auto; font-family: var(--sans); font-size: .9rem; padding: 8px; }
+.pf-del {
+  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--border); background: transparent;
+  color: var(--muted); font: 700 1.2rem/1 var(--sans); cursor: pointer;
+}
+.pf-del:hover { border-color: var(--red); color: var(--red); }
+.pf-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.pf-total { font: 700 .9rem var(--mono); }
+.pf-total.green { color: var(--green); }
+.pf-error { margin: 0; min-height: 1.2em; }
+.pf-result { display: grid; gap: 12px; min-width: 0; }
+.pf-status { display: grid; gap: 8px; padding: 14px 16px; border-radius: 12px; background: #121212; border: 1px solid var(--border); }
+.pf-progress { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.pf-progress li { display: inline-flex; gap: 6px; align-items: baseline; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); }
+.pf-progress li.done { border-color: rgba(46,204,113,.5); }
+.pf-progress li.running { border-color: var(--sky); }
+.pf-psym { font: 800 .85rem var(--mono); color: var(--sky); }
+.pf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.pf-card { padding: 16px 18px; min-width: 0; display: grid; gap: 12px; align-content: start; }
+.pf-card .sub-h { margin: 0; }
+.pf-card .mono-table dt { white-space: nowrap; }
+.pf-ai { grid-column: 1 / -1; }
+.pf-dev { white-space: nowrap; font: 800 1rem var(--sans); padding: 4px 10px; border-radius: 8px; background: #121212; border: 1px solid var(--border); }
+.pf-chart { justify-self: start; }
+.pf-table-wrap { overflow-x: auto; }
+.pf-table { width: 100%; border-collapse: collapse; font: 700 .9rem/1.4 var(--mono); }
+.pf-table th, .pf-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+.pf-table th:first-child { text-align: left; }
+.pf-table thead th { color: var(--muted); font: 700 .75rem var(--sans); text-transform: uppercase; letter-spacing: .04em; }
+.pf-table td.green { color: var(--green); }
+.pf-table td.red { color: var(--red); }
+.pf-table td[colspan] { text-align: left; white-space: normal; font-family: var(--sans); font-weight: 400; }
+.pf-nogarp th a { color: var(--dim); }
+.pf-verdict { font-size: 1.08rem; color: var(--white); margin: 0; }
+.pf-note { margin: 0; }
+@media (max-width: 700px) {
+  .pf-grid { grid-template-columns: minmax(0, 1fr); }
+  .pf-mode button { padding: 8px 12px; }
+}
+@media (max-width: 560px) {
+  .pf-table { font-size: .76rem; }
+  .pf-table th, .pf-table td { padding: 6px 3px; }
+  .pf-table thead th { font-size: .66rem; letter-spacing: 0; }
+  .pf-card { padding: 14px 10px; }
+}
 
 /* ── US stock market valuation: rear view mirror + forward looking, then the Lynch quote ── */
 .valuation { display: grid; gap: 12px; min-width: 0; }

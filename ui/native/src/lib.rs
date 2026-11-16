@@ -6,6 +6,7 @@
 //! horizontal bands on several threads, and written as a 300-dpi PNG (bands deflated in parallel) plus a JPEG
 //! preview drawn at its own size on another thread.
 pub mod bars;
+pub mod donut;
 pub mod encode;
 pub mod font;
 pub mod layout;
@@ -134,6 +135,29 @@ fn png(scene: &layout::Scene, dpi: f64, threads: usize, tm: &mut Timings) -> Vec
     encode::png_file(scene.width, scene.height, dpi, &segments)
 }
 
+/// What a spec draws.
+enum Kind<'a> {
+    Peg(&'a spec::Chart),
+    Donut(&'a donut::Donut, donut::Layout),
+}
+
+impl Kind<'_> {
+    fn scene(&self, fonts: &layout::Fonts, dpi: f64) -> Result<layout::Scene, ChartError> {
+        match self {
+            Kind::Peg(c) => layout::Builder::new(c, fonts, dpi)?.build(),
+            Kind::Donut(d, l) => donut::build(d, l, fonts, dpi),
+        }
+    }
+
+    /// The figure's width in inches (the preview is drawn at ``jpeg_width`` pixels across it).
+    fn width_in(&self) -> f64 {
+        match self {
+            Kind::Peg(_) => 12.0,
+            Kind::Donut(_, l) => l.width_in,
+        }
+    }
+}
+
 /// Renders the chart described by ``spec`` to the requested files.
 pub fn render(spec: &Spec) -> Result<Timings, ChartError> {
     let t0 = Instant::now();
@@ -141,19 +165,24 @@ pub fn render(spec: &Spec) -> Result<Timings, ChartError> {
     let threads = thread_count(spec.threads);
     let mut tm = Timings { threads, ..Timings::default() };
 
+    let kind = match (&spec.chart, &spec.donut) {
+        (_, Some(d)) => Kind::Donut(d, donut::layout(d, &fonts)?),
+        (Some(c), None) => Kind::Peg(c),
+        (None, None) => return Err(ChartError::Failed("bad spec: neither chart nor donut".into())),
+    };
     let full = match &spec.png {
-        Some(_) => Some(layout::Builder::new(&spec.chart, &fonts, spec.png_dpi)?.build()?),
+        Some(_) => Some(kind.scene(&fonts, spec.png_dpi)?),
         None => None,
     };
     tm.layout_ms = ms(t0);
 
     let preview = std::thread::scope(|s| -> Result<(f64, usize), ChartError> {
         let jpeg_job = spec.jpeg.as_ref().map(|path| {
-            let fonts = &fonts;
+            let (fonts, kind) = (&fonts, &kind);
             s.spawn(move || -> Result<(f64, usize), ChartError> {
                 let t = Instant::now();
-                let dpi = spec.jpeg_width as f64 / 12.0;
-                let scene = layout::Builder::new(&spec.chart, fonts, dpi)?.build()?;
+                let dpi = spec.jpeg_width as f64 / kind.width_in();
+                let scene = kind.scene(fonts, dpi)?;
                 let buf = draw(&scene, 1);
                 let bytes =
                     encode::jpeg(&buf, scene.width, scene.height, spec.jpeg_quality).map_err(ChartError::Failed)?;
@@ -306,6 +335,13 @@ pub unsafe extern "C" fn lynch_bars_free(out: *mut BarsOut) {
 /// Version of the trading-view interface (``lynch_bars_*``); ui/tvdata.py checks it.
 #[no_mangle]
 pub extern "C" fn lynch_bars_abi() -> u32 {
+    1
+}
+
+/// Version of the portfolio donut in the spec (``"donut"``); ui/fastchart.py checks it, so an older library is never
+/// handed one.
+#[no_mangle]
+pub extern "C" fn lynch_donut_abi() -> u32 {
     1
 }
 

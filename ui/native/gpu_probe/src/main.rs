@@ -31,7 +31,7 @@ fn main() {
         sans_bold: load(&spec.fonts.sans_bold),
         mono_bold: load(&spec.fonts.mono_bold),
     };
-    let scene = Builder::new(&spec.chart, &fonts, 300.0).expect("chart").build().expect("layout");
+    let scene = Builder::new(spec.chart.as_ref().expect("a PEG chart spec"), &fonts, 300.0).expect("chart").build().expect("layout");
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
     let _ = lynch_chart::draw(&scene, threads); // warm up: glyph masks, page faults
     let one = min_ms(20, || drop(lynch_chart::draw(&scene, 1)));

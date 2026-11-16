@@ -94,7 +94,11 @@ class LynchPinVisualizer:
             "font.family": "sans-serif",
             "font.size": 14,          
             "axes.titlesize": 20,      
-            "axes.labelsize": 16       
+            "axes.labelsize": 16,
+            # Unhinted glyph advances, as on matplotlib < 3.11 (force_autohint with a hinting factor of 8): 3.11
+            # snaps every glyph to its TrueType hints, so the same text came out a few pixels narrower and the
+            # portal's native renderer (ui/native, which lays text out unhinted) no longer matched these charts.
+            "text.hinting": "no_hinting",
         })
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
@@ -382,7 +386,55 @@ class LynchPinVisualizer:
             keep.append((f"Other ({len(small)})", sum(w for _, w in small)))
         return keep
 
-    def plot_portfolio(self, weights, wm, benchmark_returns=None):
+    def slice_label(self, label, w):
+        """A wedge's label: "TICKER\\n12.3%" on the ring, "TICKER 2.1%" just outside it for a thin slice."""
+        return f"{label}\n{w * 100:.1f}%" if w >= self._PIE_MIN_SLICE else f"{label} {w * 100:.1f}%"
+
+    def portfolio_text(self, weights, wm, benchmark_returns):
+        """Every string ``plot_portfolio`` draws apart from the wedge labels (the portal's native renderer,
+        ui/fastchart.py, draws the same ones): title, centre PEG, SD badge (None without a deviation) and the
+        two boxes."""
+        def fmt(v, spec, suffix=''):
+            return (format(v, spec) + suffix) if v is not None else 'N/A'
+
+        peg, dev = wm.get('PEG'), wm.get('Dev_SD')
+        # Stats box (right, top) — mirrors the per-ticker box, "Portfolio:" instead of "Ticker:"
+        n_pos = len(weights)
+        stats_text = (
+            f"Portfolio:{(str(n_pos) + ' positions'):>13}\n"
+            f"-----------------------\n"
+            f"- W. PE:       {fmt(wm.get('PE'), '.1f'):>8}\n"
+            f"- W. Fwd PE:   {fmt(wm.get('FwdPE'), '.1f'):>8}\n"
+            f"- W. 2YFwd PE: {fmt(wm.get('2YFwd'), '.1f'):>8}\n"
+            f"- W. PEG:      {fmt(wm.get('PEG'), '.2f'):>8}\n"
+            f"- Median PEG:  {fmt(wm.get('MedianPEG'), '.2f'):>8}\n"
+            f"- W. Growth:   {fmt(wm.get('Growth'), '.1f', '%'):>8}\n"
+            f"- W. Bull ROI: {fmt(wm.get('Bull'), '.1f', '%'):>8}\n"
+            f"- W. Base ROI: {fmt(wm.get('Base'), '.1f', '%'):>8}\n"
+            f"- W. Bear ROI: {fmt(wm.get('Bear'), '.1f', '%'):>8}"
+        )
+
+        # Quality + benchmark box (right, lower)
+        base = wm.get('Base')
+        q_lines = [
+            f"Quality (weighted)",
+            f"-----------------------",
+            f"- Income Grade: {wm.get('IncomeGrade', 'N/A'):>7}",
+            f"- Credit Rating:{wm.get('CreditRating', 'NR'):>7}",
+            "",
+            f"5Y Index Return vs Base",
+            f"-----------------------",
+        ]
+        for lbl, cagr in benchmark_returns:
+            short = lbl.split(' (')[0]
+            q_lines.append(f"- {short:<10}{cagr:>10.1f}%")
+        q_lines.append(f"- {'Portfolio':<10}{fmt(base, '.1f', '%'):>11}")
+        return {'title': 'PORTFOLIO X-RAY: WEIGHT & WEIGHTED GARP METRICS',
+                'peg': f"{peg:.2f}" if peg is not None else "N/A",
+                'badge': f" {dev:+.2f} SD " if dev is not None else None,
+                'stats_box': stats_text, 'quality_box': "\n".join(q_lines)}
+
+    def plot_portfolio(self, weights, wm, benchmark_returns=None, filename="portfolio_allocation.png"):
         """Portfolio X-ray: market-value weight donut + weighted GARP stats.
 
         Args:
@@ -390,6 +442,7 @@ class LynchPinVisualizer:
             wm: output of ``engine.portfolio.weighted_metrics``.
             benchmark_returns: optional ``[(label, cagr_pct), ...]``; when
                 None, QQQ and S&P 500 5Y CAGRs are fetched via yfinance.
+            filename: the PNG's name in ``output_dir``.
         """
         if benchmark_returns is None:
             benchmark_returns = [self._get_benchmark_data("qqq"), self._get_benchmark_data("spy")]
@@ -416,6 +469,7 @@ class LynchPinVisualizer:
         fig = plt.figure(figsize=(12, H), dpi=300)
         ax = fig.add_axes([0.0, 0.0, 0.5, 0.5])  # donut; positioned once the layout is known
 
+        txt = self.portfolio_text(weights, wm, benchmark_returns)
         slices = self._pie_slices(weights)
         labels = [t for t, _ in slices]
         vals = [w for _, w in slices]
@@ -454,11 +508,11 @@ class LynchPinVisualizer:
             x, y = r * np.cos(ang), r * np.sin(ang)
             if w >= self._PIE_MIN_SLICE:
                 fs = 12 if w >= 0.08 else 10
-                t = ax.text(x, y, f"{lbl}\n{w * 100:.1f}%", ha='center', va='center',
+                t = ax.text(x, y, self.slice_label(lbl, w), ha='center', va='center',
                             fontsize=fs, fontweight='bold', color=pure_white, zorder=5)
             else:
                 fs = 9
-                t = ax.text(1.14 * np.cos(ang), 1.14 * np.sin(ang), f"{lbl} {w * 100:.1f}%",
+                t = ax.text(1.14 * np.cos(ang), 1.14 * np.sin(ang), self.slice_label(lbl, w),
                             ha='center', va='center', fontsize=fs, color='#B0B0B0', zorder=5)
             scaled.append((t, fs))
 
@@ -466,13 +520,13 @@ class LynchPinVisualizer:
         # the per-ticker SD marker)
         peg = wm.get('PEG')
         dev = wm.get('Dev_SD')
-        scaled.append((ax.text(0, 0.12, f"{peg:.2f}" if peg is not None else "N/A",
+        scaled.append((ax.text(0, 0.12, txt['peg'],
                                ha='center', va='center', fontsize=30, fontweight='black',
                                color=pure_white), 30))
         scaled.append((ax.text(0, -0.16, "WEIGHTED PEG", ha='center', va='center',
                                fontsize=11, fontweight='bold', color='#B0B0B0'), 11))
         if dev is not None:
-            scaled.append((ax.text(0, -0.38, f" {dev:+.2f} SD ", ha='center', va='center',
+            scaled.append((ax.text(0, -0.38, txt['badge'], ha='center', va='center',
                                    fontsize=14, fontweight='bold', color=pure_white, zorder=10,
                                    bbox=dict(facecolor='#FF4B2B' if dev > 0 else '#2ECC71',
                                              edgecolor='none', boxstyle='round,pad=0.4')), 14))
@@ -484,44 +538,9 @@ class LynchPinVisualizer:
         ax.axis('off')
 
         box_style = dict(facecolor='#1A1A1A', edgecolor='#333333', boxstyle='round,pad=0.9', alpha=0.9)
+        stats_text, quality_text = txt['stats_box'], txt['quality_box']
 
-        def fmt(v, spec, suffix=''):
-            return (format(v, spec) + suffix) if v is not None else 'N/A'
-
-        # Stats box (right, top) — mirrors the per-ticker box, "Portfolio:" instead of "Ticker:"
-        n_pos = len(weights)
-        stats_text = (
-            f"Portfolio:{(str(n_pos) + ' positions'):>13}\n"
-            f"-----------------------\n"
-            f"- W. PE:       {fmt(wm.get('PE'), '.1f'):>8}\n"
-            f"- W. Fwd PE:   {fmt(wm.get('FwdPE'), '.1f'):>8}\n"
-            f"- W. 2YFwd PE: {fmt(wm.get('2YFwd'), '.1f'):>8}\n"
-            f"- W. PEG:      {fmt(wm.get('PEG'), '.2f'):>8}\n"
-            f"- Median PEG:  {fmt(wm.get('MedianPEG'), '.2f'):>8}\n"
-            f"- W. Growth:   {fmt(wm.get('Growth'), '.1f', '%'):>8}\n"
-            f"- W. Bull ROI: {fmt(wm.get('Bull'), '.1f', '%'):>8}\n"
-            f"- W. Base ROI: {fmt(wm.get('Base'), '.1f', '%'):>8}\n"
-            f"- W. Bear ROI: {fmt(wm.get('Bear'), '.1f', '%'):>8}"
-        )
-
-        # Quality + benchmark box (right, lower)
-        base = wm.get('Base')
-        q_lines = [
-            f"Quality (weighted)",
-            f"-----------------------",
-            f"- Income Grade: {wm.get('IncomeGrade', 'N/A'):>7}",
-            f"- Credit Rating:{wm.get('CreditRating', 'NR'):>7}",
-            "",
-            f"5Y Index Return vs Base",
-            f"-----------------------",
-        ]
-        for lbl, cagr in benchmark_returns:
-            short = lbl.split(' (')[0]
-            q_lines.append(f"- {short:<10}{cagr:>10.1f}%")
-        q_lines.append(f"- {'Portfolio':<10}{fmt(base, '.1f', '%'):>11}")
-        quality_text = "\n".join(q_lines)
-
-        title = fig.text(0, 0, 'PORTFOLIO X-RAY: WEIGHT & WEIGHTED GARP METRICS',
+        title = fig.text(0, 0, txt['title'],
                          fontweight='bold', color=sky_blue, va='top')
         top_box = fig.text(0, 0, stats_text, color='#E0E0E0', family='monospace', ha='right',
                            va='top', multialignment='left', bbox=box_style, fontweight='bold')
@@ -587,7 +606,7 @@ class LynchPinVisualizer:
             e = _extent_in(box)
             box.set_position(((W - MARGIN - e[2]) / W, (target_y - e[edge]) / H))
 
-        path = os.path.join(self.output_dir, "portfolio_allocation.png")
+        path = os.path.join(self.output_dir, filename)
         plt.savefig(path, dpi=300, facecolor='#121212')
         plt.close(fig)
         return path

@@ -48,6 +48,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+PORTFOLIO_QUERY_RE = re.compile(r"(/api/portfolio)\?\S*")
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 STATIC_FILE_RE = re.compile(r"^(?:[a-z0-9_\-]+/)?[A-Za-z0-9_\-]+\.(?:html|css|js|png|jpg|jpeg|webp|svg|webmanifest|ico)$")
 # A page's "/static/NAME.js" / ".css" references, versioned as the page is served (see send_page)
@@ -104,12 +105,18 @@ class PortalApp:
     """Request-independent state: settings + (optional) analysis services."""
 
     def __init__(self, settings=None, jobs=None, llm=None, scans=None, socials=None, stats=None, valuation=None,
-                 tv=None, names=None):
+                 tv=None, names=None, portfolio=None):
         self.settings = settings or Settings()
         self.tv = tv  # ui.tradingview.TradingView: the per-ticker chart (None = off)
         self.stats = stats  # ui.stats.StatsRecorder (--lan / --public) or None
         self.jobs = jobs  # ui.jobs.JobManager (step 3+)
         self.llm = llm    # ui.llm.LocalLLMClient (step 4+)
+        if portfolio is None and jobs is not None:
+            from ui.portfolio import PortfolioAnalyzer
+            # the AI verdict uses the ticker overviews' backends: the local model, then Gemini (none with --no-ai)
+            portfolio = PortfolioAnalyzer(self.settings, jobs, llm=llm,
+                                          gemini=getattr(jobs, "gemini", None) if llm is not None else None)
+        self.portfolio = portfolio  # ui.portfolio.PortfolioAnalyzer: the Portfolio Analyzer (with the search)
         if scans is None:
             from ui.scans import ScanArchive
             scans = ScanArchive(self.settings.scans_dir, self.settings.cache_dir, limit=self.settings.scans_limit)
@@ -232,6 +239,7 @@ def make_handler(app):
         # ── plumbing ─────────────────────────────────────────────────────────────
         def log_message(self, fmt, *args):  # quieter, single-line access log
             line = _printable((fmt % args).encode("ascii", "backslashreplace").decode("ascii"))
+            line = PORTFOLIO_QUERY_RE.sub(r"\1?…", line)  # a portfolio's positions (amounts) stay out of the log
             sys.stderr.write(f"[{self.log_date_time_string()}] {self.client_addr()} {line}\n")
 
         def send_response(self, code, message=None):
@@ -497,6 +505,10 @@ def make_handler(app):
                 return self.route_ticker(path[len("/api/ticker/"):], query)
             if path.startswith("/api/tv/"):
                 return self.route_tv(path[len("/api/tv/"):], query)
+            if path in ("/api/portfolio", "/api/portfolio/ai"):
+                return self.route_portfolio(path, query)
+            if path.startswith("/portfolio/"):
+                return self.route_portfolio_plot(path[len("/portfolio/"):])
             if path.startswith("/plots/"):
                 return self.route_plot(path[len("/plots/"):])
             if path == "/api/scans":
@@ -585,6 +597,35 @@ def make_handler(app):
                 # answered at once (cache, or a just-finished job); queued lookups are timed by the job
                 app.stats.query(sym, "cache" if snap.get("cached") else "recent", snap["status"],
                                 time.monotonic() - self._t0_mono, ts=self._t0)
+
+        def route_portfolio(self, path, query):
+            """/api/portfolio?m=pct|amt&p=SYM:VALUE,... → the portfolio X-ray (ui/portfolio.py), ``running`` while its
+            positions are analysed (the page polls with &poll=1); /api/portfolio/ai?k=KEY → its AI verdict."""
+            pf = app.portfolio
+            if pf is None:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "search disabled")
+            from ui.portfolio import KEY_RE, PortfolioError, parse_positions
+            if path.endswith("/ai"):
+                key = query.get("k", [""])[0]
+                if not KEY_RE.match(key):
+                    return self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid portfolio key")
+                return self.send_json(pf.request_ai(key))
+            try:
+                positions = parse_positions(query.get("p", [""])[0][:2000], query.get("m", ["pct"])[0])
+            except PortfolioError as e:
+                return self.send_error_json(HTTPStatus.BAD_REQUEST, str(e))
+            snap = pf.analyze(positions, poll=query.get("poll", ["0"])[0] == "1",
+                              client=self.client_ip() if app.public else None)
+            self.send_json(snap)
+
+        def route_portfolio_plot(self, name):
+            """/portfolio/KEY.png = the X-ray donut (lightbox), /portfolio/KEY.jpg = its preview."""
+            if app.portfolio is None or not name.endswith((".png", ".jpg")):
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "not found")
+            path = app.portfolio.plot_path(name[:-4], preview=name.endswith(".jpg"))
+            if not path:
+                return self.send_error_json(HTTPStatus.NOT_FOUND, "no chart")
+            return self.send_file(path, "private, max-age=86400")
 
         def route_tv(self, rest, query):
             """The trading view: /api/tv/SYM?i=CODE&s=SID (candles + indicators, gzip JSON) and /api/tv/release?s=SID

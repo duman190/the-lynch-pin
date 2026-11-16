@@ -20,7 +20,12 @@ pub struct Spec {
     #[serde(default)]
     pub threads: usize,
     pub fonts: FontPaths,
-    pub chart: Chart,
+    /// The per-ticker PEG chart; or
+    #[serde(default)]
+    pub chart: Option<Chart>,
+    /// the portfolio X-ray donut (one of the two).
+    #[serde(default)]
+    pub donut: Option<crate::donut::Donut>,
 }
 
 /// TrueType files matplotlib would pick (DejaVu, bundled with matplotlib).

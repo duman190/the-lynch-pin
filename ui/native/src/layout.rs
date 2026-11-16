@@ -21,7 +21,7 @@ pub struct Rgba {
     pub a: f32,
 }
 
-const fn hex(v: u32) -> Rgba {
+pub(crate) const fn hex(v: u32) -> Rgba {
     Rgba {
         r: ((v >> 16) & 0xff) as f32 / 255.0,
         g: ((v >> 8) & 0xff) as f32 / 255.0,
@@ -31,7 +31,7 @@ const fn hex(v: u32) -> Rgba {
 }
 
 impl Rgba {
-    const fn alpha(self, a: f32) -> Rgba {
+    pub(crate) const fn alpha(self, a: f32) -> Rgba {
         Rgba { a, ..self }
     }
     fn rgb255(self) -> [f64; 3] {
@@ -41,13 +41,13 @@ impl Rgba {
 
 // The visualizer's palette and rcParams
 pub const BG: Rgba = hex(0x121212);
-const SKY: Rgba = hex(0x5D9CEC);
-const WHITE: Rgba = hex(0xFFFFFF);
-const RED: Rgba = hex(0xFF4B2B);
-const BOX_FACE: Rgba = hex(0x1A1A1A);
-const BOX_EDGE: Rgba = hex(0x333333);
-const LABEL: Rgba = hex(0xE0E0E0);
-const TICK: Rgba = hex(0xB0B0B0);
+pub(crate) const SKY: Rgba = hex(0x5D9CEC);
+pub(crate) const WHITE: Rgba = hex(0xFFFFFF);
+pub(crate) const RED: Rgba = hex(0xFF4B2B);
+pub(crate) const BOX_FACE: Rgba = hex(0x1A1A1A);
+pub(crate) const BOX_EDGE: Rgba = hex(0x333333);
+pub(crate) const LABEL: Rgba = hex(0xE0E0E0);
+pub(crate) const TICK: Rgba = hex(0xB0B0B0);
 const SPINE: Rgba = hex(0x333333);
 
 const FIG_W_IN: f64 = 12.0;
@@ -60,7 +60,7 @@ const TICK_WIDTH: f64 = 0.8;
 const TICK_PAD: f64 = 3.5;
 const LABEL_PAD: f64 = 4.0;
 const SPINE_WIDTH: f64 = 0.8;
-const PATCH_WIDTH: f64 = 1.0; // patch.linewidth: box frames and fill_between edges
+pub(crate) const PATCH_WIDTH: f64 = 1.0; // patch.linewidth: box frames and fill_between edges
 const TITLE_PAD: f64 = 35.0;
 // graphics/visualizer.py's stat boxes: padding and corner radius (fractions of the font size), and the gap between
 // sections (a blank line, as a fraction of a line)
@@ -122,26 +122,26 @@ pub struct Scene {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum HAlign {
+pub(crate) enum HAlign {
     Left,
     Center,
     Right,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum VAlign {
+pub(crate) enum VAlign {
     Top,
     Baseline,
 }
 
 /// A laid-out text in matplotlib pixels (y up), relative to its anchor.
-struct TextLayout {
+pub(crate) struct TextLayout {
     lines: Vec<(Shaped, f64, f64)>, // (glyphs, x, baseline y)
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
-    size_px: f64,
+    pub(crate) x0: f64,
+    pub(crate) y0: f64,
+    pub(crate) x1: f64,
+    pub(crate) y1: f64,
+    pub(crate) size_px: f64,
 }
 
 impl TextLayout {
@@ -164,11 +164,11 @@ impl Placed<'_> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Bounds {
-    x0: f64,
-    y0: f64,
-    x1: f64,
-    y1: f64,
+pub(crate) struct Bounds {
+    pub(crate) x0: f64,
+    pub(crate) y0: f64,
+    pub(crate) x1: f64,
+    pub(crate) y1: f64,
 }
 
 impl Bounds {
@@ -180,7 +180,7 @@ impl Bounds {
 /// Text._get_layout (matplotlib 3.11): lines are at least as tall as the font's typographic ascent/descent plus
 /// half the line gap on each side (no gap for a single line); the width is the widest line's pen advance;
 /// multi-line alignment follows the horizontal alignment.
-fn layout_text(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign, va: VAlign) -> TextLayout {
+pub(crate) fn layout_text(font: &Font, text: &str, size_pt: f64, dpi: f64, ha: HAlign, va: VAlign) -> TextLayout {
     layout_lines(font, text, size_pt, dpi, ha, va, 1.0)
 }
 
@@ -399,7 +399,7 @@ fn snap(v: f64, width_px: f64) -> f64 {
 }
 
 /// matplotlib's BoxStyle.Round: corners are quadratic Béziers of radius ``dr`` (its rounding_size, else ``pad``).
-fn round_box(pb: &mut PathBuilder, flip: f64, b: Bounds, pad: f64, dr: f64) {
+pub(crate) fn round_box(pb: &mut PathBuilder, flip: f64, b: Bounds, pad: f64, dr: f64) {
     let (x0, y0, x1, y1) = (b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad);
     let p = |x: f64, y: f64| (x as f32, (flip - y) as f32);
     let pts = [
@@ -602,31 +602,7 @@ impl<'a> Builder<'a> {
         let flip = fh;
         let dev = |x: f64, y: f64| (x as f32, (flip - y) as f32);
         let mut ops: Vec<DrawOp> = Vec::with_capacity(48);
-        let mut push = |op: Op| {
-            // Strokes become filled outlines here, once, rather than in every band that draws them
-            let op = match op {
-                Op::Stroke(p, c, s) => {
-                    let dashed = s.dash.as_ref().and_then(|d| p.dash(d, 1.0));
-                    let solid = Stroke { dash: None, ..s.clone() };
-                    match dashed.as_ref().unwrap_or(&p).stroke(&solid, 1.0) {
-                        Some(outline) => Op::Fill(outline, c),
-                        None => Op::Stroke(p, c, s),
-                    }
-                }
-                op => op,
-            };
-            let (top, bottom) = match &op {
-                Op::Fill(p, _) => (p.bounds().top(), p.bounds().bottom()),
-                Op::Stroke(p, _, s) => (p.bounds().top() - s.width, p.bounds().bottom() + s.width),
-                Op::Rect(r, _) => (r.top(), r.bottom()),
-                Op::RoundBox(b, _) => (b.top as f32, b.bottom as f32),
-                Op::Glyphs(g, _) => (
-                    g.iter().map(|(_, _, t)| *t).min().unwrap_or(0) as f32,
-                    g.iter().map(|(m, _, t)| t + m.height as i32).max().unwrap_or(0) as f32,
-                ),
-            };
-            ops.push(DrawOp { op, top, bottom });
-        };
+        let mut push = |op: Op| ops.push(draw_op(op));
         let line = |pts: &[(f32, f32)]| -> Option<Path> {
             let mut pb = PathBuilder::new();
             pb.move_to(pts[0].0, pts[0].1);
@@ -852,8 +828,35 @@ struct Anchors {
     badge: (f64, f64),
 }
 
+/// A draw call with the device rows it touches. Strokes become filled outlines here, once, rather than in every
+/// band that draws them.
+pub(crate) fn draw_op(op: Op) -> DrawOp {
+    let op = match op {
+        Op::Stroke(p, c, s) => {
+            let dashed = s.dash.as_ref().and_then(|d| p.dash(d, 1.0));
+            let solid = Stroke { dash: None, ..s.clone() };
+            match dashed.as_ref().unwrap_or(&p).stroke(&solid, 1.0) {
+                Some(outline) => Op::Fill(outline, c),
+                None => Op::Stroke(p, c, s),
+            }
+        }
+        op => op,
+    };
+    let (top, bottom) = match &op {
+        Op::Fill(p, _) => (p.bounds().top(), p.bounds().bottom()),
+        Op::Stroke(p, _, s) => (p.bounds().top() - s.width, p.bounds().bottom() + s.width),
+        Op::Rect(r, _) => (r.top(), r.bottom()),
+        Op::RoundBox(b, _) => (b.top as f32, b.bottom as f32),
+        Op::Glyphs(g, _) => (
+            g.iter().map(|(_, _, t)| *t).min().unwrap_or(0) as f32,
+            g.iter().map(|(m, _, t)| t + m.height as i32).max().unwrap_or(0) as f32,
+        ),
+    };
+    DrawOp { op, top, bottom }
+}
+
 /// The glyph masks of a text anchored at (x, y) (matplotlib pixels).
-fn text_glyphs(t: &TextLayout, x: f64, y: f64, flip: f64) -> Option<Vec<(Arc<GlyphMask>, i32, i32)>> {
+pub(crate) fn text_glyphs(t: &TextLayout, x: f64, y: f64, flip: f64) -> Option<Vec<(Arc<GlyphMask>, i32, i32)>> {
     let mut out = Vec::new();
     for (s, lx, ly) in &t.lines {
         s.masks_at(x + lx, flip - (y + ly), &mut out);

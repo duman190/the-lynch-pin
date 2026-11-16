@@ -1,5 +1,5 @@
-"""The per-ticker PEG chart drawn by the native renderer in ui/native (Rust: tiny-skia + ttf-parser), a drop-in for
-``graphics.visualizer.LynchPinVisualizer.plot_ticker_distribution``.
+"""The per-ticker PEG chart and the portfolio X-ray donut drawn by the native renderer in ui/native (Rust: tiny-skia +
+ttf-parser), drop-ins for ``graphics.visualizer.LynchPinVisualizer.plot_ticker_distribution`` and ``plot_portfolio``.
 
 matplotlib takes about a second for the 300-dpi chart and Pillow another quarter of a second for its JPEG preview,
 and pyplot is process-global, so threads drew charts one at a time. The native renderer lays the chart out the way
@@ -26,10 +26,12 @@ from ui import imaging
 
 NATIVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "native")
 ABI = 1
+DONUT_ABI = 1
 PYPLOT_LOCK = threading.Lock()  # pyplot and the visualizer's rcParams are process-global
 
 _lib = None
 _lib_error = None
+_donut = False  # the loaded library draws the portfolio donut (lynch_donut_abi)
 _lib_guard = threading.Lock()
 _fonts = None
 
@@ -72,8 +74,19 @@ def library():
         except (OSError, AttributeError) as e:
             _lib_error = f"{path}: {e}"
             return None
+        global _donut
+        try:  # a library built before the portfolio analyzer: the per-ticker chart only
+            lib.lynch_donut_abi.restype = ctypes.c_uint32
+            _donut = lib.lynch_donut_abi() == DONUT_ABI
+        except AttributeError:
+            _donut = False
         _lib = lib
         return lib
+
+
+def donut_available():
+    """The native renderer is built and new enough to draw the portfolio donut."""
+    return library() is not None and _donut
 
 
 def unavailable_reason():
@@ -250,6 +263,62 @@ class FastVisualizer:
             except OSError:
                 pass
         return path
+
+
+def donut_text(weights, wm, benchmark_returns):
+    """The ``donut`` part of a render request: what plot_portfolio draws (graphics/visualizer.py's own strings)."""
+    from graphics.visualizer import LynchPinVisualizer
+    viz = LynchPinVisualizer.__new__(LynchPinVisualizer)  # its text helpers only: no rcParams, no output dir
+    txt = viz.portfolio_text(weights, wm, benchmark_returns)
+    slices = [{"weight": float(w), "text": viz.slice_label(label, w), "small": bool(w < viz._PIE_MIN_SLICE)}
+              for label, w in viz._pie_slices(weights)]
+    dev = wm.get("Dev_SD")
+    donut = {"title": txt["title"], "slices": slices, "peg": txt["peg"], "badge": txt["badge"],
+             "badge_red": bool(dev is not None and dev > 0), "stats_box": txt["stats_box"],
+             "quality_box": txt["quality_box"]}
+    if any("$" in v for k, v in donut.items() if isinstance(v, str) and k != "stats_box") or \
+            any("$" in sl["text"] for sl in slices):
+        raise NativeChartUnsupported("math text")  # matplotlib would parse it as math
+    return donut
+
+
+def plot_portfolio(weights, wm, benchmark_returns, output_dir, filename="portfolio_allocation.png", threads=0):
+    """The portfolio X-ray donut (``LynchPinVisualizer.plot_portfolio``): drawn natively when the renderer is built,
+    else — or for an input it leaves to matplotlib — with matplotlib. Writes ``filename`` (300 dpi) in
+    ``output_dir`` and its inline JPEG preview where ui/imaging.py's ``jpeg_preview`` looks for it; returns
+    ``(path, timings)`` (timings None when matplotlib drew it)."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    if donut_available():
+        preview_dir = imaging.plot_preview_dir(path)
+        rendered = os.path.join(preview_dir, f".portfolio-{uuid.uuid4().hex[:12]}.jpg")
+        try:
+            spec = {"png": path, "jpeg": rendered, "jpeg_width": imaging.PLOT_PREVIEW_WIDTH, "jpeg_quality": 85,
+                    "threads": threads, "fonts": font_paths(), "donut": donut_text(weights, wm, benchmark_returns)}
+            os.makedirs(preview_dir, exist_ok=True)
+            timings = render(spec)
+        except Exception as e:
+            try:
+                os.remove(rendered)
+            except OSError:
+                pass
+            if not isinstance(e, NativeChartUnsupported):
+                print(f"⚠️  native portfolio chart failed, drawing it with matplotlib: {type(e).__name__}: {e}")
+        else:
+            try:
+                imaging.adopt_preview(path, preview_dir, imaging.PLOT_PREVIEW_WIDTH, rendered)
+            except OSError:
+                try:
+                    os.remove(rendered)
+                except OSError:
+                    pass
+            return path, timings
+    import matplotlib
+    matplotlib.use("Agg")
+    from graphics.visualizer import LynchPinVisualizer
+    with PYPLOT_LOCK:
+        return LynchPinVisualizer(output_dir=output_dir).plot_portfolio(weights, wm, benchmark_returns,
+                                                                        filename=filename), None
 
 
 def visualizer_class():

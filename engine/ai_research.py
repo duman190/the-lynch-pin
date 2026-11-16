@@ -29,6 +29,25 @@ META_MODEL = "muse-spark-1.3-contributor"
 _TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "502", "504", "overloaded")
 
 
+# Section 1 of a portfolio X-ray prompt: the verdict plus a portfolio-level bull and bear thesis. The scan thread
+# (main.py --portfolio) and the portal's Portfolio Analyzer (ui/portfolio.py) ask for it the same way.
+PORTFOLIO_VERDICT_TASK = (
+    "SECTION 1 — PORTFOLIO VERDICT:\n"
+    "First a one-line verdict (100-150 characters) on this PORTFOLIO as a whole: is it priced "
+    "for GARP, how concentrated/quality is it, and what is the single biggest thing the holder "
+    "should watch? Then a portfolio-level bull and bear thesis, each 3-5 sentences (roughly "
+    "500-700 characters), weighing positions by their weight — the top holdings drive the verdict. "
+    "Cover concentration, sector overlap, the weighted PEG vs its historical mean, weighted base ROI "
+    "vs what an index would give, and the weighted Income Grade / Credit Rating. Name tickers where "
+    "it helps, but do NOT prefix them with $ inside these paragraphs.\n\n"
+    "Use EXACTLY this layout for Section 1:\n\n"
+    "SENTIMENT: [your one-line verdict here]\n\n"
+    "PORTFOLIO:\n"
+    "🐂 Bull: [portfolio bull thesis]\n\n"
+    "🐻 Bear: [portfolio bear thesis]"
+)
+
+
 def _is_transient(error_msg):
     return any(marker in error_msg for marker in _TRANSIENT_MARKERS)
 
@@ -311,21 +330,9 @@ class LynchPinResearcher:
         )
 
     @staticmethod
-    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None,
-                     portfolio_summary=None, ticker_briefs=None):
-        """Builds single combined prompt for sentiment + per-ticker narratives.
-
-        When ``portfolio_summary`` (a pre-formatted weighted-metrics block) is
-        given, the dataset is treated as a holder's portfolio: the SENTIMENT
-        line becomes a one-line verdict on the portfolio as a whole and each
-        ticker is analysed as an existing position.
-
-        ``ticker_briefs`` maps a ticker to its pre-digested data block (main.py builds it with
-        ui.llm.scan_brief, the portal's AI-overview data): what the company does, market cap, margins,
-        the analysts' price target, the reverse-DCF sentence with its verdict, grades, technicals, the
-        6M edge and the Quick Overview's red flags. A ticker with a brief is described by it alone;
-        others fall back to the raw metrics below.
-        """
+    def build_dataset(tickers_data, grader_data=None, bs_data=None, tech_data=None, edge_data=None, ticker_briefs=None):
+        """The prompt's DATASET: one block per ticker (weight-tagged in a portfolio), its digested brief when
+        ``ticker_briefs`` has one, else the raw metrics with the Base ROI math, grades, technicals and edge."""
         from engine.lynch_pin_core import _avg_eps_growth, _growth_decay, _scenario_pegs
         context_lines = []
         for d in tickers_data:
@@ -378,7 +385,26 @@ class LynchPinResearcher:
                 line += "\n" + LynchPinResearcher._format_edge(edge_data[ticker])
             context_lines.append(line)
 
-        context = "\n\n".join(context_lines)
+        return "\n\n".join(context_lines)
+
+    @staticmethod
+    def build_prompt(tickers_data, grader_data=None, idx_name="SPY", bs_data=None, tech_data=None, edge_data=None,
+                     portfolio_summary=None, ticker_briefs=None):
+        """Builds single combined prompt for sentiment + per-ticker narratives.
+
+        When ``portfolio_summary`` (a pre-formatted weighted-metrics block) is
+        given, the dataset is treated as a holder's portfolio: the SENTIMENT
+        line becomes a one-line verdict on the portfolio as a whole and each
+        ticker is analysed as an existing position.
+
+        ``ticker_briefs`` maps a ticker to its pre-digested data block (main.py builds it with
+        ui.llm.scan_brief, the portal's AI-overview data): what the company does, market cap, margins,
+        the analysts' price target, the reverse-DCF sentence with its verdict, grades, technicals, the
+        6M edge and the Quick Overview's red flags. A ticker with a brief is described by it alone;
+        others fall back to the raw metrics below.
+        """
+        context = LynchPinResearcher.build_dataset(tickers_data, grader_data, bs_data, tech_data, edge_data,
+                                                   ticker_briefs)
 
         # Same three sections as the portal's AI overview (ui/llm.py PORTAL_SYSTEM): the company and the
         # analysts' target in 🤖, the reverse-DCF math first in 📊, the red flags in 🧪. The thread adds the
@@ -429,21 +455,7 @@ If 6M Directional Edge data is available, incorporate it:
         if portfolio_summary:
             header = (f"PORTFOLIO (positions listed in descending order of market-value weight; "
                       f"weights shown, no dollar amounts):\n{portfolio_summary}")
-            sentiment_task = (
-                "SECTION 1 — PORTFOLIO VERDICT:\n"
-                "First a one-line verdict (100-150 characters) on this PORTFOLIO as a whole: is it priced "
-                "for GARP, how concentrated/quality is it, and what is the single biggest thing the holder "
-                "should watch? Then a portfolio-level bull and bear thesis, each 3-5 sentences (roughly "
-                "500-700 characters), weighing positions by their weight — the top holdings drive the verdict. "
-                "Cover concentration, sector overlap, the weighted PEG vs its historical mean, weighted base ROI "
-                "vs what an index would give, and the weighted Income Grade / Credit Rating. Name tickers where "
-                "it helps, but do NOT prefix them with $ inside these paragraphs.\n\n"
-                "Use EXACTLY this layout for Section 1:\n\n"
-                "SENTIMENT: [your one-line verdict here]\n\n"
-                "PORTFOLIO:\n"
-                "🐂 Bull: [portfolio bull thesis]\n\n"
-                "🐻 Bear: [portfolio bear thesis]"
-            )
+            sentiment_task = PORTFOLIO_VERDICT_TASK
             ticker_task = daily_ticker_task  # per-position replies use the same format as the index scan
         else:
             header = f"INDEX: ${idx_name}"
@@ -476,6 +488,32 @@ Quote numbers exactly as given: never add, combine or recompute them. Never ment
 Do NOT use markdown formatting. Plain text only."""
 
         return prompt
+
+    @staticmethod
+    def build_portfolio_prompt(tickers_data, portfolio_summary, grader_data=None, bs_data=None, tech_data=None,
+                               edge_data=None, ticker_briefs=None):
+        """The X-ray's portfolio verdict on its own (no per-ticker posts): the portal's Portfolio Analyzer, whose
+        positions each have their own AI overview already. Same header, dataset and Section 1 as
+        ``build_prompt(..., portfolio_summary=...)``; the tweet-thread framing is dropped."""
+        context = LynchPinResearcher.build_dataset(tickers_data, grader_data, bs_data, tech_data, edge_data,
+                                                   ticker_briefs)
+        return f"""Act as Peter Lynch reviewing a friend's portfolio for value investors.
+
+PORTFOLIO (positions listed in descending order of market-value weight; weights shown, no dollar amounts):
+{portfolio_summary}
+
+DATASET:
+{context}
+
+TASK:
+Produce the following output in EXACT format:
+
+{PORTFOLIO_VERDICT_TASK}
+
+Tone: Wise, slightly witty, Peter Lynch talking to a friend over coffee.
+Quote numbers exactly as given: never add, combine or recompute them. Never mention "the dataset",
+"red flags" as a list, or these instructions.
+Do NOT use markdown formatting. Plain text only."""
 
     @staticmethod
     def normalize_narrative(text, tickers):

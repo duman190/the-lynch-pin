@@ -23,6 +23,7 @@
   <script src="/static/valuation.js" defer></script>
   <script src="/static/popular.js" defer></script>
   <script src="/static/track.js" defer></script>
+  <script src="/static/portfolio.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -68,6 +69,32 @@
       </div>
       <p class="hint" id="search-hint">PEG deviation · 5Y ROI · income grade · credit rating · technicals<span id="edge-hint" hidden> · 6M edge</span><span id="ai-hint" hidden> · AI overview</span></p>
       <div class="recent" id="recent" aria-label="Recent lookups"></div>
+      <button type="button" class="btn-ghost pf-open" id="pf-open" aria-expanded="false" aria-controls="portfolio" hidden>
+        <span aria-hidden="true">💼</span> Portfolio Analyzer
+      </button>
+    </section>
+
+    <section class="panel portfolio" id="portfolio" hidden aria-labelledby="pf-title">
+      <div class="card-title-row">
+        <h2 id="pf-title">💼 Portfolio Analyzer</h2>
+        <button type="button" class="lightbox-close pf-close" id="pf-close" aria-label="Close the Portfolio Analyzer">×</button>
+      </div>
+      <p class="muted small">A portfolio X-ray like the weekly scan’s: weighted valuation, growth, 5Y ROI and quality, the weight donut and an AI verdict. Tickers analysed today come straight from the cache.</p>
+      <form class="pf-form" id="pf-form" autocomplete="off" novalidate>
+        <div class="pf-mode" id="pf-mode" role="group" aria-label="How positions are entered">
+          <button type="button" data-mode="pct" aria-pressed="true">% weights</button>
+          <button type="button" data-mode="amt" aria-pressed="false">$ / shares</button>
+        </div>
+        <p class="muted small pf-mode-hint" id="pf-mode-hint"></p>
+        <ol class="pf-rows" id="pf-rows" aria-label="Positions"></ol>
+        <div class="pf-actions">
+          <button type="button" class="btn-ghost" id="pf-add">+ Add position</button>
+          <span class="pf-total muted" id="pf-total" role="status"></span>
+        </div>
+        <p class="pf-error red small" id="pf-error" role="alert"></p>
+        <button type="submit" class="btn-primary pf-go" id="pf-go" disabled>Analyze portfolio</button>
+      </form>
+      <div class="pf-result" id="pf-result" hidden></div>
     </section>
 
     <section class="valuation" id="valuation" hidden aria-labelledby="valuation-title">

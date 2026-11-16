@@ -426,6 +426,16 @@ class JobManager:
         peek = getattr(self.store, "peek", None)
         return peek(sym) if peek else None
 
+    def entry(self, sym):
+        """Today's full result for ``sym`` (with its AI inputs): the stored one, else the last finished lookup's (an
+        uncacheable result is only kept there); None when neither. No stats side effects."""
+        data = self.lookup(sym)
+        if data is not None:
+            return data
+        with self._cv:
+            job = self._recent.get(sym)
+            return job.data if job is not None and job.status in FINAL else None
+
     def plot_path(self, sym, preview=False):
         sym = sym.replace("*", "")
         data = self.lookup(sym)
