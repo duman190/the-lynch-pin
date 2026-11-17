@@ -1,6 +1,7 @@
 /* The Lynch Pin · Quant Portal — 5Y backtest of a portfolio X-ray (ui/backtest.py): $10,000 in the portfolio's weights
    five years ago, held, against VOO, QQQ, SCHD, SMH and IGV with dividends reinvested. One value a week as lines on a
-   canvas (a second canvas carries the crosshair, so hovering never redraws the lines; the legend hides a line),
+   canvas (a second canvas carries the crosshair, so hovering never redraws the lines); the legend is a key rather than
+   a filter, so every series is always drawn,
    then the risk / return table, one column per series. Opened by "5Y backtest" under View chart on the portfolio
    page. No libraries. Depends on app.js helpers ($, el, getJSON). */
 "use strict";
@@ -22,7 +23,7 @@
     ["corr", "Correlation", "ratio", "Of weekly returns, with the portfolio"],
     ["beta", "Beta", "ratio", "The portfolio's weekly moves against the index's"],
   ];
-  const B = { token: 0, timer: null, data: null, hidden: new Set(), geo: null, ro: null };
+  const B = { token: 0, timer: null, data: null, geo: null, ro: null };
   const isNum = (v) => typeof v === "number" && Number.isFinite(v);
   const usd0 = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
   const usdK = (v) => (Math.abs(v) >= 1000 ? `$${+(v / 1000).toFixed(v >= 100000 ? 0 : 1)}k` : `$${Math.round(v)}`);
@@ -84,8 +85,7 @@
     sizeCanvas($("#bt-cross"), w, h).clearRect(0, 0, w, h);
     const narrow = w < 480;
     const pad = { l: narrow ? 42 : 54, r: 10, t: 10, b: 24 };
-    const shown = d.series.filter((s) => !B.hidden.has(s.sym));
-    const all = shown.flatMap((s) => s.values);
+    const all = d.series.flatMap((s) => s.values);
     let lo = Math.min(...all, d.start_value), hi = Math.max(...all, d.start_value);
     const step = niceStep(hi - lo, narrow ? 4 : 6);
     lo = Math.floor(lo / step) * step;
@@ -126,7 +126,7 @@
       ctx.fillText(narrow ? `’${yr.slice(2)}` : yr, xx, h - pad.b + 6);
     });
     // the lines, the portfolio on top
-    const order = shown.filter((s) => s.sym !== "Portfolio").concat(shown.filter((s) => s.sym === "Portfolio"));
+    const order = d.series.filter((s) => s.sym !== "Portfolio").concat(d.series.filter((s) => s.sym === "Portfolio"));
     ctx.lineJoin = "round";
     for (const s of order) {
       ctx.strokeStyle = COLORS[s.sym] || "#888";
@@ -177,17 +177,10 @@
   }
 
   function legend(d) {
-    return el("div", { class: "bt-legend", role: "group", "aria-label": "Lines on the chart" }, d.series.map((s) => {
-      const b = el("button", { type: "button", class: "bt-leg", "aria-pressed": String(!B.hidden.has(s.sym)), title: NAMES[s.sym] || "Your portfolio" },
-        el("span", { class: "bt-swatch", "data-c": s.sym }), s.sym, el("span", { class: `bt-leg-pct ${s.metrics.total >= 0 ? "green" : "red"}` }, pct(s.metrics.total, 0)));
-      b.addEventListener("click", () => {
-        if (s.sym === "Portfolio") return;  // the portfolio always shows
-        if (B.hidden.has(s.sym)) B.hidden.delete(s.sym); else B.hidden.add(s.sym);
-        b.setAttribute("aria-pressed", String(!B.hidden.has(s.sym)));
-        draw();
-      });
-      return b;
-    }));
+    const items = d.series.map((s) => el("span", { class: "bt-leg", role: "listitem", title: NAMES[s.sym] || "Your portfolio" },
+      el("span", { class: "bt-swatch", "data-c": s.sym }), s.sym,
+      el("span", { class: `bt-leg-pct ${s.metrics.total >= 0 ? "green" : "red"}` }, pct(s.metrics.total, 0))));
+    return el("div", { class: "bt-legend", role: "list", "aria-label": "Series on the chart" }, items);
   }
 
   function render(d) {
@@ -213,7 +206,6 @@
     const token = ++B.token;
     clearTimeout(B.timer);
     B.data = null;
-    B.hidden.clear();
     $("#bt-title").textContent = label ? `5Y backtest · ${label}` : "5Y backtest";
     $("#bt-sub").textContent = "Fetching five years of weekly prices…";
     $("#bt-body").replaceChildren(el("p", { class: "muted track-empty" }, "Building the backtest against VOO, QQQ, SCHD, SMH and IGV…"));
