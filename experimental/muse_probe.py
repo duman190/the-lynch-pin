@@ -47,8 +47,8 @@ def main():
     else:
         if not (os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY")):
             sys.exit("META_API_KEY (or MODEL_API_KEY) not set")
-        # Force the Meta-only path: no Gemini, no OpenRouter
-        for k in ("GEMINI_API_KEY", "OPENROUTER_API_KEY"):
+        # Force the Meta-only path: no Gemini (paid or free), no OpenRouter
+        for k in ("GEMINI_PAID_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"):
             os.environ.pop(k, None)
         researcher = LynchPinResearcher()
         researcher.meta_model = args.model

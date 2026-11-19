@@ -1078,6 +1078,228 @@ class TestAIFallbackChain(unittest.TestCase):
         self.assertEqual(researcher._tiers(), [])
         self.assertTrue(researcher._call_ai("p").startswith("AI Research Error:"))
 
+    # ── Tier 1 (optional): Paid Gemini (separate billing-linked key, e.g. Google AI Pro credits) ──
+
+    @patch('engine.ai_research.genai')
+    def test_paid_gemini_tier_joins_first_only_with_key(self, mock_genai):
+        from engine.ai_research import LynchPinResearcher, GEMINI_PAID_MODEL
+        paid_client, free_client = MagicMock(), MagicMock()
+        mock_genai.Client.side_effect = [paid_client, free_client]
+        env = {"GEMINI_PAID_API_KEY": "paid-key", "GEMINI_API_KEY": "free-key",
+               "OPENROUTER_API_KEY": "or-key", "META_API_KEY": "meta-key"}
+        with patch.dict(os.environ, env, clear=True):
+            researcher = LynchPinResearcher()
+        self.assertEqual(mock_genai.Client.call_args_list[0].kwargs, {"api_key": "paid-key"})
+        self.assertEqual(mock_genai.Client.call_args_list[1].kwargs, {"api_key": "free-key"})
+        self.assertIs(researcher.paid_client, paid_client)
+        self.assertIs(researcher.client, free_client)
+        tiers = researcher._tiers()
+        self.assertEqual([t[0] for t in tiers],
+                         ["GEMINI (paid)", "BEST", "BACKUP", "OPENROUTER", "META (paid)"])
+        self.assertEqual(tiers[0][1], GEMINI_PAID_MODEL)
+        self.assertEqual(tiers[0][1], "gemini-4-neon")
+        self.assertEqual(tiers[1][1], "gemini-3.6-flash")
+        self.assertEqual(tiers[2][1], "gemini-flash-lite-latest")
+
+        # Model override via GEMINI_PAID_MODEL
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "paid-key", "GEMINI_PAID_MODEL": "gemini-4-carbon"},
+                        clear=True):
+            mock_genai.Client.side_effect = None
+            mock_genai.Client.return_value = paid_client
+            r2 = LynchPinResearcher()
+        self.assertEqual(r2._tiers()[0][1], "gemini-4-carbon")
+        self.assertEqual([t[0] for t in r2._tiers()], ["GEMINI (paid)"])  # works even without free key
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.genai')
+    def test_paid_gemini_succeeds_without_touching_free_tier(self, mock_genai, mock_sleep):
+        from engine.ai_research import LynchPinResearcher
+        paid_client, free_client = MagicMock(), MagicMock()
+        paid_client.models.generate_content.return_value = self._gemini_response("neon ok")
+        mock_genai.Client.side_effect = [paid_client, free_client]
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "paid-key", "GEMINI_API_KEY": "free-key"}, clear=True):
+            researcher = LynchPinResearcher()
+        self.assertEqual(researcher._call_ai("p"), "neon ok")
+        self.assertEqual(paid_client.models.generate_content.call_count, 1)
+        self.assertEqual(paid_client.models.generate_content.call_args.kwargs["model"], "gemini-4-neon")
+        free_client.models.generate_content.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.genai')
+    def test_paid_gemini_spend_cap_or_depleted_credits_falls_back_immediately_to_free(self, mock_genai, mock_sleep):
+        """AI Studio spend-cap / prepay depletion arrives as HTTP 429 RESOURCE_EXHAUSTED — must NOT sleep
+        90s retrying 3x; must drop straight to free gemini-3.6-flash → gemini-flash-lite-latest."""
+        from engine.ai_research import LynchPinResearcher
+        billing_errors = [
+            "429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your project has exceeded its monthly spending cap.'}}",
+            "429 RESOURCE_EXHAUSTED. {'error': {'message': 'Your prepayment credits are depleted.'}}",
+            "403 PERMISSION_DENIED. BILLING_DISABLED for project",
+            "429 RESOURCE_EXHAUSTED. GenerateRequestsPerDayPerProjectPerModel-FreeTier exceeded",
+        ]
+        for err_msg in billing_errors:
+            mock_sleep.reset_mock()
+            paid_client, free_client = MagicMock(), MagicMock()
+            paid_client.models.generate_content.side_effect = Exception(err_msg)
+            free_client.models.generate_content.side_effect = [
+                Exception("404 temp"),  # skip BEST to prove BACKUP is also reachable
+                self._gemini_response("free backup ok"),
+            ]
+            mock_genai.Client.side_effect = [paid_client, free_client]
+            with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "paid-key", "GEMINI_API_KEY": "free-key"}, clear=True):
+                researcher = LynchPinResearcher()
+            self.assertEqual(researcher._call_ai("p"), "free backup ok", err_msg)
+            self.assertEqual(paid_client.models.generate_content.call_count, 1, err_msg)
+            free_models = [c.kwargs["model"] for c in free_client.models.generate_content.call_args_list]
+            self.assertEqual(free_models, ["gemini-3.6-flash", "gemini-flash-lite-latest"], err_msg)
+            mock_sleep.assert_not_called()
+
+    @patch('engine.ai_research.time.sleep')
+    @patch('engine.ai_research.genai')
+    def test_paid_gemini_transient_503_retries_then_falls_back_to_free_36_then_lite(self, mock_genai, mock_sleep):
+        from engine.ai_research import LynchPinResearcher
+        paid_client, free_client = MagicMock(), MagicMock()
+        paid_client.models.generate_content.side_effect = Exception("503 UNAVAILABLE")
+        free_client.models.generate_content.return_value = self._gemini_response("free 3.6 ok")
+        mock_genai.Client.side_effect = [paid_client, free_client]
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "paid-key", "GEMINI_API_KEY": "free-key"}, clear=True):
+            researcher = LynchPinResearcher()
+        self.assertEqual(researcher._call_ai("p"), "free 3.6 ok")
+        self.assertEqual(paid_client.models.generate_content.call_count, self.n)
+        self.assertEqual(free_client.models.generate_content.call_count, 1)
+        self.assertEqual(free_client.models.generate_content.call_args.kwargs["model"], "gemini-3.6-flash")
+        self.assertEqual([c.args[0] for c in mock_sleep.call_args_list], [30, 60] if self.n == 3 else [30] * (self.n - 1))
+
+    def test_billing_and_cap_errors_are_fatal_not_transient(self):
+        from engine.ai_research import _is_fatal, _is_transient
+        for msg in (
+            "429 RESOURCE_EXHAUSTED: Your project has exceeded its monthly spending cap",
+            "429 RESOURCE_EXHAUSTED: Your prepayment credits are depleted",
+            "403 PERMISSION_DENIED: BILLING_DISABLED",
+            "400 INVALID_ARGUMENT: API key not valid. Please pass a valid API key.",
+            "429 RESOURCE_EXHAUSTED: GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+        ):
+            self.assertTrue(_is_fatal(msg), msg)
+            self.assertFalse(_is_transient(msg), msg)
+        # Generic rate limits / 503 remain transient
+        for msg in ("429 RESOURCE_EXHAUSTED", "429 RESOURCE_EXHAUSTED: GenerateRequestsPerMinute", "503 UNAVAILABLE"):
+            self.assertFalse(_is_fatal(msg), msg)
+            self.assertTrue(_is_transient(msg), msg)
+
+    @patch('engine.ai_research.genai')
+    def test_gemini_usage_logging_and_empty_text_error(self, mock_genai):
+        import io
+        from contextlib import redirect_stdout
+        from engine.ai_research import LynchPinResearcher
+        paid_client = MagicMock()
+        resp = MagicMock()
+        resp.text = "neon reply"
+        resp.usage_metadata = MagicMock(prompt_token_count=3800, candidates_token_count=2400, thoughts_token_count=4100)
+        paid_client.models.generate_content.return_value = resp
+        mock_genai.Client.return_value = paid_client
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "paid-key"}, clear=True):
+            researcher = LynchPinResearcher()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(researcher._call_ai("p"), "neon reply")
+        self.assertIn("Gemini (paid) gemini-4-neon: 3800 in / 2400 (+4100 thinking) out tokens", buf.getvalue())
+
+        # Empty / None text raises instead of passing None downstream
+        empty = MagicMock()
+        empty.text = None
+        paid_client.models.generate_content.return_value = empty
+        out = researcher._call_ai("p")
+        self.assertTrue(out.startswith("AI Research Error: Gemini (paid) returned empty content"))
+
+    @patch('engine.ai_research.genai')
+    def test_paid_thinking_level_uses_sdk_or_extra_body(self, mock_genai):
+        from engine.ai_research import LynchPinResearcher, GEMINI_PAID_THINKING_LEVEL
+        paid_client = MagicMock()
+        paid_client.models.generate_content.return_value = self._gemini_response("ok")
+        mock_genai.Client.return_value = paid_client
+
+        # SDK with thinking_level field (google-genai 2.x)
+        class FakeThinkingConfig:
+            model_fields = {"include_thoughts": None, "thinking_budget": None, "thinking_level": None}
+            def __init__(self, thinking_level=None):
+                if thinking_level == "XHIGH":
+                    raise ValueError("not in enum")
+                self.thinking_level = thinking_level
+
+        class FakeHttpOptions:
+            model_fields = {"extra_body": None}
+            def __init__(self, extra_body=None):
+                self.extra_body = extra_body
+
+        class FakeGenConfig:
+            def __init__(self, thinking_config=None, http_options=None):
+                self.thinking_config = thinking_config
+                self.http_options = http_options
+
+        mock_genai.types.ThinkingConfig = FakeThinkingConfig
+        mock_genai.types.HttpOptions = FakeHttpOptions
+        mock_genai.types.GenerateContentConfig = FakeGenConfig
+
+        # Unset env defaults to MEDIUM
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "k"}, clear=True):
+            r = LynchPinResearcher()
+        self.assertEqual(r.paid_thinking_level, GEMINI_PAID_THINKING_LEVEL)
+        self.assertEqual(r.paid_thinking_level, "MEDIUM")
+        self.assertEqual(r._call_ai("p"), "ok")
+        cfg = paid_client.models.generate_content.call_args.kwargs.get("config")
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg.thinking_config.thinking_level, "MEDIUM")
+
+        # Level rejected by SDK enum (e.g. XHIGH on 2.29) falls back cleanly to HttpOptions.extra_body
+        paid_client.models.generate_content.reset_mock()
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "k", "GEMINI_PAID_THINKING_LEVEL": "xhigh"}, clear=True):
+            r_xh = LynchPinResearcher()
+        self.assertEqual(r_xh._call_ai("p"), "ok")
+        cfg_xh = paid_client.models.generate_content.call_args.kwargs.get("config")
+        self.assertEqual(cfg_xh.http_options.extra_body,
+                         {"generationConfig": {"thinkingConfig": {"thinkingLevel": "XHIGH"}}})
+
+        # Older SDK without thinking_level field (google-genai 1.47.0): uses HttpOptions.extra_body
+        class OldThinkingConfig:
+            model_fields = {"include_thoughts": None, "thinking_budget": None}
+
+        mock_genai.types.ThinkingConfig = OldThinkingConfig
+        paid_client.models.generate_content.reset_mock()
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "k"}, clear=True):
+            r_old = LynchPinResearcher()
+        self.assertEqual(r_old._call_ai("p"), "ok")
+        cfg_old = paid_client.models.generate_content.call_args.kwargs.get("config")
+        self.assertEqual(cfg_old.http_options.extra_body,
+                         {"generationConfig": {"thinkingConfig": {"thinkingLevel": "MEDIUM"}}})
+
+        # Explicit DEFAULT / empty omits config entirely
+        paid_client.models.generate_content.reset_mock()
+        with patch.dict(os.environ, {"GEMINI_PAID_API_KEY": "k", "GEMINI_PAID_THINKING_LEVEL": "default"}, clear=True):
+            r_def = LynchPinResearcher()
+        self.assertIsNone(r_def.paid_thinking_level)
+        self.assertEqual(r_def._call_ai("p"), "ok")
+        self.assertNotIn("config", paid_client.models.generate_content.call_args.kwargs)
+
+    def test_extract_gemini_text_skips_thoughts_and_avoids_response_text_warning(self):
+        from types import SimpleNamespace
+        from engine.ai_research import LynchPinResearcher
+
+        class NoTextPropResponse:
+            def __init__(self, parts):
+                self.candidates = [SimpleNamespace(content=SimpleNamespace(parts=parts))]
+
+            @property
+            def text(self):
+                raise AssertionError("response.text should not be accessed when candidates.parts exist")
+
+        resp = NoTextPropResponse([
+            SimpleNamespace(text="internal reasoning", thought=True),
+            SimpleNamespace(text=None, thought=None, thought_signature=b"sig"),
+            SimpleNamespace(text="SENTIMENT: ok.\n\n", thought=False),
+            SimpleNamespace(text="$AAPL:\n🤖: solid.", thought=None),
+        ])
+        self.assertEqual(LynchPinResearcher._extract_gemini_text(resp), "SENTIMENT: ok.\n\n$AAPL:\n🤖: solid.")
+
 
 # ─── social/threads_publisher.py ───
 

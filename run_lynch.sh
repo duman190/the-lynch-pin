@@ -39,6 +39,7 @@ check_token() {
     fi
 }
 
+check_token "GEMINI_PAID_API_KEY"
 check_token "GEMINI_API_KEY"
 check_token "OPENROUTER_API_KEY"
 check_token "META_API_KEY"

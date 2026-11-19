@@ -78,9 +78,12 @@ Every run prints a coverage line, e.g. `📋 Coverage: 97/100 tickers analysed (
 | Variable | Required For |
 |---|---|
 | `FMP_API_KEY` | Multi-source growth enrichment (free: [financialmodelingprep.com](https://site.financialmodelingprep.com/register)) |
-| `GEMINI_API_KEY` | `--research` / `--post` |
-| `OPENROUTER_API_KEY` | Optional 3rd AI fallback tier (free: [openrouter.ai](https://openrouter.ai/keys)) |
-| `META_API_KEY` (or `MODEL_API_KEY`) | Optional 4th, paid, last-resort AI tier ([dev.meta.ai](https://dev.meta.ai) pay-as-you-go key) |
+| `GEMINI_PAID_API_KEY` | Optional Tier 1 paid/credit-backed Gemini key on a **separate** billing-linked GCP project (e.g. Google AI Pro $10/mo Cloud credits); keep separate from `GEMINI_API_KEY` so the free backup and web portal stay free |
+| `GEMINI_PAID_MODEL` | Optional Tier 1 model override (default: `gemini-4-neon`) |
+| `GEMINI_PAID_THINKING_LEVEL` | Optional Tier 1 thinking level (default: `MEDIUM`; accepts `LOW`, `MEDIUM`, `HIGH`, `XHIGH`, or `DEFAULT` to omit) |
+| `GEMINI_API_KEY` | Free-tier Gemini key (`--research` / `--post`, and free backup when `GEMINI_PAID_API_KEY` is set) |
+| `OPENROUTER_API_KEY` | Optional 4th AI fallback tier (free: [openrouter.ai](https://openrouter.ai/keys)) |
+| `META_API_KEY` (or `MODEL_API_KEY`) | Optional 5th, paid, last-resort AI tier ([dev.meta.ai](https://dev.meta.ai) pay-as-you-go key) |
 | `X_API_KEY` | `--post` |
 | `X_API_SECRET` | `--post` |
 | `X_ACCESS_TOKEN` | `--post` |
@@ -91,18 +94,21 @@ Every run prints a coverage line, e.g. `📋 Coverage: 97/100 tickers analysed (
 
 ## AI Fallback Chain
 
-Narrative generation (`--research` / `--post`) walks a 4-layer fallback, 3 attempts per layer (`ATTEMPTS_PER_TIER`), so a busy or rate-limited model never kills a scheduled run:
+Narrative generation (`--research` / `--post`) walks a 5-layer fallback, 3 attempts per layer (`ATTEMPTS_PER_TIER`), so a busy, rate-limited, or credit-exhausted model never kills a scheduled run:
 
-| Tier | Model | Attempts |
-|---|---|---|
-| 1 | Best Gemini free model (`gemini-3.6-flash`) | 3 |
-| 2 | Backup Gemini free model (`gemini-flash-lite-latest`) | 3 |
-| 3 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | 3 |
-| 4 | Meta [Muse Spark 1.3 Contributor](https://dev.meta.ai) (`muse-spark-1.3-contributor`, **paid**) | 3 |
+| Tier | Model | Key | Attempts |
+|---|---|---|---|
+| 1 | Paid / credit-backed Gemini (`gemini-4-neon`, override via `GEMINI_PAID_MODEL`) | `GEMINI_PAID_API_KEY` | 3 |
+| 2 | Best Gemini free model (`gemini-3.6-flash`) | `GEMINI_API_KEY` | 3 |
+| 3 | Backup Gemini free model (`gemini-flash-lite-latest`) | `GEMINI_API_KEY` | 3 |
+| 4 | OpenRouter [Free Models Router](https://openrouter.ai/openrouter/free) (`openrouter/free`) | `OPENROUTER_API_KEY` | 3 |
+| 5 | Meta [Muse Spark 1.3 Contributor](https://dev.meta.ai) (`muse-spark-1.3-contributor`, **paid**) | `META_API_KEY` | 3 |
 
-Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier with exponential backoff between attempts — 30s, then 60s (doubling, capped at `MAX_DELAY` = 120s) — so the three attempts span 1.5 minutes rather than sitting inside one congestion window; there is no pause after a tier's final attempt, since the next call goes to a different model anyway. Any other error skips straight to the next tier. The OpenRouter tier is the exception: `openrouter/free` is a random router, so a non-transient error from one draw (e.g. a model returning empty content) says nothing about the next, and the tier is simply re-rolled instead of abandoned — unless the error is account-level (401 / 402 / 403, bad key or no credits), which no other model can fix. Tier 3 only joins the chain when `OPENROUTER_API_KEY` is set, Tier 4 only when `META_API_KEY` is set.
+Tier 1 uses a **separate** billing-linked GCP project (e.g. funded by Google AI Pro's $10/month Google Developer Program Cloud credits) so the unbilled `GEMINI_API_KEY` project stays permanently on the free tier for Tiers 2–3 and the web portal (`ui/gemini.py`). Each Gemini call logs input, output, and thinking token counts (`usage_metadata`) so credit burn is visible in `logs/run_YYYYMMDD.log`.
 
-Tier 4 is the paid safety net and is reached only after both Gemini tiers and the free router have failed or produced unusable replies. *Muse Spark 1.3 Contributor* is the same model as Muse Spark 1.3 at up to 95% off ($0.10 / M input tokens, $0.20 / M output) in exchange for Meta using the inputs and outputs to train its models — so nothing sensitive goes into the prompt (it only ever contains public market data). A measured 8-ticker batch was 3.7K tokens in and 10.7K out (the output count includes billed reasoning tokens), i.e. about a quarter of a cent; a 16-position portfolio is roughly double. The tier is rate-limited by tokens; a 429 is treated as transient and retried with the same backoff. The call is a non-streaming POST to Meta's OpenAI-Responses-style endpoint (`https://api.meta.ai/v1/responses`), and only `output_text` parts of `message` items are read — `reasoning` items are discarded. Token usage is logged per call.
+Transient errors (503 / 429 / `UNAVAILABLE` / `RESOURCE_EXHAUSTED`) are retried on the same tier with exponential backoff between attempts — 30s, then 60s (doubling, capped at `MAX_DELAY` = 120s) — so the three attempts span 1.5 minutes rather than sitting inside one congestion window; there is no pause after a tier's final attempt, since the next call goes to a different model anyway. Billing, spend-cap, prepay-depletion, and daily-quota errors (e.g. `429 RESOURCE_EXHAUSTED` with *"exceeded its monthly spending cap"*, *"prepayment credits are depleted"*, `BILLING_DISABLED`, or `PerDay`) are classified as fatal and skip straight to the next tier with zero sleep — so when Tier 1 runs out of credits, the run drops immediately to Free Tier `gemini-3.6-flash` → `gemini-flash-lite-latest`. Any other error also skips straight to the next tier. The OpenRouter tier is the exception: `openrouter/free` is a random router, so a non-transient error from one draw (e.g. a model returning empty content) says nothing about the next, and the tier is simply re-rolled instead of abandoned — unless the error is account-level (401 / 402 / 403, bad key or no credits), which no other model can fix. Each tier joins the chain only when its API key is set.
+
+Tier 5 is the paid safety net and is reached only after the Gemini tiers and the free router have failed or produced unusable replies. *Muse Spark 1.3 Contributor* is the same model as Muse Spark 1.3 at up to 95% off ($0.10 / M input tokens, $0.20 / M output) in exchange for Meta using the inputs and outputs to train its models — so nothing sensitive goes into the prompt (it only ever contains public market data). A measured 8-ticker batch was 3.7K tokens in and 10.7K out (the output count includes billed reasoning tokens), i.e. about a quarter of a cent; a 16-position portfolio is roughly double. The tier is rate-limited by tokens; a 429 is treated as transient and retried with the same backoff. The call is a non-streaming POST to Meta's OpenAI-Responses-style endpoint (`https://api.meta.ai/v1/responses`), and only `output_text` parts of `message` items are read — `reasoning` items are discarded. Token usage is logged per call.
 
 The small models the free router can land on sometimes copy the response template literally (`$TICKER: ARM` instead of `$ARM:`), use bare `ARM:` / markdown-bold headers, or drop the `SENTIMENT:` label. `LynchPinResearcher.normalize_narrative` rewrites those into the exact layout `main.py` parses, so a Tier 3 run still yields per-ticker replies instead of the generic placeholder. Well-formed Gemini output passes through unchanged.
 
@@ -370,7 +376,7 @@ Unit tests covering all modules:
 | `engine/income_statement_grader.py` | YoY growth, item grading, letter grade assignment |
 | `engine/balance_sheet_grader.py` | Coverage-to-score mapping, notch adjustments |
 | `engine/technical_timing.py` | Trend detection, RSI, ATR compression, accumulation zone, signal labels, 6M directional edge |
-| `engine/ai_research.py` | Prompt building (index & portfolio modes), format helpers, ticker parsing, 3-tier AI fallback chain (Gemini best → Gemini backup → OpenRouter free) |
+| `engine/ai_research.py` | Prompt building (index & portfolio modes), format helpers, ticker parsing, 5-tier AI fallback chain (paid Gemini → free Gemini best → free Gemini backup → OpenRouter free → Meta paid) |
 | `engine/portfolio.py` | Holdings parsing (dedupe/sum, malformed lines), market-value weights, harmonic/arithmetic roll-ups, weighted median, weighted grades |
 | `graphics/visualizer.py` | Benchmark resolution, output directory creation, portfolio X-ray plot, slice grouping |
 | `social/x_publisher.py` | Media upload, retry logic, tweet creation |

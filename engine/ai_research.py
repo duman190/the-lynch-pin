@@ -7,6 +7,14 @@ import requests
 from google import genai
 
 
+# Paid Tier 1 Gemini (separate billing-linked GCP project, e.g. Google AI Pro $10/mo Developer
+# Program credits). Kept on its own key so the unbilled GEMINI_API_KEY project stays 100% Free Tier
+# for both the fallback tiers below and the web portal (ui/gemini.py). Override via GEMINI_PAID_MODEL.
+# Default thinking level is MEDIUM (Neon defaults to HIGH, which spent ~10.5K thinking tokens on a
+# 4-ticker batch); override via GEMINI_PAID_THINKING_LEVEL (LOW/MEDIUM/HIGH/XHIGH, or DEFAULT).
+GEMINI_PAID_MODEL = "gemini-4-neon"
+GEMINI_PAID_THINKING_LEVEL = "MEDIUM"
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # OpenRouter "Free Models Router" (https://openrouter.ai/openrouter/free):
@@ -52,17 +60,26 @@ PORTFOLIO_VERDICT_TASK = (
 
 
 def _is_transient(error_msg):
+    if _is_fatal(error_msg):
+        return False
     return any(marker in error_msg for marker in _TRANSIENT_MARKERS)
 
 
-# Error signatures that are account-level (bad key, no credits, forbidden) → re-rolling the
-# random router cannot help; skip straight to the next tier.
-_FATAL_MARKERS = ("401", "402", "403", "Unauthorized", "invalid_api_key", "No auth credentials",
-                  "insufficient credits", "Insufficient credits")
+# Error signatures that are account-, billing-, or daily-cap-level (bad key, no credits, spend cap
+# hit, prepay depleted, billing disabled, daily quota exhausted) → retrying with 30s/60s backoff or
+# re-rolling a random router cannot help; skip straight to the next tier. Checked before
+# _is_transient because Google AI Studio returns spend-cap and prepay depletion as HTTP 429
+# RESOURCE_EXHAUSTED. Matched case-insensitively.
+_FATAL_MARKERS = (
+    "401", "402", "403", "unauthorized", "invalid_api_key", "api_key_invalid", "api key not valid",
+    "no auth credentials", "insufficient credits", "credits are depleted", "prepayment",
+    "spending cap", "spend cap", "billing_disabled", "billing account", "perday",
+)
 
 
 def _is_fatal(error_msg):
-    return any(marker in error_msg for marker in _FATAL_MARKERS)
+    low = (error_msg or "").lower()
+    return any(marker in low for marker in _FATAL_MARKERS)
 
 
 class LynchPinResearcher:
@@ -70,8 +87,20 @@ class LynchPinResearcher:
     MAX_DELAY = 120  # seconds; cap for exponential backoff between busy retries
 
     def __init__(self):
-        gemini_key = os.environ.get("GEMINI_API_KEY")
-        # Gemini tiers are skipped when no key is set (the chain then runs on OpenRouter only)
+        paid_gemini_key = (os.environ.get("GEMINI_PAID_API_KEY") or "").strip()
+        # Separate billing-linked project (e.g. Google AI Pro $10/mo Cloud credits) — skips cleanly when unset
+        self.paid_client = genai.Client(api_key=paid_gemini_key) if paid_gemini_key else None
+        self.paid_model = (os.environ.get("GEMINI_PAID_MODEL") or "").strip() or GEMINI_PAID_MODEL
+        raw_level = os.environ.get("GEMINI_PAID_THINKING_LEVEL")
+        if raw_level is None:
+            self.paid_thinking_level = GEMINI_PAID_THINKING_LEVEL
+        else:
+            lv = raw_level.strip().upper()
+            self.paid_thinking_level = None if lv in ("", "DEFAULT", "AUTO", "NONE") else lv
+        self._warned_thinking_sdk = False
+
+        gemini_key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+        # Free-tier Gemini tiers are skipped when no key is set
         self.client = genai.Client(api_key=gemini_key) if gemini_key else None
         # 3.8/3.7 Flash are nearly always 503 on the free tier; 3.6 Flash answers most often of the
         # full Flash models. Flash-Lite is served from a separate, far less congested pool, so it
@@ -81,16 +110,90 @@ class LynchPinResearcher:
         self.backup_model = "gemini-flash-lite-latest"
         self.openrouter_model = OPENROUTER_FREE_MODEL
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-        # Paid 4th tier; dev.meta.ai's quick-start names the variable MODEL_API_KEY, accept both
+        # Paid last resort; dev.meta.ai's quick-start names the variable MODEL_API_KEY, accept both
         self.meta_model = META_MODEL
         self.meta_api_key = os.environ.get("META_API_KEY") or os.environ.get("MODEL_API_KEY")
-        if not self.client and not self.openrouter_api_key and not self.meta_api_key:
-            print("⚠️  None of GEMINI_API_KEY / OPENROUTER_API_KEY / META_API_KEY is set — AI research will be unavailable.")
+        if not self.paid_client and not self.client and not self.openrouter_api_key and not self.meta_api_key:
+            print("⚠️  None of GEMINI_PAID_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY / META_API_KEY is set "
+                  "— AI research will be unavailable.")
 
     # ── provider adapters ────────────────────────────────────────────────────────
+    def _thinking_config(self, level):
+        """Builds a GenerateContentConfig carrying ``thinkingLevel``.
+
+        Uses ``ThinkingConfig(thinking_level=...)`` on google-genai 2.x; falls back to
+        ``HttpOptions(extra_body=...)`` on google-genai 1.x (or for levels not yet in the SDK's
+        ``ThinkingLevel`` enum, such as ``XHIGH``).
+        """
+        types = getattr(genai, "types", None)
+        thinking_cls = getattr(types, "ThinkingConfig", None)
+        thinking_enum = getattr(types, "ThinkingLevel", None)
+        cfg_cls = getattr(types, "GenerateContentConfig", None)
+        http_cls = getattr(types, "HttpOptions", None)
+        thinking_fields = getattr(thinking_cls, "model_fields", None) or {}
+        enum_members = thinking_enum.__members__ if isinstance(thinking_enum, type) and hasattr(thinking_enum, "__members__") else None
+        if (thinking_cls and cfg_cls and "thinking_level" in thinking_fields
+                and (enum_members is None or level in enum_members)):
+            try:
+                return cfg_cls(thinking_config=thinking_cls(thinking_level=level))
+            except Exception:  # fall through to extra_body
+                pass
+        http_fields = getattr(http_cls, "model_fields", None) or {}
+        if http_cls and cfg_cls and "extra_body" in http_fields:
+            return cfg_cls(http_options=http_cls(
+                extra_body={"generationConfig": {"thinkingConfig": {"thinkingLevel": level}}}
+            ))
+        if not self._warned_thinking_sdk:
+            self._warned_thinking_sdk = True
+            print(f"⚠️  Installed google-genai SDK does not support thinking_level={level!r}; "
+                  "using the model default (upgrade google-genai to enable it).")
+        return None
+
+    @staticmethod
+    def _extract_gemini_text(response):
+        """Concatenates non-thought text parts directly from candidates[0].content.parts so Gemini 4's
+        ``thought_signature`` part does not trigger the SDK's noisy ``response.text`` warning."""
+        candidates = getattr(response, "candidates", None)
+        if isinstance(candidates, (list, tuple)) and candidates:
+            content = getattr(candidates[0], "content", None)
+            parts = getattr(content, "parts", None)
+            if isinstance(parts, (list, tuple)):
+                texts = [
+                    p.text for p in parts
+                    if isinstance(getattr(p, "text", None), str)
+                    and not (isinstance(getattr(p, "thought", None), bool) and p.thought)
+                ]
+                return "".join(texts) if texts else None
+        return getattr(response, "text", None)
+
+    def _call_gemini_client(self, client, model, prompt, tier_label="Gemini", thinking_level=None):
+        kwargs = {"model": model, "contents": prompt}
+        if thinking_level:
+            cfg = self._thinking_config(thinking_level)
+            if cfg is not None:
+                kwargs["config"] = cfg
+        response = client.models.generate_content(**kwargs)
+        text = self._extract_gemini_text(response)
+        if not isinstance(text, str) or not text.strip():
+            raise RuntimeError(f"{tier_label} returned empty content ({model})")
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            p_tok = getattr(usage, "prompt_token_count", None)
+            c_tok = getattr(usage, "candidates_token_count", None)
+            t_tok = getattr(usage, "thoughts_token_count", None)
+            is_int = lambda v: isinstance(v, int) and not isinstance(v, bool)
+            if any(is_int(v) for v in (p_tok, c_tok, t_tok)):
+                think = f" (+{t_tok} thinking)" if is_int(t_tok) and t_tok > 0 else ""
+                print(f"ℹ️  {tier_label} {model}: {p_tok if is_int(p_tok) else '?'} in / "
+                      f"{c_tok if is_int(c_tok) else '?'}{think} out tokens")
+        return text
+
+    def _call_paid_gemini_model(self, model, prompt):
+        return self._call_gemini_client(self.paid_client, model, prompt,
+                                        tier_label="Gemini (paid)", thinking_level=self.paid_thinking_level)
+
     def _call_gemini_model(self, model, prompt):
-        response = self.client.models.generate_content(model=model, contents=prompt)
-        return response.text
+        return self._call_gemini_client(self.client, model, prompt, tier_label="Gemini")
 
     def _call_meta_model(self, model, prompt):
         """Non-streaming call to Meta's Responses API; returns the concatenated output text.
@@ -199,6 +302,8 @@ class LynchPinResearcher:
         and the tier is retried instead of abandoned.
         """
         tiers = []
+        if self.paid_client:
+            tiers.append(("GEMINI (paid)", self.paid_model, self._call_paid_gemini_model, False))
         if self.client:
             tiers += [
                 ("BEST", self.best_model, self._call_gemini_model, False),
@@ -215,13 +320,15 @@ class LynchPinResearcher:
         return min(delay * (2 ** i), self.MAX_DELAY)
 
     def _call_ai(self, prompt, delay=30, check=None, score=None):
-        """4-layer fallback: best Gemini → backup Gemini → OpenRouter free router → Meta Muse (paid).
+        """5-layer fallback: paid Gemini → free best Gemini → free backup Gemini → OpenRouter free → Meta Muse (paid).
 
         Each tier gets ``ATTEMPTS_PER_TIER`` tries. Transient errors (503/429/...) are
         retried on the same tier with exponential backoff between attempts (``delay``, 2×, 4×…
         capped at ``MAX_DELAY`` seconds); no sleep follows a tier's final attempt, since the
-        next call goes to a different model. Any other error skips straight to the next tier —
-        except on a ``reroll`` tier (the OpenRouter random router), where the next draw is a
+        next call goes to a different model. Billing / spend-cap / credit-depletion / daily-quota
+        errors (even when wrapped as HTTP 429 RESOURCE_EXHAUSTED) are classified as fatal and skip
+        straight to the next tier with no sleep. Any other error also skips straight to the next
+        tier — except on a ``reroll`` tier (the OpenRouter random router), where the next draw is a
         different model, so the tier is retried immediately unless the error is account-level
         (401/402/403 — a different model cannot fix a bad key).
 
