@@ -11,7 +11,7 @@
 
   const S = {
     app: null, sym: null, token: 0, timer: null, started: 0, rendered: new Set(),
-    lastSnap: null, aiTimer: null, es: null,
+    lastSnap: null, aiTimer: null, es: null, shareTimer: null,
   };
 
   /** replaceChildren that skips null/false (the DOM API would render them as "null"). */
@@ -74,6 +74,9 @@
           el("h1", { class: "rh-ticker" }, el("span", { class: "sky" }, "$"), sym),
           el("div", { class: "rh-name muted", id: "rh-name", text: "Fetching quote…" })),
         el("div", { class: "rh-side" },
+          el("div", { class: "rh-share" },
+            el("span", { class: "rh-share-note", id: "rh-share-note", role: "status", hidden: true }),
+            el("button", { type: "button", class: "btn-icon", id: "rh-share", title: "Copy a link to this ticker", "aria-label": `Copy a link to ${sym}`, "data-ticker": sym, onclick: shareLink }, shareIcon())),
           el("div", { class: "rh-price", id: "rh-price" }),
           el("div", { class: "rh-badges", id: "rh-badges" }))),
       el("div", { class: "progress-row" },
@@ -98,6 +101,8 @@
   function renderHead(d, snap) {
     const name = [d.name, d.sector, d.industry].filter(Boolean).join(" · ");
     $("#rh-name").textContent = name || d.ticker;
+    const share = $("#rh-share");
+    if (share && d.ticker) share.dataset.ticker = d.ticker;
     const mc = bigMoney(d.market_cap);
     put($("#rh-price"), el("span", { class: "px", text: money(d.price, d.currency) }), mc ? el("span", { class: "muted small", text: ` mkt cap ${mc}` }) : null);
     const badges = [];
@@ -116,6 +121,40 @@
       badges.push(el("button", { type: "button", class: "btn-ghost", disabled: true, title: why, "aria-label": `Refresh ${d.ticker}: ${why}` }, "↻ Refresh"));
     }
     put($("#rh-badges"), ...badges);
+  }
+
+  /** Share: the icon in the header card copies the public link https://lynchpin.fyi?t=TICKER
+      and prints "Link copied!" next to it, for a couple of seconds. */
+  async function shareLink() {
+    const btn = $("#rh-share");
+    const note = $("#rh-share-note");
+    const ticker = (btn && btn.dataset.ticker) || S.sym || "";
+    if (!ticker) return;
+    const ok = await copyText(`https://lynchpin.fyi?t=${encodeURIComponent(ticker)}`);
+    note.textContent = ok ? "Link copied!" : "Copy is blocked by this browser";
+    note.hidden = false;
+    clearTimeout(S.shareTimer);
+    S.shareTimer = setTimeout(() => { note.hidden = true; }, 2600);
+  }
+
+  /** The share icon (an up arrow out of a tray, like the one in X's action bar). */
+  function shareIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    for (const d of ["M12 3v12", "M7 8l5-5 5 5", "M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"]) {
+      const p = document.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", d);
+      svg.append(p);
+    }
+    return svg;
   }
 
   /** ↻ Refresh is off with the AI overview off: a cached ticker stays cached until midnight. */

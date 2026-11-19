@@ -521,13 +521,22 @@ a.x-tag:hover { text-decoration: underline; }
 
 /* ── result ──────────────────────────────────────────────────────────────── */
 .result { display: grid; gap: 16px; }
-.result-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
+.result-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; position: relative;
   border-color: rgba(93,156,236,.35); box-shadow: 0 0 40px rgba(93,156,236,.10), 0 10px 40px rgba(0,0,0,.35); }
 .rh-ticker { font: 900 2.4rem/1 var(--mono); color: var(--white); letter-spacing: .02em; }
 .rh-name { margin-top: 6px; }
 .rh-side { display: grid; justify-items: end; gap: 8px; }
 .rh-price .px { font: 800 1.6rem/1 var(--mono); color: var(--white); }
 .rh-badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.rh-share { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.rh-share .btn-icon {
+  width: 36px; height: 36px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--border); border-radius: 10px;
+  color: var(--muted); cursor: pointer;
+}
+.rh-share .btn-icon:hover { border-color: var(--sky); color: var(--white); }
+.rh-share-note { font: 700 .78rem/1 var(--mono); color: var(--green); white-space: nowrap; }
 .badge { font: 800 .9rem/1 var(--mono); padding: 8px 12px; border-radius: 8px; color: var(--white); }
 .badge-red { background: var(--red); box-shadow: 0 0 18px rgba(255,75,43,.35); }
 .badge-green { background: var(--green); color: #06210F; box-shadow: 0 0 18px rgba(46,204,113,.35); }
@@ -849,6 +858,7 @@ dialog.bt-dialog .lightbox-close { position: static; float: none; margin: 0; fle
   .th-title h1 { font-size: 1.6rem; }
   .rh-side { justify-items: start; }
   .rh-badges { justify-content: flex-start; }
+  .rh-share { position: absolute; top: 12px; right: 12px; }
   .progress-row { flex-direction: column; align-items: flex-start; }
   .stepper li { padding: 5px 8px; font-size: .72rem; }
   .peg-num { font-size: 2.4rem; }
