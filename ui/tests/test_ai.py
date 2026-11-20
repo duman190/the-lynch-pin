@@ -51,7 +51,7 @@ def test_switchboard_defaults(monkeypatch, tmp_path):
     s = Settings()
     assert (s.llm_base_url, s.llm_model) == ("http://100.64.0.1:8000", "mlx-community/Qwen3.8-27B-4bit")
     assert (s.cache_llm_base_url, s.cache_llm_model) == ("http://100.64.0.1:8002", "Qwen3.8-Flash-Next")
-    assert (s.llm_rpm, s.llm_parallel) == (12, 4)  # the 27B's 1-minute point with the switchboard's 4 streams
+    assert (s.llm_rpm, s.llm_parallel) == (20, 4)  # the 27B's 1-minute point with the switchboard's 4 streams
     monkeypatch.setenv("LYNCH_LLM_BASE_URL", "http://10.0.0.5:1234")  # an explicit setting wins
     monkeypatch.setenv("LYNCH_CACHE_LLM_URL", "")                     # "" = the online model pre-caches
     s = Settings()

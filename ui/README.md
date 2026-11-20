@@ -282,7 +282,7 @@ Measured cost:
 | `--llm-reasoning` | `LYNCH_LLM_REASONING` | `off` (sends `reasoning_effort: "none"`; `on` keeps the model's thinking) |
 | `--llm-autoload` | `LYNCH_LLM_AUTOLOAD=1` | off (asks LM Studio to load the model with `--llm-ctx`) |
 | `--llm-parallel` | `LYNCH_LLM_PARALLEL` | `4` AI overviews generated at once: the switchboard admits 4 per Splash model (see *Local AI tuning*) |
-| `--llm-rpm` | `LYNCH_LLM_RPM` | `12`: low watermark, AI overviews a minute the local model is given (the 27B's). Measured on the M6 with `--llm-parallel 4`: 56 for Qwen3.6-35B-A3B (~32 under sustained load) and 12 for the 27B; 2 for Flash-Next on Strata with `--llm-parallel 1` (see *Benchmark: the M6 Mac mini*) |
+| `--llm-rpm` | `LYNCH_LLM_RPM` | `20`: low watermark, AI overviews a minute the local model is given (the 27B's). Measured on the M6 with `--llm-parallel 4`: 72 for Qwen3.6-35B-A3B (~40 under sustained load) and 20 for the 27B (~15 sustained); 1 for Flash-Next on Strata with `--llm-parallel 1` (see *Benchmark: the M6 Mac mini*) |
 | `--gemini-model` | `LYNCH_GEMINI_MODEL` | `gemini-flash-lite-latest`: offload above the low watermark, with `GEMINI_API_KEY` set |
 | `--gemini-rpm` / `--gemini-rpd` | `LYNCH_GEMINI_RPM` / `LYNCH_GEMINI_RPD` | `15` a minute (the free tier's limit per model) / `975` a Pacific day (room for the daily scans' backup tier) |
 | `--no-gemini` | `LYNCH_GEMINI=0` | Gemini offload on when `GEMINI_API_KEY` is set |
@@ -304,7 +304,7 @@ Measured cost:
 | `--workers` | `LYNCH_UI_WORKERS` | `0` = auto: 2 × CPU cores (max 16, capped by free RAM at ~200 MB each), or 1 with the AI overview when its model runs on this machine (a loopback `--llm-url`); above 1, one process each |
 | `--enrich` | `LYNCH_UI_ENRICH` | `auto`: FMP multi-source growth when `FMP_API_KEY` is set (`on` / `off` to force) |
 | `--fmp-limit` | `LYNCH_UI_FMP_LIMIT` | `240`: FMP requests the portal may make in any rolling 24 h (the free plan's 250 a day minus 10 for the daily scans). Every request FMP answers counts, errors included (a 402 for a symbol outside the free plan counts on FMP's dashboard); only a request FMP didn't answer (network error, timeout, a 5xx server failure) is handed back, and lookups that never call FMP cost nothing. Past the cap lookups are simply not enriched; the count is shared by the analysis processes and kept across restarts (`<cache_dir>/fmp_budget.sqlite3`), and `/api/health` shows it under `enrich` (not with `--public`). A ticker FMP had nothing for (a 402 for a symbol outside the free plan, or estimates that give no 5Y growth, i.e. *Not enriched*) is not asked again for 30 days, so its repeat lookups cost no FMP request; FMP's own daily cap, a rejected key, a 429, a 5xx or a network error never put a ticker on that list (`unenriched` under `enrich` counts them). The portal only: the daily scans (`main.py`) still ask FMP every time |
-| `--precache` | `LYNCH_UI_PRECACHE` | `50`: right after the cache resets at midnight, analyse the N most looked-up tickers of the last 30 days (from the stats page, so `--lan` / `--public`; fewer if fewer were looked up), one at a time: with the AI overview on, the next ticker starts only once the previous one's overview is finished. The overviews are `--cache-llm-url`'s while it answers (Flash-Next: ~31 s a ticker with its analysis, ~25 min for 50), else the online model's. These lookups don't count on the stats page or in the cache's hit rate, but spend the usual Yahoo calls and FMP requests (within `--fmp-limit`). `0` = off; `/api/health` shows the last run under `precache` |
+| `--precache` | `LYNCH_UI_PRECACHE` | `50`: right after the cache resets at midnight, analyse the N most looked-up tickers of the last 30 days (from the stats page, so `--lan` / `--public`; fewer if fewer were looked up), one at a time: with the AI overview on, the next ticker starts only once the previous one's overview is finished. The overviews are `--cache-llm-url`'s while it answers (Flash-Next: ~65 s a ticker with its analysis, ~55 min for 50), else the online model's. These lookups don't count on the stats page or in the cache's hit rate, but spend the usual Yahoo calls and FMP requests (within `--fmp-limit`). `0` = off; `/api/health` shows the last run under `precache` |
 | | `LYNCH_UI_NATIVE_CHART=0` / `LYNCH_UI_CHART_LIB` | on when built / `ui/native/target/release/liblynch_chart.dylib` (`.so` on Linux): draw per-ticker charts with matplotlib instead / where the native renderer is loaded from (see *Native chart renderer*) |
 | `--tv-viewers` | `LYNCH_UI_TV_VIEWERS` | `50`: people who may have the trading view open at once (0 = no limit; see *Trading view*) |
 | `--tv-live` | `LYNCH_UI_TV_LIVE` | `2`: people who may use the LIVE last candle at once (each live ticker: up to 30 Yahoo requests a minute) |
@@ -322,7 +322,7 @@ Every new AI overview request (a ticker without one today) is admitted by `ui/in
 
 | Requests in the last minute | Who writes the overview |
 |---|---|
-| up to the **low watermark** (`--llm-rpm`, default 12) | the local model; at most that many waiting or being written at once, so a model slower than its setting never builds more than about a minute of backlog |
+| up to the **low watermark** (`--llm-rpm`, default 20) | the local model; at most that many waiting or being written at once, so a model slower than its setting never builds more than about a minute of backlog |
 | low … **high watermark** (= `--llm-rpm` + `--gemini-rpm`) | **Gemini** (`--gemini-model`, default `gemini-flash-lite-latest`) through its OpenAI-compatible API, streamed like the local model, at most 15 a minute and 975 a Pacific day (`ui/gemini.py`) |
 | above the high watermark | nobody for now: the page shows the rule-based **Quick overview** with **↻ Retry AI**, which counts down `retry_after` (when a slot frees up) |
 
@@ -334,21 +334,23 @@ Every new AI overview request (a ticker without one today) is admitted by `ui/in
 - **No reasoning switch for Gemini.** Flash-Lite doesn't think, and the API refuses any attempt to turn thinking off (400 for `reasoning_effort: "none"` and for `thinking_budget: 0`). A refused request still counts: sending it once cost one of the minute's 15 and the 15th request got a 429. `"minimal"` is accepted but turned a ~1 s first token into ~7 s.
 - `/api/health` shows the queue under `cache.inference`: watermarks, last minute's local and paused requests, Gemini's minute and day. The stats page charts where overviews came from (see *Stats page*).
 
-### Benchmark: the M6 Mac mini (2026-10-27)
+### Benchmark: the M6 Mac mini (2026-11-19)
+
+Re-measured after Splash and Strata engine upgrades (128K context on all three ports, Splash speculative decoding + `int8` KV + ANE split prefill on dense FFN, Strata `0.1.62-metal` with 128K `fp16` KV and `dflash2` drafting) and the 2026-11-03 prompt additions (~750 tokens vs ~630 on 2026-10-27; 288 cached system-prompt tokens on Splash vs 256).
 
 `ui/tests/inference_bench.py` sends AI overview requests at a fixed rate through the portal's real `JobManager`:
-- **Prompts.** Every request is a different ticker, and a ticker the local model has written is not used again that day.
-  - The tickers come from `database/*.txt`, analysed once a day from live Yahoo data with FMP off.
-  - A prompt the server has seen before comes almost entirely from Splash's prefix cache (~610 of ~630 tokens instead of the 256-token system prompt), which would make the local model's TTFT look about 2× better than it is. Tickers that went to Gemini or the Quick overview stay available, so a day has room for about 10 runs.
+- **Prompts.** Every request is a different ticker, and no ticker seen by a model is reused on that model the same day (`cached_tokens` verified equal to the 288-token system prompt on every Splash request, 0 on Strata).
+  - The tickers come from `database/*.txt` (311 usable), analysed once a day from live Yahoo data with FMP off.
+  - A prompt the server has seen before comes almost entirely from Splash's prefix cache (~730 of ~750 tokens instead of the 288-token system prompt), which would make the local model's TTFT look about 2× better than it is.
 - **Warm-up.** Two spare tickers first load the weights and prime the shared system prompt.
 - **Timing.** Time to first token is measured from the request, so it includes the queue wait. Total time runs from the request to the finished overview.
 - **Output.** The results are written to `tmp/`, with CDF charts. `--compare` draws several runs (up to three models) on one chart, and `--gemini-from` takes Gemini's line from earlier runs instead of spending Gemini requests.
 
-Setup: a Mac mini M6 (32 GB) on Tailscale, serving through [inference-switchboard](https://github.com/duman190/inference-switchboard): one model in memory at a time, picked by port.
-- **Engines.** The two Qwens run on Splash (4-bit MLX, at most 4 requests at once), and Qwen3.8-Flash-Next Q2_0 runs on Strata (one request at a time, experts streamed from the SSD).
-- **Client.** The portal ran on a laptop with `--llm-parallel 4` (1 for Strata) and 64K context.
-- **Load.** Each run sent 50 requests in 1 minute, or 75 where the low watermark was above 50, with Gemini off.
-- **Switching.** One switch per model, 13-23 s, then the warm-up.
+Setup: a Mac mini M6 (32 GB, macOS 27.2) on Tailscale, serving through [inference-switchboard](https://github.com/duman190/inference-switchboard): one model in memory at a time, picked by port.
+- **Engines.** The two Qwens run on Splash (4-bit MLX, 128K context, `int8` KV, speculative decoding, `maximum_batch_width = 4`), and Qwen3.8-Flash-Next Q2_0 runs on Strata `0.1.62-metal` (128K context, `fp16` KV, `dflash2` drafting, one request at a time, experts streamed from the SSD).
+- **Client.** The portal ran on a laptop with `--llm-parallel 4` (1 for Strata) and 64K client context.
+- **Load.** Each run sent 50 requests in 1 minute, 75 where the low watermark was 56–72, and 100 at 80/min, with Gemini off.
+- **Switching.** One switch per model, 17–22 s, then the warm-up.
 
 ![AI overview CDFs on the M6: Qwen3.6-35B-A3B, Qwen3.8-27B and Qwen3.8-Flash-Next by low watermark](docs/inference_bench_m6.png)
 
@@ -356,34 +358,35 @@ Gemini's line is from the four 2026-10-07 runs (Flash-Lite at 15 a minute, n=60)
 
 | Model | Low watermark | Local overviews | Started / done by 1:00 | TTFT p50 / p90 / max | Total p50 / p90 / max | Tok/s per stream |
 |---|---|---|---|---|---|---|
-| Qwen3.6-35B-A3B | 16/min | 16/16 | 16 / 16 | 3.8 / 7.4 / 7.6 s | 9.6 / 13.5 / 13.6 s | 46 |
-| | 20/min | 20/20 | 20 / 20 | 5.1 / 9.6 / 11.0 s | 11.9 / 15.9 / 18.4 s | 46 |
-| | 24/min | 24/24 | 24 / 24 | 6.6 / 11.6 / 14.4 s | 12.1 / 18.8 / 20.2 s | 46 |
-| | 28/min | 28/28 | 28 / 28 | 7.6 / 16.0 / 18.9 s | 15.6 / 23.1 / 24.0 s | 42 |
-| | 48/min | 48/48 | 35 / 32 | 10.7 / 22.2 / 24.4 s | 16.7 / 28.4 / 29.7 s | 48 |
-| | **56/min (75 sent)** | 56/56 | 36 / 33 | 23.0 / 44.0 / 49.0 s | 28.8 / 51.6 / **54.4 s** | 47 |
-| | 60/min (75 sent) | 60/60 | 36 / 32 | 26.3 / 50.1 / 55.8 s | 32.5 / 57.2 / 60.2 s | 47 |
-| | 64/min (75 sent) | 64/64 (1 partial) | 37 / 33 | 26.2 / 52.6 / 58.8 s | 33.0 / 60.1 / 64.8 s | 47 |
-| | 72/min (75 sent) | 72/72 | 33 / 30 | 35.2 / 66.2 / 73.5 s | 42.3 / 73.7 / 80.0 s | 45 |
-| Qwen3.8-27B | 4/min | 4/4 | 4 / 4 | 3.7 / 7.6 / 7.6 s | 19.5 / 23.6 / 23.6 s | 17 |
-| | 8/min | 8/8 | 8 / 8 | 6.5 / 20.8 / 20.8 s | 22.7 / 35.0 / 35.0 s | 16 |
-| | **12/min** | 12/12 | 12 / 8 | 18.7 / 40.8 / 43.0 s | 38.5 / 56.6 / 56.6 s | 15 |
-| Qwen3.8-Flash-Next (Strata) | 1/min | 1/1 | 1 / 1 | 10.8 s | 33.0 s | 12 |
-| | **2/min** | 2/2 | 2 / 2 | 11.1 / 35.3 s | 30.4 / 56.4 s | 13 |
-| | 4/min | 4/4 | 2 / 1 | 39.0 / 90.1 s | 59.0 / 112 s | 13 |
+| Qwen3.6-35B-A3B | 24/min | 24/24 | 24 / 24 | 2.4 / 4.6 / 5.2 s | 7.9 / 10.0 / 10.4 s | 59 |
+| | 48/min | 48/48 | 42 / 39 | 5.3 / 10.5 / 12.1 s | 11.2 / 15.6 / 17.5 s | 58 |
+| | 56/min (75 sent) | 56/56 | 44 / 40 | 15.7 / 30.9 / 33.8 s | 21.1 / 36.5 / 38.0 s | 58 |
+| | **72/min (75 sent)** | 72/72 | 42 / 38 | 21.3 / 42.2 / 48.3 s | 27.7 / 48.2 / **51.2 s** | 57 |
+| | 80/min (100 sent) | 80/80 (1 partial) | 43 / 39 | 31.4 / 58.8 / 65.5 s | 36.6 / 63.8 / 68.9 s | 58 |
+| Qwen3.8-27B | 8/min | 8/8 | 8 / 8 | 2.6 / 15.2 / 15.2 s | 18.9 / 23.8 / 23.8 s | 22 |
+| | 12/min | 12/12 | 12 / 12 | 11.9 / 24.6 / 24.9 s | 27.2 / 37.8 / 39.2 s | 22 |
+| | 16/min | 16/16 | 15 / 11 | 21.0 / 35.6 / 43.6 s | 33.8 / 48.2 / 53.4 s | 22 |
+| | **20/min** | 20/20 | 17 / 14 | 19.9 / 40.3 / 43.3 s | 32.9 / 54.0 / **55.6 s** | 22 |
+| | 24/min | 24/24 | 17 / 13 | 24.7 / 52.3 / 56.4 s | 38.3 / 65.1 / 67.3 s | 22 |
+| Qwen3.8-Flash-Next (Strata) | **1/min** | 1/1 | 1 / 1 | 10.7 s | **59.8 s** | 5.2 |
+| | 2/min | 2/2 | 1 / 0 | 10.7 / 71.7 s | 62.3 / 125 s | 5.2 |
+| | 4/min | 4/4 | 2 / 1 | 58.5 / 179 s | 118 / 222 s | 4.9 |
 
-No local request failed in any run, and all but one got a complete overview (one partial reply at 64/min). Replies were 250-310 tokens (p50).
+No local request failed in any run, and all but one got a complete overview (one partial reply at 80/min on the A3B). Replies were 260–310 tokens (p50; 207–274 on Flash-Next).
 
 **Reading the table:**
-- **Qwen3.6-35B-A3B: 56/min** is the highest watermark measured where every overview finished within a minute (slowest 54.4 s). At 60/min the slowest took 60.2 s, and at 64/min 64.8 s, with p90 at the minute.
-  - It writes about 33 overviews a minute, with each of 4 streams at ~46 tok/s. Above that, the extra overviews wait in the queue.
-  - 48/min arrived at 50 requests a minute and finished within 29.7 s. The 56-72 runs arrived at 75 a minute (a 50/min run can't fill a 64 watermark), so their queue built faster.
-  - The 56/60/64 runs reused tickers from earlier in the day on a freshly restarted engine (`--reuse`). Every one of their local requests reported exactly the 256 cached system-prompt tokens, so none came from the cache.
-- **Qwen3.8-27B: 12/min** is its 1-minute point (slowest 56.6 s). It writes about 10 overviews a minute, with each of 4 streams at ~16 tok/s.
-- **Qwen3.8-Flash-Next: 2/min** (slowest 56.4 s). It writes one overview at a time, ~30 s each, at ~12.5 tok/s. Its prefix cache never hit (`cached_tokens: 0`, even after priming), so every request processes the whole ~600-token prompt: ~6 s to the first token with nothing queued. It suits the overnight jobs it's meant for, not visitors.
+- **Qwen3.6-35B-A3B: 72/min** (up from 56/min on 2026-10-27) is the highest watermark measured where every overview finished within a minute (slowest 51.2 s at 75 req/min; 80/min at 100 req/min crossed the minute at 68.9 s max, p90 63.8 s).
+  - It now sustains **~40–41 overviews a minute** (up from ~33), with each of 4 streams at **~58 tok/s** (up from ~46; ~243 tok/s aggregate, 52% speculative draft acceptance, ~2100 tok/s prefill).
+  - Apples-to-apples at the same arrival rates: 24/min max dropped from 20.2 s to 10.4 s, 48/min from 29.7 s to 17.5 s, 56/min from 54.4 s to 38.0 s, and 72/min from 80.0 s to 51.2 s — despite the ~85-token longer prompt.
+- **Qwen3.8-27B: 20/min** (up from 12/min on 2026-10-27) is its new 1-minute point (slowest 55.6 s; 24/min crossed at 67.3 s).
+  - It now sustains **~15 overviews a minute** (up from ~10), with each of 4 streams at **~22 tok/s** (up from ~15–16; ~87 tok/s aggregate, ~36% draft acceptance, ~485 tok/s prefill). At the old 12/min watermark, max latency fell from 56.6 s to 39.2 s and all 12 finished within the minute.
+  - **32 GB state-cache note:** with target (15.1 GB) + draft (1.27 GB) + vision (0.93 GB) + ANE FFN weights fixed at 19.84 GB, Splash has 5.89 GB of dynamic headroom. After ~60–80 unique tickers fill that budget with ~49 MB GDN state entries, a 4th concurrent lane can briefly hit ~10 s of `claim_wait` while reclaiming/offloading state to disk (seen in the 16/min row, whose p90/max sat close to 20/min).
+- **Qwen3.8-Flash-Next (Strata `0.1.62-metal`): 1/min** (down from 2/min on 2026-10-27; slowest 59.8 s; 2/min took 125 s).
+  - It now writes one overview in **~57–67 s** at **~5.0 tok/s** (down from ~30 s at 12–13 tok/s on 2026-10-27), with 9–12 s TTFT (up from ~6 s).
+  - Strata's `/metrics` explains the regression: at 128K `fp16` context and 4.35 GB reserved for conversation cache, Strata left only **84 MiB (64 slots out of 24,576 experts)** for its expert cache, saturating SSD reads at ~2.9–3.1 GB/s on every step despite `dflash2` drafting (~73% acceptance). Prefix reuse on ticker prompts is still 0 (`cached_tokens: 0`; the conversation cache only reused identical empty-user `_prime` requests).
 - **These are 1-minute bursts.** Under steady traffic above a model's sustained rate, the queue fills up to the low watermark, since that also caps how many overviews can wait at once.
-  - For the 35B at 56/min that is about 1.7 minutes of wait.
-  - To keep every overview under a minute through sustained load, set the watermark at about the sustained rate: ~32 for the 35B (28/min measured: slowest 24 s), 10 for the 27B, 2 for Flash-Next.
+  - For the 35B at 72/min that is about 1.8 minutes of wait; for the 27B at 20/min about 1.3 minutes.
+  - To keep every overview under a minute through sustained load, set the watermark at about the sustained rate: ~40 for the 35B, ~15–16 for the 27B, 1 for Flash-Next.
 
 **Quality** (the same 4 tickers on Gemini and the 35B-A3B, NVDA / KO / INTC / PLTR, 2026-10-07): both models had three sections every time, copied the reverse-DCF numbers (4/4) and verdict, copied the analyst-target sentence (the local model once lowercased it mid-sentence), and used no number that wasn't in the data.
 - **Gemini** reads more fluently and cites more of the data.
@@ -393,26 +396,26 @@ No local request failed in any run, and all but one got a complete overview (one
 
 ## Local AI tuning
 
-Measured on the M6 Mac mini (2026-10-27) with real analyses, through the switchboard over Tailscale. Three models were tested:
-- `mlx-community/Qwen3.6-35B-A3B-4bit`: MoE with 3B active, on Splash, port 8001
-- `mlx-community/Qwen3.8-27B-4bit`: dense, on Splash, port 8000
-- Qwen3.8-Flash-Next Q2_0: MoE, on Strata with its experts streamed from the SSD, port 8002
+Measured on the M6 Mac mini (2026-11-19) with real analyses, through the switchboard over Tailscale. Three models were tested:
+- `mlx-community/Qwen3.6-35B-A3B-4bit`: MoE with 3B active, on Splash (speculative decoding, `int8` KV, 128K context), port 8001
+- `mlx-community/Qwen3.8-27B-4bit`: dense, on Splash (speculative decoding, `int8` KV, ANE split FFN, 128K context), port 8000
+- Qwen3.8-Flash-Next Q2_0: MoE, on Strata `0.1.62-metal` (`fp16` KV, `dflash2` drafting, 128K context, experts streamed from the SSD), port 8002
 
 The switchboard's README has the raw engine speeds.
 
 ### Where the time goes
 
-One overview = **prefill** (≈ time to first token) + **decode** (reply tokens ÷ tokens/s). One request at a time, primed cache, ~600-780-token prompts (the warm-ups of the benchmark above):
+One overview = **prefill** (≈ time to first token) + **decode** (reply tokens ÷ tokens/s). One request at a time, primed cache, ~680-800-token prompts (single-stream runs and warm-ups of the benchmark above):
 
 | | 35B-A3B (Splash) | 27B dense (Splash) | Flash-Next Q2_0 (Strata) |
 |---|---|---|---|
-| Time to first token | 0.3-0.4 s | ~1.4 s | ~6 s (nothing cached) |
-| Decode, one stream | 90-113 tok/s | 21-27 tok/s | 12-13 tok/s |
-| Decode, per stream at 4 at once | ~46 tok/s | ~16 tok/s | — (one at a time) |
-| Time per overview, alone | 3-5 s | 12-17 s | 26-35 s |
-| Overviews a minute, sustained | ~33 | ~10 | ~2 |
+| Time to first token | 0.25-0.32 s | 1.0-1.2 s | 9-12 s (nothing cached) |
+| Decode, one stream | 131-146 tok/s | 32-41 tok/s | 4.3-5.6 tok/s |
+| Decode, per stream at 4 at once | ~58 tok/s | ~22 tok/s | — (one at a time) |
+| Time per overview, alone | 2.1-2.7 s | 6.7-10.1 s | 47-67 s |
+| Overviews a minute, sustained | ~40-41 | ~15 | ~1 |
 
-**Prefix cache.** The static instructions come first, as the system message, so they cost nothing after warm-up and only the per-ticker data is prefilled. On Splash every overview reports `cached_tokens: 256` (see *Serving* below for why the portal primes it). Strata reported 0 cached tokens for every request.
+**Prefix cache.** The static instructions come first, as the system message, so they cost nothing after warm-up and only the per-ticker data is prefilled. On Splash every overview reports `cached_tokens: 288` (see *Serving* below for why the portal primes it). Strata reported 0 cached tokens for every ticker request.
 
 ### The prompt (`ui/llm.py`: `PORTAL_SYSTEM` + `portal_data()`)
 
@@ -453,7 +456,7 @@ Speeds are in the table above.
 - It paraphrases the verdict ("seems optimistic" rather than "a stretch"), sometimes writes a sentence that doesn't make sense ("assumes a significant margin of safety"), and tends to skip what the math demands operationally.
 - It once skipped the "🤖:" label but labelled the other two sections. The parser now treats unlabelled text before the first label as the overview, instead of dropping it ("partial reply").
 
-**Pick:** the A3B with `--llm-parallel 4` when several people use the portal: ~33 overviews/min sustained on the M6, with a first token in under 1 s when nothing is queued. The 27B (~10/min) when you're the only user and want the better write-up. Flash-Next (~2/min) for overnight jobs. The defaults: the 27B online (`--llm-rpm 12`, `--llm-parallel 4`) and Flash-Next for the nightly pre-cache.
+**Pick:** the A3B with `--llm-parallel 4` when several people use the portal: ~40–41 overviews/min sustained on the M6 (72/min 1-min burst), with a first token in ~0.3 s when nothing is queued. The 27B (~15/min sustained, 20/min 1-min burst) when you want the better write-up. Flash-Next (~1/min) for overnight jobs. The defaults: the 27B online (`--llm-rpm 20`, `--llm-parallel 4`) and Flash-Next for the nightly pre-cache.
 
 **Small-model labelling.** About 1 reply in 30 from the A3B had all three paragraphs in order but no labels at all. The parser now assigns exactly three unlabelled paragraphs to overview, reverse DCF and stomach test, in that order.
 
@@ -463,46 +466,46 @@ Splash batches concurrent requests itself, up to `maximum_batch_width` streams (
 
 ```bash
 echo 'export LYNCH_SWITCHBOARD=http://<mini-tailscale-ip>' >> venv-portal/bin/activate
-python -m ui.server --lan        # the 27B online (port 8000, --llm-rpm 12, --llm-parallel 4), Flash-Next overnight (port 8002)
-python -m ui.server --lan --llm-url http://<mini-tailscale-ip>:8001 --llm-model mlx-community/Qwen3.6-35B-A3B-4bit --llm-rpm 56   # the A3B online
+python -m ui.server --lan        # the 27B online (port 8000, --llm-rpm 20, --llm-parallel 4), Flash-Next overnight (port 8002)
+python -m ui.server --lan --llm-url http://<mini-tailscale-ip>:8001 --llm-model mlx-community/Qwen3.6-35B-A3B-4bit --llm-rpm 72   # the A3B online
 ```
 
 Notes on running it:
 - The portal's client works with Splash and the switchboard unchanged. It notices there is no LM Studio `/api/v0` and stops probing for it.
-- A switch to another model takes 13-23 s, and the cache must be primed again (the client does it on the first request).
+- A switch to another model takes 17-22 s, and the cache must be primed again (the client does it on the first request).
 
 - **The portal primes Splash's prefix cache itself.**
   - Splash keeps a request's reusable state "at the last whole 32-token page before its generation prompt", so a request can only resume from a state left by an earlier request whose prompt *ended* there. That suits multi-turn chats.
   - This Qwen mixes attention and recurrent layers, and the recurrent state can't be rebuilt from cached attention pages. So a new ticker never reused the system prompt left behind by another ticker's request: `/status` showed 23 sequential requests with 0 hits, 22 `lazy_junctions` and 0 `junction_materializations`. On the 27B, one materialization happened by chance under concurrency.
-  - `LocalLLMClient._prime` therefore sends the system prompt once with an empty user message and a 1-token reply. Its saved state ends exactly where every ticker's prompt diverges, and from then on every overview logs `cached 224`: the A3B sweep below had 45 hits and 0 new misses.
+  - `LocalLLMClient._prime` therefore sends the system prompt once with an empty user message and a 1-token reply. Its saved state ends exactly where every ticker's prompt diverges, and from then on every overview logs `cached 288` (224/256 on earlier shorter prompts).
   - It primes again, at most once a minute, whenever the server reports `cached_tokens: 0` (a restart or an eviction). LM Studio doesn't report that field, so there the client primes once, which is harmless.
 
 ### Overnight: Flash-Next writes the pre-cache
 
-The nightly pre-cache (`--precache`, right after midnight) writes its AI overviews on `--cache-llm-url`: Qwen3.8-Flash-Next on Strata (switchboard port 8002), the best write-up of the three and too slow for visitors (~2 a minute).
-- **One at a time.** Each ticker is analysed, then its overview is written on Flash-Next, then the next ticker starts: ~31 s a ticker, ~50 min for 100 (measured below). One AI worker serves this model (`ui.llm.CacheLLMClient`), and Strata takes one request at a time anyway.
-- **No priming on Strata.** Its prefix cache never hit (`cached_tokens: 0`, even right after a prime), so priming would only add ~6 s of prefill now and then.
-- **Then the online model is primed again.** The first request on port 8002 makes the switchboard swap the 27B out, and its prefix cache goes with it. Once the run is over, the portal sends the 27B its system prompt (`LocalLLMClient.warm_up`): the swap back (13-23 s) and the prompt's prefill happen then, not on the morning's first overview. The log says `🌅 Online model ready`, and `/api/health` has the result under `precache.online_warm`.
+The nightly pre-cache (`--precache`, right after midnight) writes its AI overviews on `--cache-llm-url`: Qwen3.8-Flash-Next on Strata (switchboard port 8002), the best write-up of the three and too slow for visitors (~1 a minute).
+- **One at a time.** Each ticker is analysed, then its overview is written on Flash-Next, then the next ticker starts: ~65 s a ticker, ~55 min for 50 (~110 min for 100, measured below). One AI worker serves this model (`ui.llm.CacheLLMClient`), and Strata takes one request at a time anyway.
+- **No priming on Strata.** Its prefix cache never hits on ticker prompts (`cached_tokens: 0`, even right after a prime), so priming would only add prefill now and then.
+- **Then the online model is primed again.** The first request on port 8002 makes the switchboard swap the 27B out, and its prefix cache goes with it. Once the run is over, the portal sends the 27B its system prompt (`LocalLLMClient.warm_up`): the swap back (~22 s) and the prompt's prefill happen then, not on the morning's first overview. The log says `🌅 Online model ready`, and `/api/health` has the result under `precache.online_warm`.
 - **A fallback.** If the overnight model doesn't answer its status probe, which the switchboard answers without swapping, the online model writes that ticker's overview, as before. `/api/health` shows the overnight model under `ai.cache_llm`.
 - **Visitors at night** still get the online model (or Gemini above the watermark). On the switchboard each such overview costs a swap each way: Flash-Next keeps the slot for `min_residency_s` (120 s) while the pre-cache uses it, so that first visitor's overview can wait a couple of minutes.
 - `--no-cache-llm` (or `--cache-llm-url ''`) has the online model write the pre-cache's overviews too, with no swap and no prime afterwards.
 
-Measured on the M6 (2026-10-27, through the switchboard over Tailscale, FMP off): a pre-cache of MSFT, NVDA, KO and CAT, with the A3B loaded when it started.
+Measured on the M6 (2026-11-19, through the switchboard over Tailscale, FMP off): a pre-cache of MSFT, NVDA, KO and CAT, with the A3B loaded when it started.
 
 | | Time | Detail |
 |---|---|---|
-| First ticker (MSFT) | 44.0 s | includes the swap to Flash-Next: first token 18.8 s |
-| Next three (NVDA, KO, CAT) | 29.4 / 31.9 / 31.8 s | ~3 s of analysis, 26-29 s of overview: first token 6.2-6.5 s, 13 tok/s, 259-295 tokens; all three sections every time |
-| The whole run | 137 s | ~31 s a ticker after the swap: ~50 min for 100 |
-| The 27B swapped back and primed | 21.9 s | the 274-token system prompt |
-| The next 27B overview | first token 1.35 s | 256 of its 612 prompt tokens from the prefix cache |
+| First ticker (MSFT) | 93.5 s | includes the swap to Flash-Next (~15 s): first token 24.7 s, 87.4 s overview (313 tokens at 5.0 tok/s) |
+| Next three (NVDA, KO, CAT) | 61.8 / 60.5 / 72.2 s | ~3–5 s of analysis, 56.5–66.8 s of overview: first token 9.1–12.7 s, 4.3–5.4 tok/s, 230–269 tokens, `cached_tokens: 0`; all three sections every time |
+| The whole run | 288 s | ~65 s a ticker after the swap: ~55 min for 50 (~110 min for 100) |
+| The 27B swapped back and primed | 22.2 s | the 314-token system prompt |
+| The next 27B overview (UBER) | first token 1.01 s | 288 of its 790 prompt tokens from the prefix cache, 37.1 tok/s, 9.35 s total |
 
 Re-run the benchmark, one model at a time:
 
 ```bash
 python ui/tests/inference_bench.py --llm-url http://<mini-tailscale-ip>:8001 --llm-model mlx-community/Qwen3.6-35B-A3B-4bit \
-    --llm-parallel 4 --llm-rpm 56 --rate 75 --minutes 1 --no-gemini --tag a3b-56
-python ui/tests/inference_bench.py --compare tmp/inference_bench-a3b-56.json tmp/inference_bench-d27b-12.json \
+    --llm-parallel 4 --llm-rpm 72 --rate 75 --minutes 1 --no-gemini --tag a3b-72
+python ui/tests/inference_bench.py --compare tmp/inference_bench-a3b-72.json tmp/inference_bench-d27b-20.json \
     --gemini-from tmp/inference_bench-llm12.json
 ```
 

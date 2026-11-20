@@ -11,7 +11,7 @@ don't count on the stats page or in the cache's hit rate. They do spend the usua
 enrichment on, FMP requests (within the portal's 24 h cap, ui/fmp_budget.py).
 
 The overviews are written by the pre-cache's own model (--cache-llm-url: Qwen3.8-Flash-Next on Strata behind the
-switchboard: ~31 s a ticker with its analysis on the M6, ~25 min for 50) while it answers, else by the online model.
+switchboard: ~65 s a ticker with its analysis on the M6, ~55 min for 50) while it answers, else by the online model.
 On the switchboard that swaps the online model out, so once the run is over the online model (--llm-url) is primed
 again: the swap back and the system prompt's prefill happen now, not on the first visitor's overview.
 """

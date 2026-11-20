@@ -131,7 +131,7 @@ class Settings:
         "LYNCH_LLM_MODEL", "mlx-community/Qwen3.8-27B-4bit", ""))
     # The nightly pre-cache's model (ui/precache.py): its AI overviews are written on this endpoint instead, one at a
     # time; afterwards the online model above is primed again (the switchboard swapped it out). Empty = the online model.
-    # With LYNCH_SWITCHBOARD: Qwen3.8-Flash-Next on its port 8002, ~30 s an overview on the M6, too slow for visitors.
+    # With LYNCH_SWITCHBOARD: Qwen3.8-Flash-Next on its port 8002, ~60 s an overview on the M6, too slow for visitors.
     cache_llm_base_url: str = field(default_factory=lambda: _llm_default("LYNCH_CACHE_LLM_URL", "{sb}:8002", ""))
     cache_llm_model: str = field(default_factory=lambda: os.environ.get("LYNCH_CACHE_LLM_MODEL", "Qwen3.8-Flash-Next"))
     llm_ctx: int = field(default_factory=lambda: _env_int("LYNCH_LLM_CTX", 65536))
@@ -148,11 +148,11 @@ class Settings:
     llm_parallel: int = field(default_factory=lambda: _env_int("LYNCH_LLM_PARALLEL", 4))
     # Ask LM Studio to (JIT-)load the model with llm_ctx context before the first request.
     llm_autoload: bool = field(default_factory=lambda: _env_bool("LYNCH_LLM_AUTOLOAD"))
-    # Inference queue (ui/inference_queue.py). Low watermark: AI overviews per minute the local model is given. 12 is
-    # Qwen3.8-27B on the M6's Splash with --llm-parallel 4: a 1-minute burst of 12 all finished within 57 s (ui/README.md,
-    # "Benchmark: the M6 Mac mini"); 56 for Qwen3.6-35B-A3B. Above it, overviews go to Gemini up to gemini_rpm (high
+    # Inference queue (ui/inference_queue.py). Low watermark: AI overviews per minute the local model is given. 20 is
+    # Qwen3.8-27B on the M6's Splash with --llm-parallel 4: a 1-minute burst of 20 all finished within 56 s (ui/README.md,
+    # "Benchmark: the M6 Mac mini"); 72 for Qwen3.6-35B-A3B. Above it, overviews go to Gemini up to gemini_rpm (high
     # watermark = llm_rpm + gemini_rpm); above that, the Quick overview.
-    llm_rpm: int = field(default_factory=lambda: _env_int("LYNCH_LLM_RPM", 12))
+    llm_rpm: int = field(default_factory=lambda: _env_int("LYNCH_LLM_RPM", 20))
     # Gemini offload (ui/gemini.py): on when GEMINI_API_KEY is set. Free tier: 15 requests a minute per model
     # (Google's 429 names the quota); 975 a day leaves room for the daily scans' backup tier.
     gemini: bool = field(default_factory=lambda: _env_bool("LYNCH_GEMINI", True))

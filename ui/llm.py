@@ -543,9 +543,9 @@ class LocalLLMClient:
 
 class CacheLLMClient(LocalLLMClient):
     """The nightly pre-cache's model (``--cache-llm-url``): ``LocalLLMClient`` on a second endpoint, by default
-    Qwen3.8-Flash-Next on Strata behind the switchboard (one request at a time, ~30 s an overview on the M6). Same
+    Qwen3.8-Flash-Next on Strata behind the switchboard (one request at a time, ~60 s an overview on the M6). Same
     context, token budget, reasoning switch and timeout as the online model. No system-prompt priming: Strata's prefix
-    cache never hit (``cached_tokens: 0`` even after priming), so a prime would only add ~6 s of prefill now and then."""
+    cache never hit on ticker prompts (``cached_tokens: 0`` even after priming), so a prime would only add prefill."""
 
     def __init__(self, settings, session=None, clock=time.monotonic):
         s = dataclasses.replace(settings, llm_base_url=settings.cache_llm_base_url.rstrip("/"),

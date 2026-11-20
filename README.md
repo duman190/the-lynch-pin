@@ -352,12 +352,11 @@ This prevents hypergrowth companies (LYFT, CELH) from producing fantasy ROIs by 
 
 ## Web Portal & Local AI Overview
 
-`python -m ui.server` serves a dark-mode web UI for single-ticker lookups, with an optional AI overview streamed from a local LM Studio server. With `--lan` or `--public` it also serves a stats page on port 190, for LAN / Tailscale clients only (requests per minute, lookup latency, rejections, caching, popular tickers, AI speed over a rolling 30 days; DAU and MAU over a rolling year). See [ui/README.md](ui/README.md). Its **Local AI tuning** section has the measurements behind the overview prompt and the settings to use on new hardware:
-- prefill vs decode speed for a dense 27B and a 3B-active MoE on Splash
-- the prefix-cache behaviour
+`python -m ui.server` serves a dark-mode web UI for single-ticker lookups, with an optional AI overview streamed from Splash/Strata (via `inference-switchboard`) or a local LM Studio server. With `--lan` or `--public` it also serves a stats page on port 190, for LAN / Tailscale clients only (requests per minute, lookup latency, rejections, caching, popular tickers, AI speed over a rolling 30 days; DAU and MAU over a rolling year). See [ui/README.md](ui/README.md). Its **AI inference queue** and **Local AI tuning** sections have the M6 Mac mini benchmarks and the settings to use on new hardware:
+- prefill vs decode speed for a dense 27B and a 3B-active MoE on Splash, plus Flash-Next on Strata
+- the prefix-cache behaviour and priming
 - the prompt rules
-- the model comparison
-- why one request at a time (`--llm-parallel 1`) is optimal on LM Studio's Splash engine
+- the model comparison and low-watermark sizing (`--llm-parallel 4`, `--llm-rpm 20` default for 27B / `72` for 35B-A3B)
 
 `python ui/tests/llm_bench.py --llm-url http://HOST:1234 --llm-model MODEL --conc 1,2,4` re-runs the benchmark.
 

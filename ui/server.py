@@ -928,7 +928,7 @@ def parse_args(argv=None):
     p.add_argument("--cache-llm-url", default=s.cache_llm_base_url, metavar="URL",
                    help="the nightly pre-cache's model: its AI overviews are written there, one at a time, then "
                         "--llm-url is primed again (default: port 8002 of LYNCH_SWITCHBOARD, Qwen3.8-Flash-Next on "
-                        "Strata, ~30 s an overview; '' = the online model)")
+                        "Strata, ~60 s an overview; '' = the online model)")
     p.add_argument("--cache-llm-model", default=s.cache_llm_model,
                    help="model id at --cache-llm-url (default Qwen3.8-Flash-Next; '' = the first model it lists)")
     p.add_argument("--no-cache-llm", action="store_true", help="the online model writes the pre-cache's overviews too")
@@ -943,7 +943,7 @@ def parse_args(argv=None):
                    help="ask LM Studio to load the model with --llm-ctx before the first request")
     p.add_argument("--llm-rpm", type=int, default=s.llm_rpm, metavar="N",
                    help=f"low watermark: AI overviews a minute the local model is given (default {s.llm_rpm}: "
-                        "Qwen3.8-27B on the M6's Splash with --llm-parallel 4; 56 for Qwen3.6-35B-A3B). Above it, "
+                        "Qwen3.8-27B on the M6's Splash with --llm-parallel 4; 72 for Qwen3.6-35B-A3B). Above it, "
                         "Gemini; above --llm-rpm + --gemini-rpm, the Quick overview with a Retry AI button")
     p.add_argument("--gemini-model", default=s.gemini_model,
                    help="Gemini model for overviews above the low watermark (default gemini-flash-lite-latest; "
@@ -961,7 +961,7 @@ def parse_args(argv=None):
                         "day minus 10 for the daily scans); past it lookups are not enriched")
     p.add_argument("--precache", type=int, default=s.precache, metavar="N",
                    help="right after the cache resets at midnight, analyse the N most looked-up tickers of the "
-                        "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 50: ~25 "
+                        "last 30 days, one at a time with their AI overviews by --cache-llm-url (default 50: ~55 "
                         "min on Flash-Next; 0 = off; needs the stats page, i.e. --lan or --public)")
     p.add_argument("--benchmark", default=s.benchmark, help="index for the 6M edge backtest (default SPY)")
     p.add_argument("--edge", action="store_true", default=s.edge,

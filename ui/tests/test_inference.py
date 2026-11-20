@@ -213,7 +213,7 @@ def test_cli_sets_the_watermarks():
     s, _ = parse_args(["--llm-rpm", "12", "--gemini-rpm", "10", "--gemini-rpd", "500", "--gemini-model", "m"])
     assert (s.llm_rpm, s.gemini_rpm, s.gemini_rpd, s.gemini_model, s.gemini) == (12, 10, 500, "m", True)
     assert parse_args(["--no-gemini"])[0].gemini is False
-    assert Settings().llm_rpm == 12 and Settings().gemini_model == "gemini-flash-lite-latest"  # the 27B's minute
+    assert Settings().llm_rpm == 20 and Settings().gemini_model == "gemini-flash-lite-latest"  # the 27B's minute
 
 
 # ── the job manager ──────────────────────────────────────────────────────────
